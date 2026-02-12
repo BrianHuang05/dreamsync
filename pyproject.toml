@@ -1,0 +1,24 @@
+[project]
+name = "dreamsync-music-sync"
+version = "0.1.0"
+description = "Local audio-reactive control for Govee DreamView/LAN devices."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "sounddevice>=0.4",
+]
+
+[project.optional-dependencies]
+stream = ["sounddevice>=0.4"]
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100

@@ -1,0 +1,1 @@
+﻿{"duration_seconds":12.0,"sample_rate":44100,"channels":1,"device":null,"frame_size":2048,"hop_size":512,"samples_captured":526336,"dropped_blocks":0,"rows":1021,"sent":3,"transitions":2,"mode_counts":{"ambient":762,"pulse":259}}

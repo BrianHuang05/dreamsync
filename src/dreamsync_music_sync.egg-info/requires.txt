@@ -1,0 +1,6 @@
+numpy>=1.26
+scipy>=1.11
+sounddevice>=0.4
+
+[stream]
+sounddevice>=0.4
