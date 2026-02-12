@@ -35,6 +35,16 @@ class DirectorConfig:
     bpm_min: float = 60.0
     bpm_max: float = 180.0
     bpm_jump_limit: float = 22.0
+    intensity_floor: float = 0.15
+    intensity_ceiling: float = 0.85
+    intensity_gamma: float = 0.7
+    intensity_slew_per_sec: float = 0.6
+    speed_slew_per_sec: float = 0.7
+    ambient_speed: float = 0.22
+    pulse_speed_min: float = 0.18
+    pulse_speed_max: float = 0.6
+    motion_speed_min: float = 0.3
+    motion_speed_max: float = 0.75
 
 
 class Director:
@@ -42,10 +52,13 @@ class Director:
         self.config = config or DirectorConfig()
         self.mode: EffectMode = EffectMode.AMBIENT
         self._last_switch_time = -1e9
+        self._last_t: float | None = None
         self._ema_rms = 0.0
         self._ema_bpm = 0.0
         self._ema_zcr = 0.0
         self._history: deque[tuple[float, float, float, float]] = deque()
+        self._last_intensity = self.config.intensity_floor
+        self._last_speed = self.config.ambient_speed
 
     def _can_switch(self, t: float) -> bool:
         return (t - self._last_switch_time) >= self.config.min_switch_interval_seconds
@@ -98,8 +111,21 @@ class Director:
             return self._ema_bpm
         return bpm
 
+    @staticmethod
+    def _slew(value: float, last: float, rate_per_sec: float, dt: float) -> float:
+        if dt <= 0.0:
+            return last
+        max_delta = rate_per_sec * dt
+        if value > last + max_delta:
+            return last + max_delta
+        if value < last - max_delta:
+            return last - max_delta
+        return value
+
     def update(self, features: dict[str, float | bool]) -> LightingIntent:
         t = float(features.get("t", 0.0))
+        dt = 0.0 if self._last_t is None else max(0.0, t - self._last_t)
+        self._last_t = t
         rms = float(features.get("rms", 0.0))
         bpm = float(features.get("bpm", 0.0))
         zcr = float(features.get("zcr", 0.0))
@@ -110,11 +136,26 @@ class Director:
         stability = self._beat_stability()
 
         if t < self.config.warmup_seconds:
-            intensity = min(0.6, max(0.08, self._ema_rms * 2.2))
+            rms_norm = min(1.0, max(0.0, self._ema_rms * 2.2))
+            shaped = rms_norm ** self.config.intensity_gamma
+            intensity_target = self.config.intensity_floor + (
+                (self.config.intensity_ceiling - self.config.intensity_floor) * shaped
+            )
+            intensity = self._slew(
+                intensity_target, self._last_intensity, self.config.intensity_slew_per_sec, dt
+            )
+            self._last_intensity = intensity
+            speed = self._slew(
+                self.config.ambient_speed,
+                self._last_speed,
+                self.config.speed_slew_per_sec,
+                dt,
+            )
+            self._last_speed = speed
             return LightingIntent(
                 mode=EffectMode.AMBIENT,
                 intensity=intensity,
-                speed=0.2,
+                speed=speed,
                 bpm=bpm if bpm > 0.0 else 120.0,
             )
 
@@ -138,12 +179,31 @@ class Director:
                 self.mode = EffectMode.AMBIENT
                 self._last_switch_time = t
 
-        intensity = min(1.0, max(0.06, self._ema_rms * 2.8))
+        rms_norm = min(1.0, max(0.0, self._ema_rms * 2.4))
+        shaped = rms_norm ** self.config.intensity_gamma
+        intensity_target = self.config.intensity_floor + (
+            (self.config.intensity_ceiling - self.config.intensity_floor) * shaped
+        )
         if self.mode == EffectMode.AMBIENT:
-            speed = 0.22
+            speed_target = self.config.ambient_speed
         elif self.mode == EffectMode.PULSE:
-            speed = min(1.0, max(0.2, bpm / 180.0))
+            speed_target = min(
+                self.config.pulse_speed_max,
+                max(self.config.pulse_speed_min, bpm / 220.0),
+            )
         else:
-            speed = min(1.0, max(0.5, self._ema_rms * 2.2))
+            speed_target = min(
+                self.config.motion_speed_max,
+                max(self.config.motion_speed_min, self._ema_rms * 1.6),
+            )
+
+        intensity = self._slew(
+            intensity_target, self._last_intensity, self.config.intensity_slew_per_sec, dt
+        )
+        speed = self._slew(
+            speed_target, self._last_speed, self.config.speed_slew_per_sec, dt
+        )
+        self._last_intensity = intensity
+        self._last_speed = speed
 
         return LightingIntent(mode=self.mode, intensity=intensity, speed=speed, bpm=bpm)

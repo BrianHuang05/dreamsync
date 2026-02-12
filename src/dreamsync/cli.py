@@ -1,6 +1,7 @@
 import argparse
 import collections
 import json
+import logging
 from pathlib import Path
 
 from .audio.system_input import list_input_devices
@@ -137,6 +138,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Write live run logs to JSONL path (defaults to stdout).",
     )
+    ledfx_live.add_argument(
+        "--force-stop",
+        dest="force_stop",
+        action="store_true",
+        default=True,
+        help="Clear any existing LedFx effect on the virtual before starting (default).",
+    )
+    ledfx_live.add_argument(
+        "--no-force-stop",
+        dest="force_stop",
+        action="store_false",
+        help="Do not clear the LedFx effect before starting.",
+    )
+    ledfx_live.add_argument(
+        "--debug-ledfx",
+        action="store_true",
+        help="Log LedFx payloads and control requests.",
+    )
 
     ledfx_beat = sub.add_parser(
         "ledfx-beat",
@@ -198,6 +217,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Write beat run logs to JSONL path (defaults to stdout).",
+    )
+    ledfx_beat.add_argument(
+        "--force-stop",
+        dest="force_stop",
+        action="store_true",
+        default=True,
+        help="Clear any existing LedFx effect on the virtual before starting (default).",
+    )
+    ledfx_beat.add_argument(
+        "--no-force-stop",
+        dest="force_stop",
+        action="store_false",
+        help="Do not clear the LedFx effect before starting.",
+    )
+    ledfx_beat.add_argument(
+        "--debug-ledfx",
+        action="store_true",
+        help="Log LedFx payloads and control requests.",
     )
 
     sub.add_parser("devices", help="List real-time audio input devices.")
@@ -350,14 +387,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "ledfx-live":
+        if args.debug_ledfx:
+            logging.basicConfig(level=logging.INFO)
         adapter = LedFxOutputAdapter(
             LedFxConfig(
                 base_url=args.base_url,
                 virtual_id=args.virtual_id,
                 min_update_interval_seconds=max(0.0, float(args.min_interval)),
                 timeout_seconds=max(0.1, float(args.timeout_seconds)),
+                debug=bool(args.debug_ledfx),
             )
         )
+        if args.force_stop:
+            adapter.clear_effect()
+            print(json.dumps({"force_stop": True, "virtual_id": args.virtual_id}, separators=(",", ":")))
         logs, summary = run_live_input_to_ledfx(
             adapter=adapter,
             duration_seconds=args.duration,
@@ -381,14 +424,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "ledfx-beat":
+        if args.debug_ledfx:
+            logging.basicConfig(level=logging.INFO)
         adapter = LedFxOutputAdapter(
             LedFxConfig(
                 base_url=args.base_url,
                 virtual_id=args.virtual_id,
                 min_update_interval_seconds=max(0.0, float(args.min_interval)),
                 timeout_seconds=max(0.1, float(args.timeout_seconds)),
+                debug=bool(args.debug_ledfx),
             )
         )
+        if args.force_stop:
+            adapter.clear_effect()
+            print(json.dumps({"force_stop": True, "virtual_id": args.virtual_id}, separators=(",", ":")))
         flash_config = BeatFlashConfig(
             flash_intensity=max(0.0, min(1.0, float(args.flash_intensity))),
             idle_intensity=max(0.0, min(1.0, float(args.idle_intensity))),

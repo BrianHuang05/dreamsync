@@ -19,6 +19,7 @@ class LedFxConfig:
     virtual_id: str
     min_update_interval_seconds: float = 0.3
     timeout_seconds: float = 3.0
+    debug: bool = False
 
 
 def _default_transport(url: str, payload: dict, timeout_seconds: float) -> None:
@@ -42,15 +43,36 @@ def _default_transport(url: str, payload: dict, timeout_seconds: float) -> None:
         _logger.warning("LedFx network error for %s: %s", url, exc)
 
 
+def _default_delete(url: str, timeout_seconds: float) -> None:
+    try:
+        req = urllib.request.Request(
+            url=url,
+            headers={"Content-Type": "application/json"},
+            method="DELETE",
+        )
+        with urllib.request.urlopen(req, timeout=timeout_seconds):
+            pass
+    except urllib.error.HTTPError as exc:
+        _logger.warning("LedFx HTTP error %s for %s: %s", exc.code, url, exc.reason)
+    except urllib.error.URLError as exc:
+        _logger.warning("LedFx connection error for %s: %s", url, exc.reason)
+    except TimeoutError:
+        _logger.warning("LedFx request timeout for %s", url)
+    except OSError as exc:
+        _logger.warning("LedFx network error for %s: %s", url, exc)
+
+
 class LedFxOutputAdapter:
     def __init__(
         self,
         config: LedFxConfig,
         transport: Callable[[str, dict, float], None] | None = None,
+        delete_transport: Callable[[str, float], None] | None = None,
         monotonic_fn: Callable[[], float] | None = None,
     ) -> None:
         self.config = config
         self._transport = transport or _default_transport
+        self._delete = delete_transport or _default_delete
         self._monotonic = monotonic_fn or time.monotonic
         self._last_sent_at = -1e9
         self._last_payload_key = ""
@@ -89,7 +111,16 @@ class LedFxOutputAdapter:
         if (now - self._last_sent_at) < self.config.min_update_interval_seconds:
             return False
 
+        if self.config.debug:
+            _logger.info("LedFx payload %s", payload_key)
         self._transport(self._endpoint(), payload, self.config.timeout_seconds)
         self._last_sent_at = now
         self._last_payload_key = payload_key
         return True
+
+    def clear_effect(self) -> None:
+        if self.config.debug:
+            _logger.info("LedFx clear effect %s", self._endpoint())
+        self._delete(self._endpoint(), self.config.timeout_seconds)
+        self._last_payload_key = ""
+        self._last_sent_at = -1e9

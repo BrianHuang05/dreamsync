@@ -230,6 +230,9 @@ def run_live_input_to_ledfx(
     sent_count = 0
     dropped_blocks = 0
     captured_samples = 0
+    last_intent_mode = "ambient"
+    last_intent_intensity = 0.0
+    last_intent_speed = 0.0
 
     def _callback(indata, frames, time_info, status) -> None:
         del frames, time_info
@@ -277,6 +280,9 @@ def run_live_input_to_ledfx(
                 sent = adapter.emit(stream_t, intent)
                 if sent:
                     sent_count += 1
+                last_intent_mode = intent.mode.value
+                last_intent_intensity = float(intent.intensity)
+                last_intent_speed = float(intent.speed)
                 mode = intent.mode.value
                 mode_counts[mode] += 1
                 if last_mode is not None and mode != last_mode:
@@ -313,7 +319,9 @@ def run_live_input_to_ledfx(
                     last_print = now
                     print(
                         f"telemetry t={elapsed:.1f}s frames={sum(1 for row in logs if row['kind']=='frame')} "
-                        f"sent={sent_count} dropped={dropped_blocks}"
+                        f"sent={sent_count} dropped={dropped_blocks} "
+                        f"mode={last_intent_mode} intensity={last_intent_intensity:.3f} "
+                        f"speed={last_intent_speed:.3f}"
                     )
             time.sleep(0.01)
 
