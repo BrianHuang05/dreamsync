@@ -70,6 +70,18 @@ Beat-only tester (prints beat timing, flashes on beat). Clears any existing effe
 python -m dreamsync ledfx-beat --duration 60 --base-url http://127.0.0.1:8888 --virtual-id vcouch
 ```
 
+Beat ripple (slow color-wave that changes color on each beat). Clears any existing effect first:
+
+```bash
+python -m dreamsync ledfx-ripple --duration 60 --base-url http://127.0.0.1:8888 --virtual-id vdown --effect-type scroll
+```
+
+Customize brightness, colors, or try a different LedFx effect type:
+
+```bash
+python -m dreamsync ledfx-ripple --duration 60 --base-url http://127.0.0.1:8888 --virtual-id vcouch --brightness 0.9 --effect-type wavelength --colors '#ff0000,#00ff00,#0000ff'
+```
+
 Full director (smoother, concert-style behavior). Clears any existing effect first:
 
 ```bash
@@ -140,7 +152,13 @@ Plot the extracted features to inspect sync behavior quickly:
 python -m dreamsync plot out/features.jsonl out/features.png
 ```
 
-Run tests (no external test runner required):
+Run unit tests (no external services required):
+
+```bash
+PYTHONPATH=src python3 -m unittest tests.test_output_ledfx tests.test_output_roles tests.test_basic_controller tests.test_director tests.test_cli_plot -v
+```
+
+Run the full test suite (requires LedFx — start it first with `powershell -ExecutionPolicy Bypass -File .\start_ledfx.ps1`):
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -v

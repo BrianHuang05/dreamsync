@@ -10,6 +10,7 @@ class EffectMode(str, Enum):
     AMBIENT = "ambient"
     PULSE = "pulse"
     MOTION = "motion"
+    RIPPLE = "ripple"
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,7 @@ class LightingIntent:
     intensity: float
     speed: float
     bpm: float
+    color: str | None = None
 
 
 @dataclass(frozen=True)

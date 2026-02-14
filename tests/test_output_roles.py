@@ -34,3 +34,13 @@ class TransformIntentTests(unittest.TestCase):
         intent = LightingIntent(mode=EffectMode.PULSE, intensity=0.5, speed=0.5, bpm=140.0)
         result = transform_intent(intent, DeviceRole.ACCENT)
         self.assertAlmostEqual(result.bpm, 140.0)
+
+    def test_accent_preserves_color(self) -> None:
+        intent = LightingIntent(mode=EffectMode.RIPPLE, intensity=0.7, speed=0.5, bpm=120.0, color="#ff0000")
+        result = transform_intent(intent, DeviceRole.ACCENT)
+        self.assertEqual(result.color, "#ff0000")
+
+    def test_accent_preserves_none_color(self) -> None:
+        intent = LightingIntent(mode=EffectMode.PULSE, intensity=0.5, speed=0.5, bpm=120.0)
+        result = transform_intent(intent, DeviceRole.ACCENT)
+        self.assertIsNone(result.color)

@@ -6,8 +6,8 @@ from pathlib import Path
 
 from .audio.system_input import list_input_devices
 from .director import EffectMode, LightingIntent
-from .basic_controller import BeatFlashConfig
-from .live import run_live_beat_flash_to_ledfx, run_live_input_to_ledfx
+from .basic_controller import BeatFlashConfig, BeatRippleConfig
+from .live import run_live_beat_flash_to_ledfx, run_live_beat_ripple_to_ledfx, run_live_input_to_ledfx
 from .output.ledfx import LedFxConfig, LedFxOutputAdapter, MultiLedFxOutputAdapter
 from .output.roles import DeviceRole
 from .pipeline import capture_system_input_features_to_stream, extract_wav_features_to_stream
@@ -29,6 +29,7 @@ def _build_adapter(
     min_interval: float | None = None,
     timeout_seconds: float | None = None,
     debug: bool = False,
+    effect_type_override: str | None = None,
 ) -> LedFxOutputAdapter | MultiLedFxOutputAdapter:
     """Build a single or multi-device adapter from --virtual-id args."""
     parsed = [_parse_virtual_id(spec) for spec in args.virtual_id]
@@ -44,6 +45,7 @@ def _build_adapter(
                 min_update_interval_seconds=interval,
                 timeout_seconds=timeout,
                 debug=debug,
+                effect_type_override=effect_type_override,
             )
         )
         devices.append((adapter, role))
@@ -300,6 +302,98 @@ def build_parser() -> argparse.ArgumentParser:
         help="Log LedFx payloads and control requests.",
     )
 
+    ledfx_ripple = sub.add_parser(
+        "ledfx-ripple",
+        help="Capture live input and smooth-ripple lights on detected beats.",
+    )
+    ledfx_ripple.add_argument("--duration", type=float, required=True, help="Capture duration in seconds.")
+    ledfx_ripple.add_argument("--base-url", required=True, help="LedFx base URL, e.g. http://127.0.0.1:8888")
+    ledfx_ripple.add_argument(
+        "--virtual-id",
+        action="append",
+        required=True,
+        metavar="ID[:ROLE]",
+        help="LedFx virtual id (optionally with :primary or :accent role). Repeatable.",
+    )
+    ledfx_ripple.add_argument("--sample-rate", type=int, default=44100, help="Input sample rate.")
+    ledfx_ripple.add_argument("--channels", type=int, default=1, help="Input channel count.")
+    ledfx_ripple.add_argument("--device", type=int, default=None, help="Optional input device id.")
+    ledfx_ripple.add_argument("--frame-size", type=int, default=2048, help="Frame size in samples.")
+    ledfx_ripple.add_argument("--hop-size", type=int, default=512, help="Hop size in samples.")
+    ledfx_ripple.add_argument("--blocksize", type=int, default=1024, help="PortAudio callback blocksize.")
+    ledfx_ripple.add_argument(
+        "--heartbeat-seconds",
+        type=float,
+        default=1.0,
+        help="Telemetry heartbeat period during live capture.",
+    )
+    ledfx_ripple.add_argument(
+        "--min-interval",
+        type=float,
+        default=0.05,
+        help="Minimum interval between LedFx API writes.",
+    )
+    ledfx_ripple.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=3.0,
+        help="HTTP timeout for LedFx API requests.",
+    )
+    ledfx_ripple.add_argument(
+        "--brightness",
+        type=float,
+        default=0.8,
+        help="Constant brightness for the wave (0-1).",
+    )
+    ledfx_ripple.add_argument(
+        "--colors",
+        type=str,
+        default=None,
+        help="Comma-separated hex colors to cycle on each beat (e.g. '#ff0000,#00ff00,#0000ff').",
+    )
+    ledfx_ripple.add_argument(
+        "--speed-divisor",
+        type=float,
+        default=480.0,
+        help="Speed = BPM / divisor. Higher = slower wave.",
+    )
+    ledfx_ripple.add_argument(
+        "--effect-type",
+        type=str,
+        default=None,
+        help="LedFx effect type override (e.g. 'power', 'wavelength', 'bar'). Defaults to 'power'.",
+    )
+    ledfx_ripple.add_argument(
+        "--min-beat-interval",
+        type=float,
+        default=0.2,
+        help="Minimum seconds between beat triggers.",
+    )
+    ledfx_ripple.add_argument(
+        "--jsonl",
+        type=Path,
+        default=None,
+        help="Write ripple run logs to JSONL path (defaults to stdout).",
+    )
+    ledfx_ripple.add_argument(
+        "--force-stop",
+        dest="force_stop",
+        action="store_true",
+        default=True,
+        help="Clear any existing LedFx effect on the virtual before starting (default).",
+    )
+    ledfx_ripple.add_argument(
+        "--no-force-stop",
+        dest="force_stop",
+        action="store_false",
+        help="Do not clear the LedFx effect before starting.",
+    )
+    ledfx_ripple.add_argument(
+        "--debug-ledfx",
+        action="store_true",
+        help="Log LedFx payloads and control requests.",
+    )
+
     sub.add_parser("devices", help="List real-time audio input devices.")
 
     capture = sub.add_parser("capture", help="Capture system input and emit feature JSONL.")
@@ -521,6 +615,54 @@ def main(argv: list[str] | None = None) -> int:
             telemetry_interval_seconds=max(0.1, float(args.heartbeat_seconds)),
             blocksize=args.blocksize,
             flash_config=flash_config,
+        )
+        if args.jsonl:
+            args.jsonl.parent.mkdir(parents=True, exist_ok=True)
+            with args.jsonl.open("w", encoding="utf-8") as f:
+                for item in logs:
+                    f.write(json.dumps(item, separators=(",", ":")) + "\n")
+        print(json.dumps(summary, separators=(",", ":")))
+        return 0
+
+    if args.command == "ledfx-ripple":
+        if args.debug_ledfx:
+            logging.basicConfig(level=logging.INFO)
+        adapter = _build_adapter(
+            args,
+            min_interval=max(0.0, float(args.min_interval)),
+            timeout_seconds=max(0.1, float(args.timeout_seconds)),
+            debug=bool(args.debug_ledfx),
+            effect_type_override=args.effect_type,
+        )
+        if args.force_stop:
+            adapter.clear_effect()
+            devices = [_parse_virtual_id(s) for s in args.virtual_id]
+            print(json.dumps(
+                {"force_stop": True, "devices": [{"id": v, "role": r.value} for v, r in devices]},
+                separators=(",", ":"),
+            ))
+        colors = None
+        if args.colors:
+            colors = tuple(c.strip() for c in args.colors.split(","))
+        ripple_kwargs: dict = {
+            "brightness": max(0.0, min(1.0, float(args.brightness))),
+            "min_beat_interval_seconds": max(0.01, float(args.min_beat_interval)),
+            "speed_divisor": max(1.0, float(args.speed_divisor)),
+        }
+        if colors:
+            ripple_kwargs["colors"] = colors
+        ripple_config = BeatRippleConfig(**ripple_kwargs)
+        logs, summary = run_live_beat_ripple_to_ledfx(
+            adapter=adapter,
+            duration_seconds=args.duration,
+            sample_rate=args.sample_rate,
+            channels=args.channels,
+            device=args.device,
+            frame_size=args.frame_size,
+            hop_size=args.hop_size,
+            telemetry_interval_seconds=max(0.1, float(args.heartbeat_seconds)),
+            blocksize=args.blocksize,
+            ripple_config=ripple_config,
         )
         if args.jsonl:
             args.jsonl.parent.mkdir(parents=True, exist_ok=True)

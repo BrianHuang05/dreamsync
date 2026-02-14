@@ -19,5 +19,6 @@ def transform_intent(intent: LightingIntent, role: DeviceRole) -> LightingIntent
             intensity=intent.intensity * 0.6,
             speed=min(intent.speed, 0.25),
             bpm=intent.bpm,
+            color=intent.color,
         )
     return intent
