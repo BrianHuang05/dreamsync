@@ -8,7 +8,7 @@ from .audio.system_input import list_input_devices
 from .director import EffectMode, LightingIntent
 from .basic_controller import BeatFlashConfig, BeatRippleConfig
 from .live import run_live_beat_flash_to_ledfx, run_live_beat_ripple_to_ledfx, run_live_input_to_ledfx, run_live_to_govee
-from .output.govee_lan import GoveeLanAdapter, GoveeLanConfig, MultiGoveeLanAdapter, parse_device_spec
+from .output.govee_lan import GoveeLanAdapter, GoveeLanConfig, MultiGoveeLanAdapter, TransportMode, parse_device_spec
 from .render import RenderMode, SegmentRenderer
 from .output.ledfx import LedFxConfig, LedFxOutputAdapter, MultiLedFxOutputAdapter
 from .output.roles import DeviceRole
@@ -431,8 +431,10 @@ def build_parser() -> argparse.ArgumentParser:
     govee_test.add_argument("--fps", type=int, default=30, help="Frame rate.")
     govee_test.add_argument("--brightness", type=float, default=1.0, help="Global brightness (0-1).")
     govee_test.add_argument(
-        "--no-razer", action="store_true",
-        help="Use colorwc fallback instead of razer packets (for devices without DreamView).",
+        "--transport",
+        choices=["razer", "ptreal", "colorwc"],
+        default="ptreal",
+        help="Transport protocol: razer (DreamView), ptreal (BLE-over-LAN per-segment), colorwc (whole-strip fallback). Default: ptreal.",
     )
 
     govee_live = sub.add_parser(
@@ -496,8 +498,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write live run logs to JSONL path (defaults to stdout).",
     )
     govee_live.add_argument(
-        "--no-razer", action="store_true",
-        help="Use colorwc fallback instead of razer packets (for devices without DreamView).",
+        "--transport",
+        choices=["razer", "ptreal", "colorwc"],
+        default="ptreal",
+        help="Transport protocol: razer (DreamView), ptreal (BLE-over-LAN per-segment), colorwc (whole-strip fallback). Default: ptreal.",
     )
     govee_live.add_argument(
         "--half-time", action="store_true",
@@ -784,7 +788,7 @@ def main(argv: list[str] | None = None) -> int:
             segments=args.segments,
             fps=args.fps,
             brightness=max(0.0, min(1.0, float(args.brightness))),
-            use_razer=not args.no_razer,
+            transport=TransportMode(args.transport),
         )
         adapter = GoveeLanAdapter(config)
 
@@ -842,14 +846,19 @@ def main(argv: list[str] | None = None) -> int:
             from .output.govee_lan import GoveeDeviceSpec
             specs = [GoveeDeviceSpec(ip=args.device_ip, segments=args.segments)]
 
-        use_razer = not args.no_razer
-        # colorwc doesn't need high FPS — cap at 10 unless user overrode
-        effective_fps = fps if use_razer else min(fps, 10)
+        transport = TransportMode(args.transport)
+        # colorwc doesn't need high FPS; ptreal is heavier than razer
+        if transport == TransportMode.COLORWC:
+            effective_fps = min(fps, 10)
+        elif transport == TransportMode.PTREAL:
+            effective_fps = min(fps, 20)
+        else:
+            effective_fps = fps
         device_triples = []
         for spec in specs:
             config = GoveeLanConfig(
                 device_ip=spec.ip, segments=spec.segments, fps=effective_fps,
-                brightness=brightness, use_razer=use_razer,
+                brightness=brightness, transport=transport,
             )
             adapter = GoveeLanAdapter(config)
             renderer = SegmentRenderer(

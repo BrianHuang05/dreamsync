@@ -8,9 +8,16 @@ from dreamsync.output.govee_lan import (
     GoveeLanConfig,
     GoveeDeviceSpec,
     MultiGoveeLanAdapter,
+    TransportMode,
     build_razer_packet,
     build_razer_json,
     build_command_json,
+    build_ptreal_segment_packets,
+    build_ptreal_json,
+    build_ptreal_power_packet,
+    build_ptreal_brightness_packet,
+    _ptreal_checksum,
+    _segment_bitmask,
     parse_device_spec,
     _xor_checksum,
     _parse_hex_color,
@@ -346,6 +353,176 @@ class GoveeLanAdapterEmitTests(unittest.TestCase):
         clock["t"] = 0.01
         self.assertFalse(adapter.emit(0.01, intent))
         self.assertEqual(len(sent), 1)
+
+
+class PtRealPacketTests(unittest.TestCase):
+    def test_segment_bitmask_single(self) -> None:
+        mask = _segment_bitmask([0])
+        self.assertEqual(mask[0], 0x01)
+        self.assertEqual(mask[1], 0x00)
+
+    def test_segment_bitmask_multi(self) -> None:
+        mask = _segment_bitmask([0, 1, 2, 8])
+        self.assertEqual(mask[0], 0x07)  # bits 0,1,2
+        self.assertEqual(mask[1], 0x01)  # bit 8
+
+    def test_segment_bitmask_all_15(self) -> None:
+        mask = _segment_bitmask(list(range(15)))
+        self.assertEqual(mask[0], 0xFF)  # bits 0-7
+        self.assertEqual(mask[1], 0x7F)  # bits 8-14
+
+    def test_ptreal_checksum(self) -> None:
+        packet = [0x33, 0x05, 0x15, 0x01] + [0x00] * 15
+        chk = _ptreal_checksum(packet)
+        expected = 0x33 ^ 0x05 ^ 0x15 ^ 0x01
+        self.assertEqual(chk, expected)
+
+    def test_segment_packet_length(self) -> None:
+        packets = build_ptreal_segment_packets([(255, 0, 0)] * 3)
+        self.assertEqual(len(packets), 1)  # all same color → 1 packet
+        self.assertEqual(len(packets[0]), 20)
+
+    def test_segment_packet_header(self) -> None:
+        packets = build_ptreal_segment_packets([(255, 0, 0)])
+        pkt = packets[0]
+        self.assertEqual(pkt[0], 0x33)
+        self.assertEqual(pkt[1], 0x05)
+        self.assertEqual(pkt[2], 0x15)
+        self.assertEqual(pkt[3], 0x01)
+        self.assertEqual(pkt[4], 255)  # R
+        self.assertEqual(pkt[5], 0)    # G
+        self.assertEqual(pkt[6], 0)    # B
+
+    def test_segment_packet_bitmask(self) -> None:
+        # 3 segments all red → one packet with bitmask for 0,1,2
+        packets = build_ptreal_segment_packets([(255, 0, 0)] * 3)
+        pkt = packets[0]
+        self.assertEqual(pkt[12], 0x07)  # bits 0,1,2 set
+
+    def test_segment_packet_groups_by_color(self) -> None:
+        # 5 segments: red, blue, red, blue, red
+        colors = [(255, 0, 0), (0, 0, 255), (255, 0, 0), (0, 0, 255), (255, 0, 0)]
+        packets = build_ptreal_segment_packets(colors)
+        self.assertEqual(len(packets), 2)  # red + blue
+
+    def test_segment_packet_checksum_valid(self) -> None:
+        packets = build_ptreal_segment_packets([(128, 64, 32)] * 5)
+        pkt = list(packets[0])
+        expected_chk = 0
+        for b in pkt[:19]:
+            expected_chk ^= b
+        self.assertEqual(pkt[19], expected_chk)
+
+    def test_power_packet(self) -> None:
+        pkt = build_ptreal_power_packet(True)
+        self.assertEqual(len(pkt), 20)
+        self.assertEqual(pkt[0], 0x33)
+        self.assertEqual(pkt[1], 0x01)
+        self.assertEqual(pkt[2], 0x01)
+
+        pkt_off = build_ptreal_power_packet(False)
+        self.assertEqual(pkt_off[2], 0x00)
+
+    def test_brightness_packet(self) -> None:
+        pkt = build_ptreal_brightness_packet(75)
+        self.assertEqual(len(pkt), 20)
+        self.assertEqual(pkt[0], 0x33)
+        self.assertEqual(pkt[1], 0x04)
+        self.assertEqual(pkt[2], 75)
+
+    def test_brightness_clamped(self) -> None:
+        pkt = build_ptreal_brightness_packet(150)
+        self.assertEqual(pkt[2], 100)
+
+    def test_ptreal_json_structure(self) -> None:
+        packets = build_ptreal_segment_packets([(255, 0, 0)] * 3)
+        payload = build_ptreal_json(packets)
+        parsed = json.loads(payload)
+        self.assertEqual(parsed["msg"]["cmd"], "ptReal")
+        self.assertIn("command", parsed["msg"]["data"])
+        commands = parsed["msg"]["data"]["command"]
+        self.assertEqual(len(commands), 1)
+        # Verify base64 roundtrip
+        decoded = base64.b64decode(commands[0])
+        self.assertEqual(len(decoded), 20)
+
+    def test_ptreal_json_multi_packet(self) -> None:
+        colors = [(255, 0, 0), (0, 255, 0)]  # 2 colors → 2 packets
+        packets = build_ptreal_segment_packets(colors)
+        payload = build_ptreal_json(packets)
+        parsed = json.loads(payload)
+        self.assertEqual(len(parsed["msg"]["data"]["command"]), 2)
+
+
+class AdapterPtRealTests(unittest.TestCase):
+    def _make_adapter(self, sent: list, segments: int = 5) -> GoveeLanAdapter:
+        clock = {"t": 0.0}
+
+        def _transport(payload: bytes, ip: str, port: int) -> None:
+            sent.append((payload, ip, port))
+
+        def _monotonic() -> float:
+            return clock["t"]
+
+        return GoveeLanAdapter(
+            GoveeLanConfig(
+                device_ip="192.168.1.100", segments=segments,
+                transport=TransportMode.PTREAL,
+            ),
+            transport=_transport,
+            monotonic_fn=_monotonic,
+        )
+
+    def test_send_frame_uses_ptreal(self) -> None:
+        sent: list = []
+        adapter = self._make_adapter(sent)
+        adapter.send_frame([(255, 0, 0)] * 5)
+
+        parsed = json.loads(sent[0][0])
+        self.assertEqual(parsed["msg"]["cmd"], "ptReal")
+        commands = parsed["msg"]["data"]["command"]
+        self.assertEqual(len(commands), 1)  # all same color
+
+    def test_send_frame_multi_color(self) -> None:
+        sent: list = []
+        adapter = self._make_adapter(sent, segments=3)
+        adapter.send_frame([(255, 0, 0), (0, 255, 0), (0, 0, 255)])
+
+        parsed = json.loads(sent[0][0])
+        commands = parsed["msg"]["data"]["command"]
+        self.assertEqual(len(commands), 3)  # 3 distinct colors
+
+    def test_turn_on_ptreal(self) -> None:
+        sent: list = []
+        adapter = self._make_adapter(sent)
+        adapter.turn_on()
+
+        parsed = json.loads(sent[0][0])
+        self.assertEqual(parsed["msg"]["cmd"], "ptReal")
+        pkt = base64.b64decode(parsed["msg"]["data"]["command"][0])
+        self.assertEqual(pkt[0], 0x33)
+        self.assertEqual(pkt[1], 0x01)
+        self.assertEqual(pkt[2], 0x01)
+
+    def test_turn_off_ptreal(self) -> None:
+        sent: list = []
+        adapter = self._make_adapter(sent)
+        adapter.turn_off()
+
+        parsed = json.loads(sent[0][0])
+        pkt = base64.b64decode(parsed["msg"]["data"]["command"][0])
+        self.assertEqual(pkt[2], 0x00)
+
+    def test_set_brightness_ptreal(self) -> None:
+        sent: list = []
+        adapter = self._make_adapter(sent)
+        adapter.set_brightness(80)
+
+        parsed = json.loads(sent[0][0])
+        pkt = base64.b64decode(parsed["msg"]["data"]["command"][0])
+        self.assertEqual(pkt[0], 0x33)
+        self.assertEqual(pkt[1], 0x04)
+        self.assertEqual(pkt[2], 80)
 
 
 class ParseDeviceSpecTests(unittest.TestCase):
