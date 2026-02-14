@@ -77,3 +77,29 @@ class PlotCommandTests(unittest.TestCase):
         self.assertEqual(args.virtual_id, ["abc"])
         self.assertEqual(args.device, 2)
         self.assertEqual(args.jsonl, Path("out/ledfx_live.jsonl"))
+
+    def test_govee_live_single_device_ip(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            ["govee-live", "--device-ip", "192.168.1.23", "--segments", "10", "--duration", "30"]
+        )
+        self.assertEqual(args.command, "govee-live")
+        self.assertEqual(args.device_ip, "192.168.1.23")
+        self.assertEqual(args.segments, 10)
+        self.assertIsNone(args.govee_devices)
+
+    def test_govee_live_multi_device(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "govee-live",
+                "--device", "192.168.1.23:15",
+                "--device", "192.168.1.24:10:accent",
+                "--duration", "60",
+                "--render-mode", "pulse",
+            ]
+        )
+        self.assertEqual(args.command, "govee-live")
+        self.assertEqual(args.govee_devices, ["192.168.1.23:15", "192.168.1.24:10:accent"])
+        self.assertIsNone(args.device_ip)
+        self.assertEqual(args.render_mode, "pulse")

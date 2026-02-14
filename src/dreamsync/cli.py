@@ -7,7 +7,9 @@ from pathlib import Path
 from .audio.system_input import list_input_devices
 from .director import EffectMode, LightingIntent
 from .basic_controller import BeatFlashConfig, BeatRippleConfig
-from .live import run_live_beat_flash_to_ledfx, run_live_beat_ripple_to_ledfx, run_live_input_to_ledfx
+from .live import run_live_beat_flash_to_ledfx, run_live_beat_ripple_to_ledfx, run_live_input_to_ledfx, run_live_to_govee
+from .output.govee_lan import GoveeLanAdapter, GoveeLanConfig, MultiGoveeLanAdapter, parse_device_spec
+from .render import RenderMode, SegmentRenderer
 from .output.ledfx import LedFxConfig, LedFxOutputAdapter, MultiLedFxOutputAdapter
 from .output.roles import DeviceRole
 from .pipeline import capture_system_input_features_to_stream, extract_wav_features_to_stream
@@ -415,6 +417,93 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Write feature stream to JSONL path (defaults to stdout).",
     )
+    # -- Govee LAN direct commands ----------------------------------------
+    sub.add_parser("govee-scan", help="Scan for Govee devices on the local network.")
+
+    govee_test = sub.add_parser(
+        "govee-test",
+        help="Send a solid color to a Govee device over LAN for N seconds.",
+    )
+    govee_test.add_argument("--device-ip", required=True, help="Govee device IP address.")
+    govee_test.add_argument("--segments", type=int, default=15, help="Number of addressable segments.")
+    govee_test.add_argument("--color", type=str, default="#ff0000", help="Hex color to display.")
+    govee_test.add_argument("--duration", type=float, default=5.0, help="Duration in seconds.")
+    govee_test.add_argument("--fps", type=int, default=30, help="Frame rate.")
+    govee_test.add_argument("--brightness", type=float, default=1.0, help="Global brightness (0-1).")
+    govee_test.add_argument(
+        "--no-razer", action="store_true",
+        help="Use colorwc fallback instead of razer packets (for devices without DreamView).",
+    )
+
+    govee_live = sub.add_parser(
+        "govee-live",
+        help="Live audio → beat detection → renderer → Govee device (no LedFx).",
+    )
+    govee_device_group = govee_live.add_mutually_exclusive_group(required=True)
+    govee_device_group.add_argument("--device-ip", help="Govee device IP address (single device, use with --segments).")
+    govee_device_group.add_argument(
+        "--device",
+        action="append",
+        dest="govee_devices",
+        metavar="IP:SEGMENTS[:ROLE]",
+        help="Govee device spec (repeatable). Example: --device 192.168.1.23:15 --device 192.168.1.24:10:accent",
+    )
+    govee_live.add_argument("--segments", type=int, default=15, help="Number of addressable segments (used with --device-ip).")
+    govee_live.add_argument("--duration", type=float, required=True, help="Capture duration in seconds.")
+    govee_live.add_argument(
+        "--render-mode",
+        choices=["solid", "pulse", "scroll", "breathe"],
+        default="scroll",
+        help="Visual render mode.",
+    )
+    govee_live.add_argument("--fps", type=int, default=30, help="Frame rate.")
+    govee_live.add_argument("--brightness", type=float, default=1.0, help="Global brightness (0-1).")
+    govee_live.add_argument(
+        "--colors",
+        type=str,
+        default=None,
+        help="Comma-separated hex colors to cycle on each beat (e.g. '#ff0000,#00ff00,#0000ff').",
+    )
+    govee_live.add_argument(
+        "--mirror",
+        dest="mirror",
+        action="store_true",
+        default=True,
+        help="Scroll from center outward (default).",
+    )
+    govee_live.add_argument(
+        "--no-mirror",
+        dest="mirror",
+        action="store_false",
+        help="Scroll left-to-right instead of center-outward.",
+    )
+    govee_live.add_argument("--sample-rate", type=int, default=44100, help="Input sample rate.")
+    govee_live.add_argument("--channels", type=int, default=1, help="Input channel count.")
+    govee_live.add_argument("--audio-device", type=int, default=None, dest="audio_device", help="Optional input device id.")
+    govee_live.add_argument("--frame-size", type=int, default=2048, help="Frame size in samples.")
+    govee_live.add_argument("--hop-size", type=int, default=512, help="Hop size in samples.")
+    govee_live.add_argument("--blocksize", type=int, default=1024, help="PortAudio callback blocksize.")
+    govee_live.add_argument(
+        "--heartbeat-seconds",
+        type=float,
+        default=1.0,
+        help="Telemetry heartbeat period during live capture.",
+    )
+    govee_live.add_argument(
+        "--jsonl",
+        type=Path,
+        default=None,
+        help="Write live run logs to JSONL path (defaults to stdout).",
+    )
+    govee_live.add_argument(
+        "--no-razer", action="store_true",
+        help="Use colorwc fallback instead of razer packets (for devices without DreamView).",
+    )
+    govee_live.add_argument(
+        "--half-time", action="store_true",
+        help="Halve the detected BPM (fixes octave-doubled detection).",
+    )
+
     return parser
 
 
@@ -663,6 +752,141 @@ def main(argv: list[str] | None = None) -> int:
             telemetry_interval_seconds=max(0.1, float(args.heartbeat_seconds)),
             blocksize=args.blocksize,
             ripple_config=ripple_config,
+        )
+        if args.jsonl:
+            args.jsonl.parent.mkdir(parents=True, exist_ok=True)
+            with args.jsonl.open("w", encoding="utf-8") as f:
+                for item in logs:
+                    f.write(json.dumps(item, separators=(",", ":")) + "\n")
+        print(json.dumps(summary, separators=(",", ":")))
+        return 0
+
+    if args.command == "govee-scan":
+        from .output.discovery import scan_devices
+
+        print("Scanning for Govee devices (5 seconds)...")
+        devices = scan_devices(timeout=5.0)
+        if not devices:
+            print("No devices found.")
+        for dev in devices:
+            print(json.dumps(
+                {"ip": dev.ip, "sku": dev.sku, "device_id": dev.device_id},
+                separators=(",", ":"),
+            ))
+        print(json.dumps({"devices_found": len(devices)}, separators=(",", ":")))
+        return 0
+
+    if args.command == "govee-test":
+        import time
+
+        config = GoveeLanConfig(
+            device_ip=args.device_ip,
+            segments=args.segments,
+            fps=args.fps,
+            brightness=max(0.0, min(1.0, float(args.brightness))),
+            use_razer=not args.no_razer,
+        )
+        adapter = GoveeLanAdapter(config)
+
+        hex_color = args.color.lstrip("#")
+        r = int(hex_color[0:2], 16)
+        g = int(hex_color[2:4], 16)
+        b = int(hex_color[4:6], 16)
+        colors = [(r, g, b)] * args.segments
+
+        print(json.dumps(
+            {"device_ip": args.device_ip, "segments": args.segments,
+             "color": args.color, "duration": args.duration, "fps": args.fps},
+            separators=(",", ":"),
+        ))
+
+        # Activate: turn on + set brightness to 100
+        adapter.turn_on()
+        adapter.set_brightness(100)
+        time.sleep(0.1)
+
+        # Stream solid color frames
+        end_time = time.monotonic() + args.duration
+        frames_sent = 0
+        while time.monotonic() < end_time:
+            if adapter.send_frame(colors):
+                frames_sent += 1
+            time.sleep(0.005)  # small sleep to avoid busy-waiting
+
+        time.sleep(0.3)
+        adapter.turn_off()
+        print(json.dumps(
+            {"frames_sent": frames_sent, "done": True},
+            separators=(",", ":"),
+        ))
+        return 0
+
+    if args.command == "govee-live":
+        render_mode = RenderMode(args.render_mode)
+        brightness = max(0.0, min(1.0, float(args.brightness)))
+        fps = args.fps
+        mirror = args.mirror
+
+        colors = None
+        if args.colors:
+            colors = tuple(c.strip() for c in args.colors.split(","))
+        ripple_kwargs: dict = {}
+        if colors:
+            ripple_kwargs["colors"] = colors
+        ripple_config = BeatRippleConfig(**ripple_kwargs)
+
+        # Build device list from --device specs or legacy --device-ip/--segments
+        if args.govee_devices:
+            specs = [parse_device_spec(s) for s in args.govee_devices]
+        else:
+            from .output.govee_lan import GoveeDeviceSpec
+            specs = [GoveeDeviceSpec(ip=args.device_ip, segments=args.segments)]
+
+        use_razer = not args.no_razer
+        # colorwc doesn't need high FPS — cap at 10 unless user overrode
+        effective_fps = fps if use_razer else min(fps, 10)
+        device_triples = []
+        for spec in specs:
+            config = GoveeLanConfig(
+                device_ip=spec.ip, segments=spec.segments, fps=effective_fps,
+                brightness=brightness, use_razer=use_razer,
+            )
+            adapter = GoveeLanAdapter(config)
+            renderer = SegmentRenderer(
+                segments=spec.segments, mode=render_mode, mirror=mirror,
+            )
+            device_triples.append((adapter, renderer, spec.role))
+
+        multi_adapter = MultiGoveeLanAdapter(device_triples)
+
+        device_info = [
+            {"ip": s.ip, "segments": s.segments, "role": s.role.value}
+            for s in specs
+        ]
+        print(json.dumps(
+            {
+                "devices": device_info,
+                "render_mode": args.render_mode,
+                "fps": fps,
+                "brightness": brightness,
+                "mirror": mirror,
+                "duration": args.duration,
+            },
+            separators=(",", ":"),
+        ))
+
+        logs, summary = run_live_to_govee(
+            multi_adapter=multi_adapter,
+            duration_seconds=args.duration,
+            sample_rate=args.sample_rate,
+            channels=args.channels,
+            device=args.audio_device,
+            frame_size=args.frame_size,
+            hop_size=args.hop_size,
+            telemetry_interval_seconds=max(0.1, float(args.heartbeat_seconds)),
+            blocksize=args.blocksize,
+            ripple_config=ripple_config,
+            half_time=args.half_time,
         )
         if args.jsonl:
             args.jsonl.parent.mkdir(parents=True, exist_ok=True)
