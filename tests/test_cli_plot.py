@@ -26,7 +26,7 @@ class PlotCommandTests(unittest.TestCase):
         )
         self.assertEqual(args.command, "ledfx-test")
         self.assertEqual(args.base_url, "http://127.0.0.1:8888")
-        self.assertEqual(args.virtual_id, "abc")
+        self.assertEqual(args.virtual_id, ["abc"])
         self.assertEqual(args.mode, "motion")
 
     def test_ledfx_replay_command_parses(self) -> None:
@@ -49,7 +49,7 @@ class PlotCommandTests(unittest.TestCase):
         self.assertEqual(args.command, "ledfx-replay")
         self.assertEqual(args.path, Path("song.wav"))
         self.assertEqual(args.base_url, "http://127.0.0.1:8888")
-        self.assertEqual(args.virtual_id, "abc")
+        self.assertEqual(args.virtual_id, ["abc"])
         self.assertTrue(args.realtime)
         self.assertEqual(args.max_events, 100)
         self.assertEqual(args.jsonl, Path("out/ledfx_replay.jsonl"))
@@ -74,6 +74,6 @@ class PlotCommandTests(unittest.TestCase):
         self.assertEqual(args.command, "ledfx-live")
         self.assertEqual(args.duration, 15.0)
         self.assertEqual(args.base_url, "http://127.0.0.1:8888")
-        self.assertEqual(args.virtual_id, "abc")
+        self.assertEqual(args.virtual_id, ["abc"])
         self.assertEqual(args.device, 2)
         self.assertEqual(args.jsonl, Path("out/ledfx_live.jsonl"))

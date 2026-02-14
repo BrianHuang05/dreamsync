@@ -8,10 +8,49 @@ from .audio.system_input import list_input_devices
 from .director import EffectMode, LightingIntent
 from .basic_controller import BeatFlashConfig
 from .live import run_live_beat_flash_to_ledfx, run_live_input_to_ledfx
-from .output.ledfx import LedFxConfig, LedFxOutputAdapter
+from .output.ledfx import LedFxConfig, LedFxOutputAdapter, MultiLedFxOutputAdapter
+from .output.roles import DeviceRole
 from .pipeline import capture_system_input_features_to_stream, extract_wav_features_to_stream
 from .replay import replay_wav_to_fake_output, replay_wav_to_ledfx_output
 from .visualize import render_feature_plot
+
+
+def _parse_virtual_id(spec: str) -> tuple[str, DeviceRole]:
+    """Parse 'ID' or 'ID:ROLE' into (virtual_id, DeviceRole)."""
+    if ":" in spec:
+        vid, role_str = spec.rsplit(":", 1)
+        return vid, DeviceRole(role_str)
+    return spec, DeviceRole.PRIMARY
+
+
+def _build_adapter(
+    args: argparse.Namespace,
+    *,
+    min_interval: float | None = None,
+    timeout_seconds: float | None = None,
+    debug: bool = False,
+) -> LedFxOutputAdapter | MultiLedFxOutputAdapter:
+    """Build a single or multi-device adapter from --virtual-id args."""
+    parsed = [_parse_virtual_id(spec) for spec in args.virtual_id]
+    interval = min_interval if min_interval is not None else 0.3
+    timeout = timeout_seconds if timeout_seconds is not None else 3.0
+
+    devices: list[tuple[LedFxOutputAdapter, DeviceRole]] = []
+    for vid, role in parsed:
+        adapter = LedFxOutputAdapter(
+            LedFxConfig(
+                base_url=args.base_url,
+                virtual_id=vid,
+                min_update_interval_seconds=interval,
+                timeout_seconds=timeout,
+                debug=debug,
+            )
+        )
+        devices.append((adapter, role))
+
+    if len(devices) == 1:
+        return devices[0][0]
+    return MultiLedFxOutputAdapter(devices)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -51,7 +90,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     ledfx_test = sub.add_parser("ledfx-test", help="Send one test intent to LedFx.")
     ledfx_test.add_argument("--base-url", required=True, help="LedFx base URL, e.g. http://127.0.0.1:8888")
-    ledfx_test.add_argument("--virtual-id", required=True, help="LedFx virtual id.")
+    ledfx_test.add_argument(
+        "--virtual-id",
+        action="append",
+        required=True,
+        metavar="ID[:ROLE]",
+        help="LedFx virtual id (optionally with :primary or :accent role). Repeatable.",
+    )
     ledfx_test.add_argument(
         "--mode",
         choices=["ambient", "pulse", "motion"],
@@ -68,7 +113,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ledfx_replay.add_argument("path", type=Path, help="Path to WAV file.")
     ledfx_replay.add_argument("--base-url", required=True, help="LedFx base URL, e.g. http://127.0.0.1:8888")
-    ledfx_replay.add_argument("--virtual-id", required=True, help="LedFx virtual id.")
+    ledfx_replay.add_argument(
+        "--virtual-id",
+        action="append",
+        required=True,
+        metavar="ID[:ROLE]",
+        help="LedFx virtual id (optionally with :primary or :accent role). Repeatable.",
+    )
     ledfx_replay.add_argument("--frame-size", type=int, default=2048, help="Frame size in samples.")
     ledfx_replay.add_argument("--hop-size", type=int, default=512, help="Hop size in samples.")
     ledfx_replay.add_argument(
@@ -107,7 +158,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ledfx_live.add_argument("--duration", type=float, required=True, help="Capture duration in seconds.")
     ledfx_live.add_argument("--base-url", required=True, help="LedFx base URL, e.g. http://127.0.0.1:8888")
-    ledfx_live.add_argument("--virtual-id", required=True, help="LedFx virtual id.")
+    ledfx_live.add_argument(
+        "--virtual-id",
+        action="append",
+        required=True,
+        metavar="ID[:ROLE]",
+        help="LedFx virtual id (optionally with :primary or :accent role). Repeatable.",
+    )
     ledfx_live.add_argument("--sample-rate", type=int, default=44100, help="Input sample rate.")
     ledfx_live.add_argument("--channels", type=int, default=1, help="Input channel count.")
     ledfx_live.add_argument("--device", type=int, default=None, help="Optional input device id.")
@@ -163,7 +220,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ledfx_beat.add_argument("--duration", type=float, required=True, help="Capture duration in seconds.")
     ledfx_beat.add_argument("--base-url", required=True, help="LedFx base URL, e.g. http://127.0.0.1:8888")
-    ledfx_beat.add_argument("--virtual-id", required=True, help="LedFx virtual id.")
+    ledfx_beat.add_argument(
+        "--virtual-id",
+        action="append",
+        required=True,
+        metavar="ID[:ROLE]",
+        help="LedFx virtual id (optionally with :primary or :accent role). Repeatable.",
+    )
     ledfx_beat.add_argument("--sample-rate", type=int, default=44100, help="Input sample rate.")
     ledfx_beat.add_argument("--channels", type=int, default=1, help="Input channel count.")
     ledfx_beat.add_argument("--device", type=int, default=None, help="Optional input device id.")
@@ -311,19 +374,20 @@ def main(argv: list[str] | None = None) -> int:
             speed=max(0.0, min(1.0, float(args.speed))),
             bpm=max(0.0, float(args.bpm)),
         )
-        adapter = LedFxOutputAdapter(LedFxConfig(base_url=args.base_url, virtual_id=args.virtual_id))
+        adapter = _build_adapter(args)
         sent = adapter.emit(0.0, intent)
-        print(json.dumps({"sent": sent, "mode": intent.mode.value}, separators=(",", ":")))
+        devices = [_parse_virtual_id(s) for s in args.virtual_id]
+        print(json.dumps(
+            {"sent": sent, "mode": intent.mode.value, "devices": [{"id": v, "role": r.value} for v, r in devices]},
+            separators=(",", ":"),
+        ))
         return 0
 
     if args.command == "ledfx-replay":
-        adapter = LedFxOutputAdapter(
-            LedFxConfig(
-                base_url=args.base_url,
-                virtual_id=args.virtual_id,
-                min_update_interval_seconds=max(0.0, float(args.min_interval)),
-                timeout_seconds=max(0.1, float(args.timeout_seconds)),
-            )
+        adapter = _build_adapter(
+            args,
+            min_interval=max(0.0, float(args.min_interval)),
+            timeout_seconds=max(0.1, float(args.timeout_seconds)),
         )
         logs = replay_wav_to_ledfx_output(
             args.path,
@@ -389,18 +453,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "ledfx-live":
         if args.debug_ledfx:
             logging.basicConfig(level=logging.INFO)
-        adapter = LedFxOutputAdapter(
-            LedFxConfig(
-                base_url=args.base_url,
-                virtual_id=args.virtual_id,
-                min_update_interval_seconds=max(0.0, float(args.min_interval)),
-                timeout_seconds=max(0.1, float(args.timeout_seconds)),
-                debug=bool(args.debug_ledfx),
-            )
+        adapter = _build_adapter(
+            args,
+            min_interval=max(0.0, float(args.min_interval)),
+            timeout_seconds=max(0.1, float(args.timeout_seconds)),
+            debug=bool(args.debug_ledfx),
         )
         if args.force_stop:
             adapter.clear_effect()
-            print(json.dumps({"force_stop": True, "virtual_id": args.virtual_id}, separators=(",", ":")))
+            devices = [_parse_virtual_id(s) for s in args.virtual_id]
+            print(json.dumps(
+                {"force_stop": True, "devices": [{"id": v, "role": r.value} for v, r in devices]},
+                separators=(",", ":"),
+            ))
         logs, summary = run_live_input_to_ledfx(
             adapter=adapter,
             duration_seconds=args.duration,
@@ -426,18 +491,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "ledfx-beat":
         if args.debug_ledfx:
             logging.basicConfig(level=logging.INFO)
-        adapter = LedFxOutputAdapter(
-            LedFxConfig(
-                base_url=args.base_url,
-                virtual_id=args.virtual_id,
-                min_update_interval_seconds=max(0.0, float(args.min_interval)),
-                timeout_seconds=max(0.1, float(args.timeout_seconds)),
-                debug=bool(args.debug_ledfx),
-            )
+        adapter = _build_adapter(
+            args,
+            min_interval=max(0.0, float(args.min_interval)),
+            timeout_seconds=max(0.1, float(args.timeout_seconds)),
+            debug=bool(args.debug_ledfx),
         )
         if args.force_stop:
             adapter.clear_effect()
-            print(json.dumps({"force_stop": True, "virtual_id": args.virtual_id}, separators=(",", ":")))
+            devices = [_parse_virtual_id(s) for s in args.virtual_id]
+            print(json.dumps(
+                {"force_stop": True, "devices": [{"id": v, "role": r.value} for v, r in devices]},
+                separators=(",", ":"),
+            ))
         flash_config = BeatFlashConfig(
             flash_intensity=max(0.0, min(1.0, float(args.flash_intensity))),
             idle_intensity=max(0.0, min(1.0, float(args.idle_intensity))),

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from dreamsync.director import EffectMode, LightingIntent
+from dreamsync.output.roles import DeviceRole, transform_intent
 
 _logger = logging.getLogger(__name__)
 
@@ -124,3 +125,22 @@ class LedFxOutputAdapter:
         self._delete(self._endpoint(), self.config.timeout_seconds)
         self._last_payload_key = ""
         self._last_sent_at = -1e9
+
+
+class MultiLedFxOutputAdapter:
+    """Wraps multiple LedFxOutputAdapters, each with a DeviceRole."""
+
+    def __init__(self, devices: list[tuple[LedFxOutputAdapter, DeviceRole]]):
+        self.devices = devices
+
+    def emit(self, t: float, intent: LightingIntent) -> bool:
+        any_sent = False
+        for adapter, role in self.devices:
+            device_intent = transform_intent(intent, role)
+            if adapter.emit(t, device_intent):
+                any_sent = True
+        return any_sent
+
+    def clear_effect(self) -> None:
+        for adapter, _ in self.devices:
+            adapter.clear_effect()

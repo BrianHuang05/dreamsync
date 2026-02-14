@@ -54,6 +54,12 @@ $body = @{
 Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8888/api/virtuals/$vid/effects" -ContentType "application/json" -Body $body
 ```
 
+Optional: clear any existing effect so you know who is controlling the virtual:
+
+```powershell
+Invoke-RestMethod -Method Delete -Uri "http://127.0.0.1:8888/api/virtuals/$vid/effects"
+```
+
 ## 5. Validate with DreamSync D3.1 smoke command
 
 ```powershell
@@ -70,6 +76,7 @@ python -m dreamsync ledfx-test --base-url http://127.0.0.1:8888 --virtual-id <YO
 - `connection refused`: LedFx is not running, or host/port is wrong.
 - `404` / invalid virtual: `virtual_id` is wrong.
 - No visible change: virtual is inactive or misconfigured in LedFx UI.
+- Still reactive when the script is stopped: LedFx is running an effect on the virtual; clear it with the DELETE call above or run DreamSync with `--force-stop` (default).
 
 ## References
 - LedFx API docs: `https://docs.ledfx.app/en/latest/apis/api.html`
