@@ -428,11 +428,20 @@ class PtRealPacketTests(unittest.TestCase):
         self.assertEqual(len(pkt), 20)
         self.assertEqual(pkt[0], 0x33)
         self.assertEqual(pkt[1], 0x04)
-        self.assertEqual(pkt[2], 75)
+        # 75% of 255 = 191
+        self.assertEqual(pkt[2], 191)
+
+    def test_brightness_100_maps_to_255(self) -> None:
+        pkt = build_ptreal_brightness_packet(100)
+        self.assertEqual(pkt[2], 255)
+
+    def test_brightness_0_maps_to_0(self) -> None:
+        pkt = build_ptreal_brightness_packet(0)
+        self.assertEqual(pkt[2], 0)
 
     def test_brightness_clamped(self) -> None:
         pkt = build_ptreal_brightness_packet(150)
-        self.assertEqual(pkt[2], 100)
+        self.assertEqual(pkt[2], 255)
 
     def test_ptreal_json_structure(self) -> None:
         packets = build_ptreal_segment_packets([(255, 0, 0)] * 3)
@@ -522,7 +531,8 @@ class AdapterPtRealTests(unittest.TestCase):
         pkt = base64.b64decode(parsed["msg"]["data"]["command"][0])
         self.assertEqual(pkt[0], 0x33)
         self.assertEqual(pkt[1], 0x04)
-        self.assertEqual(pkt[2], 80)
+        # 80% of 255 = 204
+        self.assertEqual(pkt[2], 204)
 
 
 class ParseDeviceSpecTests(unittest.TestCase):

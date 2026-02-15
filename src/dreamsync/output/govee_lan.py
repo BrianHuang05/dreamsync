@@ -168,8 +168,13 @@ def build_ptreal_power_packet(on: bool) -> bytes:
 
 
 def build_ptreal_brightness_packet(value: int) -> bytes:
-    """Build a ptReal global brightness packet: ``33 04 XX``."""
-    packet = [0x33, 0x04, max(0, min(100, value))] + [0x00] * 16
+    """Build a ptReal global brightness packet: ``33 04 XX``.
+
+    *value* is a percentage 0-100.  The BLE protocol byte uses a 0-255
+    raw scale, so we convert internally.
+    """
+    raw = max(0, min(255, int(value * 255 / 100)))
+    packet = [0x33, 0x04, raw] + [0x00] * 16
     packet.append(_ptreal_checksum(packet))
     return bytes(packet)
 
