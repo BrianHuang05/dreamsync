@@ -804,10 +804,12 @@ def main(argv: list[str] | None = None) -> int:
             separators=(",", ":"),
         ))
 
-        # Activate: turn on + set brightness to 100
+        # Activate: turn on + set brightness to 100 (with delays so
+        # the device processes power-on before receiving color data)
         adapter.turn_on()
+        time.sleep(0.8)
         adapter.set_brightness(100)
-        time.sleep(0.1)
+        time.sleep(0.3)
 
         # Stream solid color frames
         end_time = time.monotonic() + args.duration

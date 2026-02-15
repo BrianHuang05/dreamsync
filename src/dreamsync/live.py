@@ -703,9 +703,8 @@ def run_live_to_govee(
     last_print = started_at
     window, bass_mask = _prepare_bass_window(frame_size, sample_rate)
 
-    # Activate all devices
+    # Activate all devices (activate() includes its own delays)
     multi_adapter.activate(brightness=100)
-    time.sleep(0.1)
 
     with sd.InputStream(
         samplerate=sample_rate,

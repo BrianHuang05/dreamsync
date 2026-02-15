@@ -125,16 +125,28 @@ class SegmentRenderer:
                 # Shift everything one position outward (toward edges)
                 self._scroll_buf = [(0.0, 0.0, 0.0)] + self._scroll_buf[:-1]
 
-        # Inject new color at center on beat
+        # Inject new color at center on beat — fill a wider band so the
+        # pattern is visible on large segment counts.
         if beat:
             color = _parse_hex(intent.color) if intent.color else _DEFAULT_COLOR
-            self._scroll_buf[0] = (float(color[0]), float(color[1]), float(color[2]))
+            cf = (float(color[0]), float(color[1]), float(color[2]))
+            # Inject center + neighbors: ~20% of half-buffer, minimum 2 pixels
+            inject_width = max(2, half // 5)
+            for i in range(min(inject_width, half)):
+                self._scroll_buf[i] = cf
 
-        # Fade: attenuate by distance from center
-        fade_rate = 2.0
+        # Fade: gentle distance-based attenuation so outer pixels stay visible
+        # longer.  Fade increases with distance from center so nearby pixels
+        # barely dim while edges gradually darken.
+        base_fade_rate = 0.4
         faded: list[tuple[float, float, float]] = []
         for i, (rf, gf, bf) in enumerate(self._scroll_buf):
-            fade = math.exp(-fade_rate * dt) if i > 0 else 1.0
+            if i == 0:
+                fade = 1.0  # center never fades
+            else:
+                dist = i / max(1, half - 1)  # 0..1
+                rate = base_fade_rate * (0.3 + 0.7 * dist)
+                fade = math.exp(-rate * dt)
             faded.append((rf * fade, gf * fade, bf * fade))
         self._scroll_buf = faded
 

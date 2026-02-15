@@ -318,10 +318,17 @@ class MultiGoveeLanAdapter:
         self.devices = devices
 
     def activate(self, brightness: int = 100) -> None:
-        """Turn on all devices and set brightness."""
+        """Turn on all devices and set brightness.
+
+        Includes delays between commands so devices have time to process
+        power-on before receiving brightness and color data.
+        """
         for adapter, _renderer, _role in self.devices:
             adapter.turn_on()
+        time.sleep(0.8)
+        for adapter, _renderer, _role in self.devices:
             adapter.set_brightness(brightness)
+        time.sleep(0.3)
 
     def send_frame(
         self, t: float, intent: LightingIntent, beat: bool = False
