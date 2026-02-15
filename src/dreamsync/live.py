@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import time
 from collections import Counter, deque
 from typing import Any
@@ -654,6 +655,7 @@ def run_live_to_govee(
     blocksize: int = 1024,
     ripple_config: BeatRippleConfig | None = None,
     half_time: bool = False,
+    max_brightness: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Audio capture → beat detection → renderer → Govee UDP streaming.
 
@@ -743,7 +745,10 @@ def run_live_to_govee(
 
             # Render and send a frame on every tick (animation-driven)
             if last_intent is not None:
-                sent = multi_adapter.send_frame(elapsed, last_intent, beat=beat_this_tick)
+                frame_intent = last_intent
+                if max_brightness:
+                    frame_intent = dataclasses.replace(frame_intent, intensity=1.0)
+                sent = multi_adapter.send_frame(elapsed, frame_intent, beat=beat_this_tick)
                 if sent:
                     sent_count += 1
                 logs.append(

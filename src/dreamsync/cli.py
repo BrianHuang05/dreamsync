@@ -507,6 +507,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--half-time", action="store_true",
         help="Halve the detected BPM (fixes octave-doubled detection).",
     )
+    govee_live.add_argument(
+        "--max-brightness", action="store_true",
+        help="Force all frames to full intensity (overrides Director dynamics).",
+    )
 
     return parser
 
@@ -898,6 +902,7 @@ def main(argv: list[str] | None = None) -> int:
             blocksize=args.blocksize,
             ripple_config=ripple_config,
             half_time=args.half_time,
+            max_brightness=args.max_brightness,
         )
         if args.jsonl:
             args.jsonl.parent.mkdir(parents=True, exist_ok=True)
