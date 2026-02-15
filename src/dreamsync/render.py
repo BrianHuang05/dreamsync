@@ -135,10 +135,11 @@ class SegmentRenderer:
             for i in range(min(inject_width, half)):
                 self._scroll_buf[i] = cf
 
-        # Fade: gentle distance-based attenuation so outer pixels stay visible
-        # longer.  Fade increases with distance from center so nearby pixels
-        # barely dim while edges gradually darken.
-        base_fade_rate = 0.4
+        # Fade: distance-based attenuation tuned so a pixel reaches ~3%
+        # brightness by the time it scrolls to the strip edge (~3s at
+        # typical BPM).  Near-center pixels fade gently; edges fade faster
+        # to prevent accumulation.
+        base_fade_rate = 1.2
         faded: list[tuple[float, float, float]] = []
         for i, (rf, gf, bf) in enumerate(self._scroll_buf):
             if i == 0:
