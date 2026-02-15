@@ -29,8 +29,6 @@ class GoveeLanConfig:
     device_ip: str
     segments: int = 15
     fps: int = 30
-    variant: int = 0xFA  # dreamview
-    stretch: int = 0x01  # interpolate between segments
     port: int = GOVEE_COMMAND_PORT
     brightness: float = 1.0  # global brightness multiplier 0-1
     transport: TransportMode = TransportMode.RAZER
@@ -73,27 +71,49 @@ def _default_udp_transport(payload: bytes, ip: str, port: int) -> None:
 
 def build_razer_packet(
     colors: list[tuple[int, int, int]],
-    variant: int = 0xFA,
-    stretch: int = 0x01,
+    gradient: int = 0x01,
 ) -> bytes:
-    """Build the binary razer packet for per-segment color control.
+    """Build the binary razer/DreamView packet for per-LED color control.
 
-    Packet layout:
+    Packet layout (from OpenRGB / SignalRGB reverse engineering):
         Byte 0:    0xBB           magic
-        Byte 1:    0x00           reserved
-        Byte 2:    variant        0xFA=dreamview, 0x0E=chroma, 0x20=govee
-        Byte 3:    0xB0           reserved
-        Byte 4:    stretch        0x00=discrete, 0x01=interpolate
+        Byte 1:    size_hi        data payload size >> 8
+        Byte 2:    size_lo        data payload size & 0xFF
+        Byte 3:    0xB0           DreamView command
+        Byte 4:    gradient       0x00=discrete, 0x01=interpolate/stretch
         Byte 5:    count          number of RGB triplets
         Bytes 6+:  R,G,B, ...
         Last byte: XOR checksum of all preceding bytes
+
+    When *count* equals the device's LED count, every individual LED
+    can be controlled.  Use gradient=1 to interpolate smoothly when
+    sending fewer colors than LEDs.
     """
     count = len(colors)
-    header = bytes([0xBB, 0x00, variant, 0xB0, stretch, count])
+    data_size = 2 + (3 * count)  # gradient + count + RGB data
+    header = bytes([
+        0xBB,
+        (data_size >> 8) & 0xFF,
+        data_size & 0xFF,
+        0xB0,
+        gradient & 0xFF,
+        count & 0xFF,
+    ])
     rgb_data = b""
     for r, g, b in colors:
         rgb_data += bytes([r & 0xFF, g & 0xFF, b & 0xFF])
     body = header + rgb_data
+    checksum = _xor_checksum(body)
+    return body + bytes([checksum])
+
+
+def build_razer_activate_packet(enable: bool = True) -> bytes:
+    """Build the razer mode activation/deactivation packet.
+
+    Must be sent before any DreamView LED data.  The device reverts
+    to its previous mode if no LED data is received within 60 seconds.
+    """
+    body = bytes([0xBB, 0x00, 0x01, 0xB1, 0x01 if enable else 0x00])
     checksum = _xor_checksum(body)
     return body + bytes([checksum])
 
@@ -224,7 +244,7 @@ class GoveeLanAdapter:
 
         mode = self.config.transport
         if mode == TransportMode.RAZER:
-            packet = build_razer_packet(colors, self.config.variant, self.config.stretch)
+            packet = build_razer_packet(colors)
             payload = build_razer_json(packet)
         elif mode == TransportMode.PTREAL:
             packets = build_ptreal_segment_packets(colors)
@@ -246,8 +266,16 @@ class GoveeLanAdapter:
         else:
             payload = build_command_json("turn", {"value": 1})
         self._transport(payload, self.config.device_ip, self.config.port)
+        # Activate razer/DreamView mode after power-on
+        if self.config.transport == TransportMode.RAZER:
+            activate = build_razer_json(build_razer_activate_packet(True))
+            self._transport(activate, self.config.device_ip, self.config.port)
 
     def turn_off(self) -> None:
+        # Deactivate razer mode before power-off
+        if self.config.transport == TransportMode.RAZER:
+            deactivate = build_razer_json(build_razer_activate_packet(False))
+            self._transport(deactivate, self.config.device_ip, self.config.port)
         if self.config.transport == TransportMode.PTREAL:
             payload = build_ptreal_json([build_ptreal_power_packet(False)])
         else:

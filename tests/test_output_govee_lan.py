@@ -10,6 +10,7 @@ from dreamsync.output.govee_lan import (
     MultiGoveeLanAdapter,
     TransportMode,
     build_razer_packet,
+    build_razer_activate_packet,
     build_razer_json,
     build_command_json,
     build_ptreal_segment_packets,
@@ -43,14 +44,21 @@ class XorChecksumTests(unittest.TestCase):
 class BuildRazerPacketTests(unittest.TestCase):
     def test_header_structure(self) -> None:
         colors = [(255, 0, 0)]
-        packet = build_razer_packet(colors, variant=0xFA, stretch=0x01)
-
+        packet = build_razer_packet(colors)
+        # 1 color → data_size = 2 + 3*1 = 5
         self.assertEqual(packet[0], 0xBB)  # magic
-        self.assertEqual(packet[1], 0x00)  # reserved
-        self.assertEqual(packet[2], 0xFA)  # variant
-        self.assertEqual(packet[3], 0xB0)  # reserved
-        self.assertEqual(packet[4], 0x01)  # stretch
+        self.assertEqual(packet[1], 0x00)  # size_hi
+        self.assertEqual(packet[2], 0x05)  # size_lo
+        self.assertEqual(packet[3], 0xB0)  # DreamView command
+        self.assertEqual(packet[4], 0x01)  # gradient (default)
         self.assertEqual(packet[5], 1)     # count
+
+    def test_header_size_bytes_multi_color(self) -> None:
+        colors = [(0, 0, 0)] * 100
+        packet = build_razer_packet(colors)
+        # 100 colors → data_size = 2 + 300 = 302 = 0x012E
+        self.assertEqual(packet[1], 0x01)  # size_hi
+        self.assertEqual(packet[2], 0x2E)  # size_lo
 
     def test_rgb_data_follows_header(self) -> None:
         colors = [(255, 128, 0), (0, 255, 64)]
@@ -79,12 +87,8 @@ class BuildRazerPacketTests(unittest.TestCase):
             packet = build_razer_packet(colors)
             self.assertEqual(len(packet), 6 + 3 * n + 1)
 
-    def test_variant_byte_configurable(self) -> None:
-        packet = build_razer_packet([(0, 0, 0)], variant=0x0E)
-        self.assertEqual(packet[2], 0x0E)
-
-    def test_stretch_byte_configurable(self) -> None:
-        packet = build_razer_packet([(0, 0, 0)], stretch=0x00)
+    def test_gradient_configurable(self) -> None:
+        packet = build_razer_packet([(0, 0, 0)], gradient=0x00)
         self.assertEqual(packet[4], 0x00)
 
     def test_rgb_values_clamped_to_byte(self) -> None:
@@ -94,6 +98,24 @@ class BuildRazerPacketTests(unittest.TestCase):
         self.assertEqual(packet[6], 300 & 0xFF)
         self.assertEqual(packet[7], (-10) & 0xFF)
         self.assertEqual(packet[8], 256 & 0xFF)
+
+
+class BuildRazerActivatePacketTests(unittest.TestCase):
+    def test_activate_structure(self) -> None:
+        pkt = build_razer_activate_packet(True)
+        self.assertEqual(pkt[0], 0xBB)
+        self.assertEqual(pkt[1], 0x00)
+        self.assertEqual(pkt[2], 0x01)
+        self.assertEqual(pkt[3], 0xB1)
+        self.assertEqual(pkt[4], 0x01)
+        # Checksum is last byte
+        self.assertEqual(pkt[5], _xor_checksum(pkt[:-1]))
+        self.assertEqual(len(pkt), 6)
+
+    def test_deactivate_structure(self) -> None:
+        pkt = build_razer_activate_packet(False)
+        self.assertEqual(pkt[4], 0x00)
+        self.assertEqual(pkt[5], _xor_checksum(pkt[:-1]))
 
 
 class BuildRazerJsonTests(unittest.TestCase):
@@ -216,18 +238,33 @@ class GoveeLanAdapterFrameTests(unittest.TestCase):
         adapter = self._make_adapter(sent)
         adapter.turn_on()
 
+        # Default transport is RAZER: sends turn-on JSON + razer activate
+        self.assertEqual(len(sent), 2)
         parsed = json.loads(sent[0][0])
         self.assertEqual(parsed["msg"]["cmd"], "turn")
         self.assertEqual(parsed["msg"]["data"]["value"], 1)
+        # Second message: razer activation
+        parsed2 = json.loads(sent[1][0])
+        self.assertEqual(parsed2["msg"]["cmd"], "razer")
+        activate_pkt = base64.b64decode(parsed2["msg"]["data"]["pt"])
+        self.assertEqual(activate_pkt[3], 0xB1)
+        self.assertEqual(activate_pkt[4], 0x01)
 
     def test_turn_off(self) -> None:
         sent: list = []
         adapter = self._make_adapter(sent)
         adapter.turn_off()
 
-        parsed = json.loads(sent[0][0])
-        self.assertEqual(parsed["msg"]["cmd"], "turn")
-        self.assertEqual(parsed["msg"]["data"]["value"], 0)
+        # Default transport is RAZER: sends razer deactivate + turn-off JSON
+        self.assertEqual(len(sent), 2)
+        parsed0 = json.loads(sent[0][0])
+        self.assertEqual(parsed0["msg"]["cmd"], "razer")
+        deactivate_pkt = base64.b64decode(parsed0["msg"]["data"]["pt"])
+        self.assertEqual(deactivate_pkt[3], 0xB1)
+        self.assertEqual(deactivate_pkt[4], 0x00)
+        parsed1 = json.loads(sent[1][0])
+        self.assertEqual(parsed1["msg"]["cmd"], "turn")
+        self.assertEqual(parsed1["msg"]["data"]["value"], 0)
 
     def test_set_brightness(self) -> None:
         sent: list = []
@@ -645,17 +682,20 @@ class MultiGoveeLanAdapterTests(unittest.TestCase):
         ])
         multi.activate(brightness=80)
 
-        # Each device should have received turn_on + set_brightness
-        self.assertEqual(len(sent1), 2)
-        self.assertEqual(len(sent2), 2)
+        # Each device: turn_on JSON + razer activate + set_brightness
+        self.assertEqual(len(sent1), 3)
+        self.assertEqual(len(sent2), 3)
         # First message: turn on
         p1 = json.loads(sent1[0][0])
         self.assertEqual(p1["msg"]["cmd"], "turn")
         self.assertEqual(p1["msg"]["data"]["value"], 1)
-        # Second message: brightness
+        # Second message: razer activation
         p2 = json.loads(sent1[1][0])
-        self.assertEqual(p2["msg"]["cmd"], "brightness")
-        self.assertEqual(p2["msg"]["data"]["value"], 80)
+        self.assertEqual(p2["msg"]["cmd"], "razer")
+        # Third message: brightness
+        p3 = json.loads(sent1[2][0])
+        self.assertEqual(p3["msg"]["cmd"], "brightness")
+        self.assertEqual(p3["msg"]["data"]["value"], 80)
 
     def test_different_segment_counts_per_device(self) -> None:
         sent1: list = []
