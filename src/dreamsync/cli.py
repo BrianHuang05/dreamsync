@@ -436,6 +436,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="ptreal",
         help="Transport protocol: razer (DreamView), ptreal (BLE-over-LAN per-segment), colorwc (whole-strip fallback). Default: ptreal.",
     )
+    govee_test.add_argument(
+        "--pattern",
+        choices=["solid", "alternate", "rainbow", "walk"],
+        default="solid",
+        help="Test pattern: solid (one color), alternate (odd/even), rainbow (per-segment), walk (one segment at a time).",
+    )
 
     govee_live = sub.add_parser(
         "govee-live",
@@ -800,11 +806,26 @@ def main(argv: list[str] | None = None) -> int:
         r = int(hex_color[0:2], 16)
         g = int(hex_color[2:4], 16)
         b = int(hex_color[4:6], 16)
-        colors = [(r, g, b)] * args.segments
+
+        # Build color frame based on pattern
+        rainbow_palette = [
+            (255, 0, 0), (255, 127, 0), (255, 255, 0), (0, 255, 0),
+            (0, 255, 255), (0, 0, 255), (127, 0, 255),
+        ]
+        pattern = args.pattern
+        if pattern == "solid":
+            colors = [(r, g, b)] * args.segments
+        elif pattern == "alternate":
+            colors = [(r, g, b) if i % 2 == 0 else (0, 0, 0) for i in range(args.segments)]
+        elif pattern == "rainbow":
+            colors = [rainbow_palette[i % len(rainbow_palette)] for i in range(args.segments)]
+        else:
+            colors = [(0, 0, 0)] * args.segments  # walk starts black
 
         print(json.dumps(
             {"device_ip": args.device_ip, "segments": args.segments,
-             "color": args.color, "duration": args.duration, "fps": args.fps},
+             "color": args.color, "duration": args.duration, "fps": args.fps,
+             "pattern": pattern},
             separators=(",", ":"),
         ))
 
@@ -815,13 +836,27 @@ def main(argv: list[str] | None = None) -> int:
         adapter.set_brightness(100)
         time.sleep(0.3)
 
-        # Stream solid color frames
-        end_time = time.monotonic() + args.duration
-        frames_sent = 0
-        while time.monotonic() < end_time:
-            if adapter.send_frame(colors):
-                frames_sent += 1
-            time.sleep(0.005)  # small sleep to avoid busy-waiting
+        if pattern == "walk":
+            # Light one segment at a time, cycling through the strip
+            seg = 0
+            end_time = time.monotonic() + args.duration
+            frames_sent = 0
+            while time.monotonic() < end_time:
+                frame = [(0, 0, 0)] * args.segments
+                frame[seg] = rainbow_palette[seg % len(rainbow_palette)]
+                if adapter.send_frame(frame):
+                    frames_sent += 1
+                    print(f"  segment {seg}/{args.segments}: {frame[seg]}")
+                    seg = (seg + 1) % args.segments
+                time.sleep(0.3)
+        else:
+            # Stream static pattern
+            end_time = time.monotonic() + args.duration
+            frames_sent = 0
+            while time.monotonic() < end_time:
+                if adapter.send_frame(colors):
+                    frames_sent += 1
+                time.sleep(0.005)
 
         time.sleep(0.3)
         adapter.turn_off()
