@@ -12,6 +12,9 @@ class RenderMode(str, Enum):
     PULSE = "pulse"
     SCROLL = "scroll"
     BREATHE = "breathe"
+    STROBE = "strobe"
+    WAVE = "wave"
+    GRADIENT = "gradient"
 
 
 def _parse_hex(color: str) -> tuple[int, int, int]:
@@ -43,6 +46,15 @@ class SegmentRenderer:
     # Breathe state
     _breathe_phase: float = field(default=0.0, init=False, repr=False)
 
+    # Strobe state
+    _strobe_phase: float = field(default=0.0, init=False, repr=False)
+
+    # Wave state
+    _wave_phase: float = field(default=0.0, init=False, repr=False)
+
+    # Gradient state
+    _gradient_offset: float = field(default=0.0, init=False, repr=False)
+
     # Tracking
     _last_t: float = field(default=0.0, init=False, repr=False)
 
@@ -66,6 +78,12 @@ class SegmentRenderer:
             return self._render_breathe(intent, dt, params)
         elif self.mode == RenderMode.SCROLL:
             return self._render_scroll(intent, dt, beat, params)
+        elif self.mode == RenderMode.STROBE:
+            return self._render_strobe(intent, dt, beat, params)
+        elif self.mode == RenderMode.WAVE:
+            return self._render_wave(intent, dt, params)
+        elif self.mode == RenderMode.GRADIENT:
+            return self._render_gradient(intent, dt, params)
         return self._render_solid(intent)
 
     # -- Solid ---------------------------------------------------------------
@@ -187,3 +205,98 @@ class SegmentRenderer:
             )
             for r, g, b in full
         ]
+
+    # -- Strobe --------------------------------------------------------------
+
+    def _render_strobe(
+        self, intent: LightingIntent, dt: float, beat: bool,
+        params: dict | None = None,
+    ) -> list[tuple[int, int, int]]:
+        bpm = max(1.0, intent.bpm)
+        subdivision = params.get("strobe_subdivision", 4) if params else 4
+        freq = (bpm / 60.0) * subdivision
+
+        if beat:
+            self._strobe_phase = 0.0
+        else:
+            self._strobe_phase += freq * dt
+
+        on = (self._strobe_phase % 1.0) < 0.5
+
+        r, g, b = _parse_hex(intent.color) if intent.color else _DEFAULT_COLOR
+        if on:
+            level = max(0.0, min(1.0, intent.intensity))
+            pixel = (int(r * level), int(g * level), int(b * level))
+        else:
+            pixel = (0, 0, 0)
+        return [pixel] * self.segments
+
+    # -- Wave ----------------------------------------------------------------
+
+    def _render_wave(
+        self, intent: LightingIntent, dt: float,
+        params: dict | None = None,
+    ) -> list[tuple[int, int, int]]:
+        bpm = max(1.0, intent.bpm)
+        rate_mult = params.get("wave_rate_mult", 1.0) if params else 1.0
+        wavelength = params.get("wave_wavelength", 1.0) if params else 1.0
+        freq = (bpm / 60.0) * rate_mult
+
+        self._wave_phase += freq * dt
+
+        r, g, b = _parse_hex(intent.color) if intent.color else _DEFAULT_COLOR
+        intensity = max(0.0, min(1.0, intent.intensity))
+
+        result: list[tuple[int, int, int]] = []
+        for i in range(self.segments):
+            seg_pos = i / max(1, self.segments - 1) if self.segments > 1 else 0.0
+            seg_phase = self._wave_phase - seg_pos * wavelength
+            wave = (math.sin(2.0 * math.pi * seg_phase) + 1.0) / 2.0
+            level = wave * intensity
+            result.append((int(r * level), int(g * level), int(b * level)))
+        return result
+
+    # -- Gradient ------------------------------------------------------------
+
+    def _render_gradient(
+        self, intent: LightingIntent, dt: float,
+        params: dict | None = None,
+    ) -> list[tuple[int, int, int]]:
+        speed = params.get("gradient_speed", 0.1) if params else 0.1
+        colors_hex = params.get("gradient_colors", None) if params else None
+
+        self._gradient_offset += speed * dt
+
+        if colors_hex and len(colors_hex) >= 2:
+            colors = [_parse_hex(c) for c in colors_hex]
+        elif intent.color:
+            c = _parse_hex(intent.color)
+            colors = [c, (0, 0, 0)]
+        else:
+            colors = [_DEFAULT_COLOR, (0, 0, 0)]
+
+        intensity = max(0.0, min(1.0, intent.intensity))
+        n_colors = len(colors)
+
+        result: list[tuple[int, int, int]] = []
+        for i in range(self.segments):
+            pos = i / max(1, self.segments - 1) if self.segments > 1 else 0.0
+            if self._gradient_offset != 0.0:
+                pos = (pos + self._gradient_offset) % 1.0
+            scaled = pos * (n_colors - 1)
+            idx = int(scaled)
+            frac = scaled - idx
+            if idx >= n_colors - 1:
+                idx = n_colors - 2
+                frac = 1.0
+            c1 = colors[idx]
+            c2 = colors[idx + 1]
+            cr = c1[0] + (c2[0] - c1[0]) * frac
+            cg = c1[1] + (c2[1] - c1[1]) * frac
+            cb = c1[2] + (c2[2] - c1[2]) * frac
+            result.append((
+                int(max(0, min(255, cr * intensity))),
+                int(max(0, min(255, cg * intensity))),
+                int(max(0, min(255, cb * intensity))),
+            ))
+        return result

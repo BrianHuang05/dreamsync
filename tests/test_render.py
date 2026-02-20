@@ -284,5 +284,355 @@ class ScrollRenderTests(unittest.TestCase):
         self.assertGreater(frame[0][0], 0)
 
 
+class StrobeRenderTests(unittest.TestCase):
+    def test_strobe_on_at_beat(self) -> None:
+        renderer = SegmentRenderer(segments=5, mode=RenderMode.STROBE)
+        intent = LightingIntent(
+            mode=EffectMode.PULSE, intensity=1.0, speed=0.5, bpm=120.0,
+            color="#ff0000",
+        )
+        # On beat, phase resets to 0 → in first half of cycle → ON
+        frame = renderer.render(1.0, intent, beat=True)
+        for pixel in frame:
+            self.assertEqual(pixel, (255, 0, 0))
+
+    def test_strobe_alternates_on_off(self) -> None:
+        renderer = SegmentRenderer(segments=3, mode=RenderMode.STROBE)
+        intent = LightingIntent(
+            mode=EffectMode.PULSE, intensity=1.0, speed=0.5, bpm=120.0,
+            color="#ff0000",
+        )
+        # At 120 BPM, subdivision 4: freq = 2 * 4 = 8 Hz → period = 0.125s
+        # Beat at t=1.0 resets phase to 0
+        renderer.render(1.0, intent, beat=True)
+        # t=1.03125 → phase = 8 * 0.03125 = 0.25 (< 0.5 → ON)
+        frame_on = renderer.render(1.03125, intent, beat=False)
+        self.assertGreater(frame_on[0][0], 0)
+        # t=1.09375 → phase ≈ 8 * 0.09375 = 0.75 (>= 0.5 → OFF)
+        frame_off = renderer.render(1.09375, intent, beat=False)
+        self.assertEqual(frame_off[0], (0, 0, 0))
+
+    def test_strobe_correct_segment_count(self) -> None:
+        for n in [3, 5, 10]:
+            renderer = SegmentRenderer(segments=n, mode=RenderMode.STROBE)
+            intent = LightingIntent(
+                mode=EffectMode.PULSE, intensity=1.0, speed=0.5, bpm=120.0,
+                color="#ff0000",
+            )
+            frame = renderer.render(1.0, intent, beat=True)
+            self.assertEqual(len(frame), n)
+
+    def test_strobe_all_segments_same(self) -> None:
+        renderer = SegmentRenderer(segments=7, mode=RenderMode.STROBE)
+        intent = LightingIntent(
+            mode=EffectMode.PULSE, intensity=1.0, speed=0.5, bpm=120.0,
+            color="#00ff00",
+        )
+        frame = renderer.render(1.0, intent, beat=True)
+        for pixel in frame:
+            self.assertEqual(pixel, frame[0])
+
+    def test_strobe_respects_intensity(self) -> None:
+        renderer = SegmentRenderer(segments=3, mode=RenderMode.STROBE)
+        intent = LightingIntent(
+            mode=EffectMode.PULSE, intensity=0.5, speed=0.5, bpm=120.0,
+            color="#ff0000",
+        )
+        frame = renderer.render(1.0, intent, beat=True)
+        self.assertEqual(frame[0][0], 127)
+
+    def test_strobe_subdivision_param_override(self) -> None:
+        renderer = SegmentRenderer(segments=3, mode=RenderMode.STROBE)
+        intent = LightingIntent(
+            mode=EffectMode.PULSE, intensity=1.0, speed=0.5, bpm=120.0,
+            color="#ff0000",
+        )
+        # Subdivision 2: freq = 2 * 2 = 4 Hz → period = 0.25s
+        renderer.render(1.0, intent, beat=True)
+        # At t=1.0625 → phase = 4 * 0.0625 = 0.25 (< 0.5 → ON)
+        frame = renderer.render(1.0625, intent, beat=False, params={"strobe_subdivision": 2})
+        self.assertGreater(frame[0][0], 0)
+        # At t=1.1875 → phase = 4 * 0.1875 = 0.75 (>= 0.5 → OFF)
+        frame = renderer.render(1.1875, intent, beat=False, params={"strobe_subdivision": 2})
+        self.assertEqual(frame[0], (0, 0, 0))
+
+    def test_strobe_uses_default_color_when_none(self) -> None:
+        renderer = SegmentRenderer(segments=3, mode=RenderMode.STROBE)
+        intent = LightingIntent(
+            mode=EffectMode.PULSE, intensity=1.0, speed=0.5, bpm=120.0,
+        )
+        frame = renderer.render(1.0, intent, beat=True)
+        # Default warm white: (255, 180, 100)
+        self.assertEqual(frame[0], (255, 180, 100))
+
+
+class WaveRenderTests(unittest.TestCase):
+    def test_wave_correct_segment_count(self) -> None:
+        for n in [3, 5, 10]:
+            renderer = SegmentRenderer(segments=n, mode=RenderMode.WAVE)
+            intent = LightingIntent(
+                mode=EffectMode.AMBIENT, intensity=1.0, speed=0.2, bpm=60.0,
+                color="#ff0000",
+            )
+            frame = renderer.render(1.0, intent)
+            self.assertEqual(len(frame), n)
+
+    def test_wave_segments_differ(self) -> None:
+        renderer = SegmentRenderer(segments=7, mode=RenderMode.WAVE)
+        intent = LightingIntent(
+            mode=EffectMode.AMBIENT, intensity=1.0, speed=0.2, bpm=60.0,
+            color="#ff0000",
+        )
+        renderer.render(1.0, intent)  # init
+        frame = renderer.render(1.25, intent)
+        # Segments should NOT all be the same (spatial wave)
+        unique_values = set(pixel[0] for pixel in frame)
+        self.assertGreater(len(unique_values), 1, "Wave should produce varied brightness per segment")
+
+    def test_wave_oscillates_over_time(self) -> None:
+        renderer = SegmentRenderer(segments=5, mode=RenderMode.WAVE)
+        intent = LightingIntent(
+            mode=EffectMode.AMBIENT, intensity=1.0, speed=0.2, bpm=60.0,
+            color="#ff0000",
+        )
+        # Sample first segment over time
+        values = []
+        for i in range(20):
+            t = 1.0 + i * 0.05
+            frame = renderer.render(t, intent)
+            values.append(frame[0][0])
+        self.assertGreater(max(values), 100)
+        self.assertLess(min(values), 50)
+
+    def test_wave_respects_intensity(self) -> None:
+        r1 = SegmentRenderer(segments=5, mode=RenderMode.WAVE)
+        r2 = SegmentRenderer(segments=5, mode=RenderMode.WAVE)
+        intent_full = LightingIntent(
+            mode=EffectMode.AMBIENT, intensity=1.0, speed=0.2, bpm=60.0,
+            color="#ff0000",
+        )
+        intent_half = LightingIntent(
+            mode=EffectMode.AMBIENT, intensity=0.5, speed=0.2, bpm=60.0,
+            color="#ff0000",
+        )
+        r1.render(1.0, intent_full)
+        r2.render(1.0, intent_half)
+        f1 = r1.render(1.25, intent_full)
+        f2 = r2.render(1.25, intent_half)
+        # Half intensity should produce roughly half brightness
+        if f1[0][0] > 0:
+            ratio = f2[0][0] / f1[0][0]
+            self.assertAlmostEqual(ratio, 0.5, delta=0.05)
+
+    def test_wave_rate_mult_param(self) -> None:
+        r_fast = SegmentRenderer(segments=5, mode=RenderMode.WAVE)
+        r_slow = SegmentRenderer(segments=5, mode=RenderMode.WAVE)
+        intent = LightingIntent(
+            mode=EffectMode.AMBIENT, intensity=1.0, speed=0.2, bpm=120.0,
+            color="#ff0000",
+        )
+        r_fast.render(1.0, intent, params={"wave_rate_mult": 2.0})
+        r_slow.render(1.0, intent, params={"wave_rate_mult": 0.5})
+        f_fast = r_fast.render(1.2, intent, params={"wave_rate_mult": 2.0})
+        f_slow = r_slow.render(1.2, intent, params={"wave_rate_mult": 0.5})
+        # Different rates should produce different outputs for segment 0
+        self.assertNotEqual(f_fast[0], f_slow[0])
+
+    def test_wave_uses_default_color_when_none(self) -> None:
+        renderer = SegmentRenderer(segments=3, mode=RenderMode.WAVE)
+        intent = LightingIntent(
+            mode=EffectMode.AMBIENT, intensity=1.0, speed=0.2, bpm=60.0,
+        )
+        frame = renderer.render(1.0, intent)
+        # Should produce non-zero output using default color
+        total = sum(sum(p) for p in frame)
+        self.assertGreater(total, 0)
+
+    def test_wave_single_segment(self) -> None:
+        renderer = SegmentRenderer(segments=1, mode=RenderMode.WAVE)
+        intent = LightingIntent(
+            mode=EffectMode.AMBIENT, intensity=1.0, speed=0.2, bpm=60.0,
+            color="#ff0000",
+        )
+        frame = renderer.render(1.0, intent)
+        self.assertEqual(len(frame), 1)
+
+
+class GradientRenderTests(unittest.TestCase):
+    def test_gradient_correct_segment_count(self) -> None:
+        for n in [3, 5, 10]:
+            renderer = SegmentRenderer(segments=n, mode=RenderMode.GRADIENT)
+            intent = LightingIntent(
+                mode=EffectMode.AMBIENT, intensity=1.0, speed=0.2, bpm=60.0,
+                color="#ff0000",
+            )
+            frame = renderer.render(1.0, intent)
+            self.assertEqual(len(frame), n)
+
+    def test_gradient_with_colors_param(self) -> None:
+        renderer = SegmentRenderer(segments=5, mode=RenderMode.GRADIENT)
+        intent = LightingIntent(
+            mode=EffectMode.AMBIENT, intensity=1.0, speed=0.2, bpm=60.0,
+        )
+        params = {
+            "gradient_colors": ("#ff0000", "#0000ff"),
+            "gradient_speed": 0.0,  # no rotation
+        }
+        frame = renderer.render(1.0, intent, params=params)
+        # First segment should be red
+        self.assertEqual(frame[0], (255, 0, 0))
+        # Last segment should be blue
+        self.assertEqual(frame[4], (0, 0, 255))
+        # Middle segment should be a blend
+        self.assertGreater(frame[2][0], 0)
+        self.assertGreater(frame[2][2], 0)
+
+    def test_gradient_interpolation_correctness(self) -> None:
+        renderer = SegmentRenderer(segments=3, mode=RenderMode.GRADIENT)
+        intent = LightingIntent(
+            mode=EffectMode.AMBIENT, intensity=1.0, speed=0.2, bpm=60.0,
+        )
+        params = {
+            "gradient_colors": ("#ff0000", "#0000ff"),
+            "gradient_speed": 0.0,
+        }
+        frame = renderer.render(1.0, intent, params=params)
+        # seg 0: pos=0.0 → pure red
+        self.assertEqual(frame[0], (255, 0, 0))
+        # seg 1: pos=0.5 → 50/50 blend
+        self.assertEqual(frame[1][0], 127)  # half red
+        self.assertEqual(frame[1][2], 127)  # half blue
+        # seg 2: pos=1.0 → pure blue
+        self.assertEqual(frame[2], (0, 0, 255))
+
+    def test_gradient_rotates_over_time(self) -> None:
+        renderer = SegmentRenderer(segments=5, mode=RenderMode.GRADIENT)
+        intent = LightingIntent(
+            mode=EffectMode.AMBIENT, intensity=1.0, speed=0.2, bpm=60.0,
+        )
+        params = {
+            "gradient_colors": ("#ff0000", "#0000ff"),
+            "gradient_speed": 1.0,  # fast rotation
+        }
+        frame1 = renderer.render(1.0, intent, params=params)
+        frame2 = renderer.render(1.5, intent, params=params)
+        # After rotation, first segment should have changed
+        self.assertNotEqual(frame1[0], frame2[0])
+
+    def test_gradient_static_when_speed_zero(self) -> None:
+        renderer = SegmentRenderer(segments=5, mode=RenderMode.GRADIENT)
+        intent = LightingIntent(
+            mode=EffectMode.AMBIENT, intensity=1.0, speed=0.2, bpm=60.0,
+        )
+        params = {
+            "gradient_colors": ("#ff0000", "#0000ff"),
+            "gradient_speed": 0.0,
+        }
+        renderer.render(1.0, intent, params=params)
+        frame1 = renderer.render(1.1, intent, params=params)
+        frame2 = renderer.render(1.5, intent, params=params)
+        self.assertEqual(frame1, frame2)
+
+    def test_gradient_respects_intensity(self) -> None:
+        renderer = SegmentRenderer(segments=3, mode=RenderMode.GRADIENT)
+        intent = LightingIntent(
+            mode=EffectMode.AMBIENT, intensity=0.5, speed=0.2, bpm=60.0,
+        )
+        params = {
+            "gradient_colors": ("#ff0000", "#0000ff"),
+            "gradient_speed": 0.0,
+        }
+        frame = renderer.render(1.0, intent, params=params)
+        # First segment: pure red at 50% intensity
+        self.assertEqual(frame[0], (127, 0, 0))
+
+    def test_gradient_fallback_single_color(self) -> None:
+        renderer = SegmentRenderer(segments=3, mode=RenderMode.GRADIENT)
+        intent = LightingIntent(
+            mode=EffectMode.AMBIENT, intensity=1.0, speed=0.2, bpm=60.0,
+            color="#ff0000",
+        )
+        # No gradient_colors param — falls back to color-to-black
+        params = {"gradient_speed": 0.0}
+        frame = renderer.render(1.0, intent, params=params)
+        self.assertEqual(frame[0], (255, 0, 0))
+        self.assertEqual(frame[2], (0, 0, 0))
+
+    def test_gradient_three_color_stops(self) -> None:
+        renderer = SegmentRenderer(segments=5, mode=RenderMode.GRADIENT)
+        intent = LightingIntent(
+            mode=EffectMode.AMBIENT, intensity=1.0, speed=0.2, bpm=60.0,
+        )
+        params = {
+            "gradient_colors": ("#ff0000", "#00ff00", "#0000ff"),
+            "gradient_speed": 0.0,
+        }
+        frame = renderer.render(1.0, intent, params=params)
+        # seg 0: pure red
+        self.assertEqual(frame[0], (255, 0, 0))
+        # seg 2: pure green (midpoint)
+        self.assertEqual(frame[2], (0, 255, 0))
+        # seg 4: pure blue
+        self.assertEqual(frame[4], (0, 0, 255))
+
+    def test_gradient_single_segment(self) -> None:
+        renderer = SegmentRenderer(segments=1, mode=RenderMode.GRADIENT)
+        intent = LightingIntent(
+            mode=EffectMode.AMBIENT, intensity=1.0, speed=0.2, bpm=60.0,
+        )
+        params = {
+            "gradient_colors": ("#ff0000", "#0000ff"),
+            "gradient_speed": 0.0,
+        }
+        frame = renderer.render(1.0, intent, params=params)
+        self.assertEqual(len(frame), 1)
+
+
+class ParamOverrideTests(unittest.TestCase):
+    """Test that params dict correctly overrides defaults in existing modes."""
+
+    def test_pulse_decay_param(self) -> None:
+        r_fast = SegmentRenderer(segments=3, mode=RenderMode.PULSE)
+        r_slow = SegmentRenderer(segments=3, mode=RenderMode.PULSE)
+        intent = LightingIntent(
+            mode=EffectMode.PULSE, intensity=1.0, speed=0.5, bpm=120.0,
+            color="#ff0000",
+        )
+        r_fast.render(1.0, intent, beat=True, params={"pulse_decay": 20.0})
+        r_slow.render(1.0, intent, beat=True, params={"pulse_decay": 2.0})
+        # After 0.2s, fast decay should be dimmer than slow decay
+        f_fast = r_fast.render(1.2, intent, beat=False, params={"pulse_decay": 20.0})
+        f_slow = r_slow.render(1.2, intent, beat=False, params={"pulse_decay": 2.0})
+        self.assertLess(f_fast[0][0], f_slow[0][0])
+
+    def test_breathe_rate_mult_param(self) -> None:
+        r_fast = SegmentRenderer(segments=3, mode=RenderMode.BREATHE)
+        r_slow = SegmentRenderer(segments=3, mode=RenderMode.BREATHE)
+        intent = LightingIntent(
+            mode=EffectMode.AMBIENT, intensity=1.0, speed=0.2, bpm=120.0,
+            color="#ff0000",
+        )
+        r_fast.render(1.0, intent, params={"breathe_rate_mult": 2.0})
+        r_slow.render(1.0, intent, params={"breathe_rate_mult": 0.5})
+        f_fast = r_fast.render(1.2, intent, params={"breathe_rate_mult": 2.0})
+        f_slow = r_slow.render(1.2, intent, params={"breathe_rate_mult": 0.5})
+        # Different rates → different phase → different brightness
+        self.assertNotEqual(f_fast[0], f_slow[0])
+
+    def test_scroll_inject_width_param(self) -> None:
+        r_wide = SegmentRenderer(segments=15, mode=RenderMode.SCROLL, mirror=True)
+        r_narrow = SegmentRenderer(segments=15, mode=RenderMode.SCROLL, mirror=True)
+        intent = LightingIntent(
+            mode=EffectMode.RIPPLE, intensity=1.0, speed=0.5, bpm=120.0,
+            color="#ff0000",
+        )
+        f_wide = r_wide.render(1.0, intent, beat=True, params={"scroll_inject_width": 0.5})
+        f_narrow = r_narrow.render(1.0, intent, beat=True, params={"scroll_inject_width": 0.1})
+        # Wide injection should have more non-zero pixels than narrow
+        wide_lit = sum(1 for p in f_wide if p[0] > 0)
+        narrow_lit = sum(1 for p in f_narrow if p[0] > 0)
+        self.assertGreater(wide_lit, narrow_lit)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -81,15 +81,30 @@ EFFECTS: dict[str, EffectPreset] = {
     ),
     "strobe": EffectPreset(
         name="strobe",
-        render_mode=RenderMode.PULSE,
+        render_mode=RenderMode.STROBE,
         color_palette=PALETTES["neon"],
-        params={"pulse_decay": 12.0},
+        params={"strobe_subdivision": 4},
     ),
     "drop_blast": EffectPreset(
         name="drop_blast",
         render_mode=RenderMode.PULSE,
         color_palette=PALETTES["fire"],
         params={"pulse_decay": 4.0},
+    ),
+    "wave_drift": EffectPreset(
+        name="wave_drift",
+        render_mode=RenderMode.WAVE,
+        color_palette=PALETTES["cool"],
+        params={"wave_rate_mult": 0.5, "wave_wavelength": 1.5},
+    ),
+    "gradient_flow": EffectPreset(
+        name="gradient_flow",
+        render_mode=RenderMode.GRADIENT,
+        color_palette=PALETTES["sunset"],
+        params={
+            "gradient_speed": 0.08,
+            "gradient_colors": PALETTES["sunset"],
+        },
     ),
 }
 
@@ -99,11 +114,14 @@ MOOD_EFFECTS: dict[Mood, list[tuple[str, float]]] = {
         ("warm_glow", 2.0),
         ("slow_breathe", 3.0),
         ("color_breathe", 1.0),
+        ("wave_drift", 2.0),
+        ("gradient_flow", 2.0),
     ],
     Mood.GROOVE: [
         ("color_breathe", 1.0),
         ("beat_pulse", 3.0),
         ("color_scroll", 2.0),
+        ("wave_drift", 1.0),
     ],
     Mood.HYPE: [
         ("fast_scroll", 2.0),
