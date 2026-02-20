@@ -1,2 +1,8 @@
 .venv/
 .venv_*/
+__pycache__/
+*.pyc
+*.egg-info/
+.obsidian/
+.claude/
+out/

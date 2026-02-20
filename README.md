@@ -1,171 +1,117 @@
-# Govee DreamView LAN Music Sync
+# DreamSync — Audio-Reactive Govee LAN Control
 
-Windows-first Python project for local audio-reactive lighting control. See project scope document for goals and phases.
+Windows-first Python project for local audio-reactive lighting. Listens to system audio, detects beats and energy, and streams per-segment RGB frames directly to Govee devices over LAN UDP — no cloud, no LedFx dependency.
 
 ## Quick start
-
-Create a virtual environment and install deps:
 
 ```bash
 python -m venv .venv
 . .venv/Scripts/activate
 pip install -e .
-pip install ledfx
-```
-
-### Fixing C-extension / version-mismatch errors
-
-If you see `ImportError` messages about NumPy, SciPy, or other compiled
-packages being incompatible with your Python version (e.g. built for
-`cp313` but running `cpython-312`), the venv has stale binaries from a
-different Python install. Rebuild it from scratch:
-
-```bash
-deactivate 2>/dev/null
-python -m venv .venv --clear   # wipes and recreates the venv
-. .venv/Scripts/activate
-pip install -e .
-pip install ledfx
-```
-
-Run the CLI stub:
-
-```bash
-python -m dreamsync --help
 ```
 
 ## Device discovery
 
-LedFx needs the Govee device's LAN IP address. To find it, run the multicast ping sweeper:
+Find Govee devices on your network:
 
 ```bash
-python scripts/pingsweeper.py
+python -m dreamsync govee-scan
 ```
 
-This sends a UDP scan to the Govee multicast group and prints any responding device IPs. Use the discovered IP when adding the device in the LedFx UI.
+## Live music sync
 
-## Live usage (today's workflow)
+Play music on your PC, then run `govee-live` to drive the lights in real time.
 
-You need two terminals.
-
-**Terminal 1** — start the LedFx server (installs if needed, waits for API, lists virtuals):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\start_ledfx.ps1
-```
-
-**Terminal 2** — run dreamsync commands:
+### Single device
 
 ```bash
-. .venv/Scripts/activate
+python -m dreamsync govee-live \
+    --device-ip 10.0.0.123 \
+    --segments 15 \
+    --duration 120 \
+    --render-mode scroll \
+    --brightness 0.8
 ```
 
-1) Make sure your virtual(s) exist in LedFx (the startup script will list them).
-2) Use the beat tester to verify timing.
-3) Use the full director mode for the actual lightshow behavior.
+### Multiple devices (different hardware)
 
-Beat-only tester (prints beat timing, flashes on beat). Clears any existing effect first:
+Use `--device IP:SEGMENTS:ROLE:TRANSPORT` to target multiple strips. Each device can have its own segment count and transport protocol.
 
 ```bash
-python -m dreamsync ledfx-beat --duration 60 --base-url http://127.0.0.1:8888 --virtual-id vcouch
+python -m dreamsync govee-live \
+    --device 10.0.0.1:7:primary:ptreal \
+    --device 10.0.0.2:25:primary:razer \
+    --duration 120 \
+    --render-mode scroll
 ```
 
-Beat ripple (slow color-wave that changes color on each beat). Clears any existing effect first:
+### Key options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--device-ip` | | Single device IP (use with `--segments`) |
+| `--device` | | Repeatable device spec: `IP:SEGMENTS[:ROLE[:TRANSPORT]]` |
+| `--segments` | 15 | Segment count (with `--device-ip`) |
+| `--duration` | | Capture duration in seconds (required) |
+| `--render-mode` | scroll | `solid`, `pulse`, `scroll`, or `breathe` |
+| `--transport` | ptreal | `razer` (DreamView per-LED), `ptreal` (BLE-over-LAN per-segment), `colorwc` (whole-strip) |
+| `--fps` | 30 | Frame rate |
+| `--brightness` | 1.0 | Global brightness (0-1) |
+| `--colors` | auto | Comma-separated hex colors to cycle on beats |
+| `--mirror` / `--no-mirror` | mirror | Scroll from center outward vs left-to-right |
+| `--half-time` | off | Halve detected BPM (fixes octave-doubled detection) |
+| `--max-brightness` | off | Force all frames to full intensity |
+| `--audio-device` | system default | PortAudio input device ID |
+
+## Smoke tests
+
+Send a solid color to verify connectivity:
 
 ```bash
-python -m dreamsync ledfx-ripple --duration 60 --base-url http://127.0.0.1:8888 --virtual-id vdown --effect-type scroll
+python -m dreamsync govee-test --device-ip 10.0.0.123 --segments 15 --color '#ff0000' --duration 5
 ```
 
-Customize brightness, colors, or try a different LedFx effect type:
+Test patterns for segment diagnostics:
 
 ```bash
-python -m dreamsync ledfx-ripple --duration 60 --base-url http://127.0.0.1:8888 --virtual-id vcouch --brightness 0.9 --effect-type wavelength --colors '#ff0000,#00ff00,#0000ff'
+python -m dreamsync govee-test --device-ip 10.0.0.123 --segments 15 --pattern rainbow
+python -m dreamsync govee-test --device-ip 10.0.0.123 --segments 15 --pattern walk
 ```
 
-Full director (smoother, concert-style behavior). Clears any existing effect first:
-
-```bash
-python -m dreamsync ledfx-live --duration 60 --base-url http://127.0.0.1:8888 --virtual-id vcouch
-```
-
-### Multi-device support
-
-You can target multiple light strips with `--virtual-id` repeated. Each ID can have an optional role suffix (`:primary` or `:accent`). Without a suffix the device defaults to `primary` (full reactive). The `accent` role locks the strip to ambient mode with reduced intensity.
-
-```bash
-# Two devices: couch strip gets full reactive, desk strip gets subdued ambient
-python -m dreamsync ledfx-live --duration 60 --base-url http://127.0.0.1:8888 --virtual-id vcouch --virtual-id vdown
-```
-
-```bash
-# Beat flash across two strips
-python -m dreamsync ledfx-beat --duration 60 --base-url http://127.0.0.1:8888 --virtual-id vcouch --virtual-id vdown
-```
-
-If you want to leave LedFx untouched, add `--no-force-stop`.
-
-Debug the payloads sent to LedFx:
-
-```bash
-python -m dreamsync ledfx-live --duration 20 --base-url http://127.0.0.1:8888 --virtual-id vcouch --debug-ledfx
-```
-
-Run the offline WAV feature extractor (JSON Lines output):
-
-```bash
-python -m dreamsync wav path/to/audio.wav --jsonl out/features.jsonl
-```
-
-Replay WAV through Director + FakeOutput and write intent logs:
-
-```bash
-python -m dreamsync replay path/to/audio.wav --jsonl out/replay_intents.jsonl
-```
-
-Send a single test intent to LedFx (D3.1 smoke test):
-
-```bash
-python -m dreamsync ledfx-test --base-url http://127.0.0.1:8888 --virtual-id my_virtual --mode pulse
-```
-
-Run the D3.2 end-to-end demo (WAV -> Director -> LedFx) and save run logs:
-
-```bash
-python -m dreamsync ledfx-replay path/to/audio.wav --base-url http://127.0.0.1:8888 --virtual-id my_virtual --realtime --jsonl out/ledfx_replay.jsonl
-```
-
-List available system audio input devices:
+## List audio devices
 
 ```bash
 python -m dreamsync devices
 ```
 
-Run timed real-time capture and write feature stream:
-
-```bash
-python -m dreamsync capture --duration 60 --device 1 --jsonl out/live_features.jsonl
-```
-
-Plot the extracted features to inspect sync behavior quickly:
-
-```bash
-python -m dreamsync plot out/features.jsonl out/features.png
-```
-
-Run unit tests (no external services required):
-
-```bash
-PYTHONPATH=src python3 -m unittest tests.test_output_ledfx tests.test_output_roles tests.test_basic_controller tests.test_director tests.test_cli_plot -v
-```
-
-Run the full test suite (requires LedFx — start it first with `powershell -ExecutionPolicy Bypass -File .\start_ledfx.ps1`):
+## Run tests
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-Director state machine (D2.1) lives in:
+## Architecture
 
-```text
-src/dreamsync/director.py
 ```
+System Audio → LiveBpmEstimator → beat events + BPM
+                                      │
+                                      ▼
+                               BeatRippleController
+                                      │
+                                      ▼
+                              LightingIntent { mode, intensity, color, bpm }
+                                      │
+                                      ▼
+                              SegmentRenderer → RGB frame buffer (N segments)
+                                      │
+                                      ▼
+                              GoveeLanAdapter → UDP packet to device:4003
+```
+
+### Transport protocols
+
+| Protocol | Packet type | Use case |
+|----------|-------------|----------|
+| `razer` | DreamView per-LED binary | Strips with many segments (e.g. H808A, 25 LEDs) |
+| `ptreal` | BLE-over-LAN per-segment | Strips with IC segments (e.g. H612F, 7 segments) |
+| `colorwc` | Whole-strip single color | Fallback for unsupported devices |
