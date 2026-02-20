@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 
 from .audio.system_input import list_input_devices
-from .director import EffectMode, LightingIntent
+from .director import DirectorConfig, EffectMode, LightingIntent
 from .basic_controller import BeatFlashConfig, BeatRippleConfig
 from .live import run_live_beat_flash_to_ledfx, run_live_beat_ripple_to_ledfx, run_live_input_to_ledfx, run_live_to_govee
 from .output.govee_lan import GoveeLanAdapter, GoveeLanConfig, MultiGoveeLanAdapter, TransportMode, parse_device_spec
@@ -517,6 +517,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-brightness", action="store_true",
         help="Force all frames to full intensity (overrides Director dynamics).",
     )
+    govee_live.add_argument(
+        "--auto-cycle",
+        dest="auto_cycle",
+        action="store_true",
+        default=True,
+        help="Enable mood-driven effect cycling (default).",
+    )
+    govee_live.add_argument(
+        "--no-auto-cycle",
+        dest="auto_cycle",
+        action="store_false",
+        help="Disable effect cycling; use fixed --render-mode.",
+    )
+    govee_live.add_argument(
+        "--cycle-interval",
+        type=float,
+        default=16.0,
+        help="Seconds between automatic effect changes within same mood (default: 16).",
+    )
+    govee_live.add_argument(
+        "--debug-mood",
+        action="store_true",
+        help="Print mood/effect transitions to stdout.",
+    )
 
     return parser
 
@@ -875,10 +899,10 @@ def main(argv: list[str] | None = None) -> int:
         colors = None
         if args.colors:
             colors = tuple(c.strip() for c in args.colors.split(","))
-        ripple_kwargs: dict = {}
+        director_kwargs: dict = {}
         if colors:
-            ripple_kwargs["colors"] = colors
-        ripple_config = BeatRippleConfig(**ripple_kwargs)
+            director_kwargs["colors"] = colors
+        director_config = DirectorConfig(**director_kwargs)
 
         # Build device list from --device specs or legacy --device-ip/--segments
         if args.govee_devices:
@@ -939,9 +963,12 @@ def main(argv: list[str] | None = None) -> int:
             hop_size=args.hop_size,
             telemetry_interval_seconds=max(0.1, float(args.heartbeat_seconds)),
             blocksize=args.blocksize,
-            ripple_config=ripple_config,
+            director_config=director_config,
             half_time=args.half_time,
             max_brightness=args.max_brightness,
+            auto_cycle=args.auto_cycle,
+            cycle_interval=max(1.0, float(args.cycle_interval)),
+            debug_mood=args.debug_mood,
         )
         if args.jsonl:
             args.jsonl.parent.mkdir(parents=True, exist_ok=True)

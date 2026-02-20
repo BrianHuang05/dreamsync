@@ -47,6 +47,9 @@ class DirectorConfig:
     pulse_speed_max: float = 0.6
     motion_speed_min: float = 0.3
     motion_speed_max: float = 0.75
+    colors: tuple[str, ...] = (
+        "#ff0000", "#00ff00", "#0000ff", "#ff8800", "#aa00ff", "#00ffcc",
+    )
 
 
 class Director:
@@ -61,6 +64,31 @@ class Director:
         self._history: deque[tuple[float, float, float, float]] = deque()
         self._last_intensity = self.config.intensity_floor
         self._last_speed = self.config.ambient_speed
+        self._colors = self.config.colors
+        self._color_idx = 0
+        self.last_beat_event = False
+        self._last_stability = 0.0
+        self._last_effective_bpm = 0.0
+
+    def set_colors(self, colors: tuple[str, ...]) -> None:
+        """Replace the active color palette and clamp the cycle index."""
+        self._colors = colors
+        if colors:
+            self._color_idx = self._color_idx % len(colors)
+        else:
+            self._color_idx = 0
+
+    @property
+    def ema_rms(self) -> float:
+        return self._ema_rms
+
+    @property
+    def stability(self) -> float:
+        return self._last_stability
+
+    @property
+    def effective_bpm(self) -> float:
+        return self._last_effective_bpm
 
     def _can_switch(self, t: float) -> bool:
         return (t - self._last_switch_time) >= self.config.min_switch_interval_seconds
@@ -131,11 +159,20 @@ class Director:
         rms = float(features.get("rms", 0.0))
         bpm = float(features.get("bpm", 0.0))
         zcr = float(features.get("zcr", 0.0))
+        beat = bool(features.get("beat", False))
+
+        # Advance color on beat
+        self.last_beat_event = beat
+        if beat and self._colors:
+            self._color_idx = (self._color_idx + 1) % len(self._colors)
+        color = self._colors[self._color_idx] if self._colors else None
 
         self._update_history(t, rms, zcr, bpm)
         self._update_ema(rms, zcr, bpm)
         bpm = self._effective_bpm(bpm)
         stability = self._beat_stability()
+        self._last_stability = stability
+        self._last_effective_bpm = bpm
 
         if t < self.config.warmup_seconds:
             rms_norm = min(1.0, max(0.0, self._ema_rms * 2.2))
@@ -159,6 +196,7 @@ class Director:
                 intensity=intensity,
                 speed=speed,
                 bpm=bpm if bpm > 0.0 else 120.0,
+                color=color,
             )
 
         if self._can_switch(t):
@@ -208,4 +246,4 @@ class Director:
         self._last_intensity = intensity
         self._last_speed = speed
 
-        return LightingIntent(mode=self.mode, intensity=intensity, speed=speed, bpm=bpm)
+        return LightingIntent(mode=self.mode, intensity=intensity, speed=speed, bpm=bpm, color=color)

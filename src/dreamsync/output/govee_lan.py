@@ -366,13 +366,14 @@ class MultiGoveeLanAdapter:
         time.sleep(0.3)
 
     def send_frame(
-        self, t: float, intent: LightingIntent, beat: bool = False
+        self, t: float, intent: LightingIntent, beat: bool = False,
+        params: dict | None = None,
     ) -> bool:
         """Render and send one frame to all devices, applying role transforms."""
         any_sent = False
         for adapter, renderer, role in self.devices:
             device_intent = transform_intent(intent, role)
-            colors = renderer.render(t, device_intent, beat=beat)
+            colors = renderer.render(t, device_intent, beat=beat, params=params)
             if adapter.send_frame(colors):
                 any_sent = True
         return any_sent

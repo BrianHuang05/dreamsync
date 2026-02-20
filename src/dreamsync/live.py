@@ -9,8 +9,10 @@ import numpy as np
 
 from dreamsync.audio.system_input import _require_sounddevice
 from dreamsync.basic_controller import BeatFlashConfig, BeatFlashController, BeatRippleConfig, BeatRippleController
-from dreamsync.director import Director
+from dreamsync.director import Director, DirectorConfig
 from dreamsync.dsp.features import _estimate_bpm, _estimate_bpm_from_beats, _smooth_signal
+from dreamsync.effects import EffectCycler, EffectCyclerConfig
+from dreamsync.mood import MoodClassifier
 from dreamsync.output.govee_lan import GoveeLanAdapter, MultiGoveeLanAdapter
 from dreamsync.output.ledfx import LedFxOutputAdapter
 from dreamsync.render import RenderMode, SegmentRenderer
@@ -214,6 +216,7 @@ def _feature_row_from_frame(
     t: float,
     bpm: float,
     beat: bool,
+    bass: float = 0.0,
 ) -> dict[str, float | bool]:
     signs = np.sign(frame)
     zcr = float(np.mean(np.abs(np.diff(signs)) > 0))
@@ -222,7 +225,7 @@ def _feature_row_from_frame(
         "rms": rms,
         "zcr": zcr,
         "centroid": 0.0,
-        "bass": 0.0,
+        "bass": float(bass),
         "beat": bool(beat),
         "bpm": float(bpm),
     }
@@ -306,7 +309,7 @@ def run_live_input_to_ledfx(
                 rms = float(np.sqrt(np.mean(frame**2)))
                 bass = _bass_energy(frame, window, bass_mask)
                 bpm, beat = bpm_estimator.update(bass, stream_t)
-                features = _feature_row_from_frame(frame, rms, stream_t, bpm, beat)
+                features = _feature_row_from_frame(frame, rms, stream_t, bpm, beat, bass=bass)
                 intent = director.update(features)
                 sent = adapter.emit(stream_t, intent)
                 if sent:
@@ -653,9 +656,12 @@ def run_live_to_govee(
     hop_size: int = 512,
     telemetry_interval_seconds: float = 1.0,
     blocksize: int = 1024,
-    ripple_config: BeatRippleConfig | None = None,
+    director_config: DirectorConfig | None = None,
     half_time: bool = False,
     max_brightness: bool = False,
+    auto_cycle: bool = True,
+    cycle_interval: float = 16.0,
+    debug_mood: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Audio capture → beat detection → renderer → Govee UDP streaming.
 
@@ -679,14 +685,17 @@ def run_live_to_govee(
     bpm_estimator = LiveBpmEstimator(
         sample_rate=sample_rate, hop_size=hop_size, half_time=half_time,
     )
-    controller = BeatRippleController(ripple_config)
+    director = Director(director_config)
+    mood_classifier = MoodClassifier() if auto_cycle else None
+    effect_cycler = EffectCycler(EffectCyclerConfig(cycle_interval=cycle_interval)) if auto_cycle else None
+    current_params: dict | None = None
     beat_count = 0
     sent_count = 0
     dropped_blocks = 0
     captured_samples = 0
 
-    # Track latest intent for continuous rendering between beats
-    last_intent = controller.update(0.0, 120.0, False)[0]
+    # Seed with an initial intent so we always have something to render
+    last_intent = director.update({"t": 0.0, "rms": 0.0, "zcr": 0.0, "bpm": 120.0, "beat": False, "bass": 0.0})
 
     def _callback(indata, frames, time_info, status) -> None:
         del frames, time_info
@@ -726,43 +735,76 @@ def run_live_to_govee(
                 chunk = audio_queue.popleft()
                 buffer = np.concatenate([buffer, chunk])
 
-            # Process audio frames for beat detection
+            # Process audio frames for beat detection + feature extraction
             beat_this_tick = False
+            last_features: dict[str, float | bool] | None = None
             while buffer.shape[0] >= frame_size:
                 frame = buffer[:frame_size]
                 buffer = buffer[hop_size:]
+                rms = float(np.sqrt(np.mean(frame**2)))
                 bass = _bass_energy(frame, window, bass_mask)
                 bpm, beat = bpm_estimator.update(bass, stream_t)
                 if half_time and bpm > 0:
                     bpm *= 0.5
-                intent, beat_event = controller.update(stream_t, bpm, beat)
-                if intent is not None:
-                    last_intent = intent
-                if beat_event:
+                last_features = _feature_row_from_frame(
+                    frame, rms, stream_t, bpm, beat, bass=bass,
+                )
+                last_intent = director.update(last_features)
+                if beat:
                     beat_count += 1
                     beat_this_tick = True
                 stream_t += float(hop_size) / float(sample_rate)
+
+            # --- Effect cycling (mood → preset → palette/mode swap) ---
+            if auto_cycle and mood_classifier is not None and effect_cycler is not None and last_features is not None:
+                mood = mood_classifier.update(
+                    director.ema_rms, director.stability,
+                    director.effective_bpm, stream_t,
+                )
+                preset = effect_cycler.update(
+                    mood, stream_t, beat_this_tick,
+                    bpm_estimator.last_bpm, director.ema_rms,
+                )
+                # Swap render mode on all devices
+                for _, renderer, _ in multi_adapter.devices:
+                    renderer.mode = preset.render_mode
+                # Swap director palette
+                director.set_colors(preset.color_palette)
+                current_params = preset.params
+                if debug_mood:
+                    print(
+                        f"mood={mood.value} effect={preset.name} "
+                        f"palette={effect_cycler.current_palette} "
+                        f"mode={preset.render_mode.value}"
+                    )
 
             # Render and send a frame on every tick (animation-driven)
             if last_intent is not None:
                 frame_intent = last_intent
                 if max_brightness:
                     frame_intent = dataclasses.replace(frame_intent, intensity=1.0)
-                sent = multi_adapter.send_frame(elapsed, frame_intent, beat=beat_this_tick)
+                sent = multi_adapter.send_frame(elapsed, frame_intent, beat=beat_this_tick, params=current_params)
                 if sent:
                     sent_count += 1
-                logs.append(
-                    {
-                        "kind": "frame",
-                        "t": round(stream_t, 4),
-                        "elapsed_wall": round(elapsed, 4),
-                        "bpm": round(float(bpm_estimator.last_bpm), 2),
-                        "beat": bool(beat_this_tick),
-                        "sent": bool(sent),
-                        "color": last_intent.color,
-                        "devices": len(multi_adapter.devices),
-                    }
-                )
+                log_row: dict[str, Any] = {
+                    "kind": "frame",
+                    "t": round(stream_t, 4),
+                    "elapsed_wall": round(elapsed, 4),
+                    "bpm": round(float(bpm_estimator.last_bpm), 2),
+                    "beat": bool(beat_this_tick),
+                    "sent": bool(sent),
+                    "color": last_intent.color,
+                    "mode": last_intent.mode.value,
+                    "devices": len(multi_adapter.devices),
+                }
+                if last_features is not None:
+                    log_row["rms"] = round(float(last_features["rms"]), 5)
+                    log_row["zcr"] = round(float(last_features["zcr"]), 5)
+                    log_row["bass"] = round(float(last_features["bass"]), 5)
+                if auto_cycle and mood_classifier is not None and effect_cycler is not None:
+                    log_row["mood"] = mood_classifier.mood.value
+                    log_row["effect"] = effect_cycler.current_effect
+                logs.append(log_row)
 
             if now >= next_telemetry:
                 logs.append(
@@ -785,6 +827,7 @@ def run_live_to_govee(
                         f"beats={beat_count} ({beat_rate:.1f}/s, expect {expected_rate:.1f}/s) "
                         f"sent={sent_count} dropped={dropped_blocks} "
                         f"bpm={eff_bpm:.1f} (raw={bpm_estimator.last_bpm:.1f}) "
+                        f"mode={director.mode.value} "
                         f"devices={len(multi_adapter.devices)} "
                         f"color={last_intent.color if last_intent else '-'}"
                     )

@@ -51,7 +51,8 @@ class SegmentRenderer:
         self._scroll_buf = [(0.0, 0.0, 0.0)] * half
 
     def render(
-        self, t: float, intent: LightingIntent, beat: bool = False
+        self, t: float, intent: LightingIntent, beat: bool = False,
+        params: dict | None = None,
     ) -> list[tuple[int, int, int]]:
         """Produce one frame of RGB segment colors."""
         dt = max(0.0, t - self._last_t) if self._last_t > 0 else 0.0
@@ -60,11 +61,11 @@ class SegmentRenderer:
         if self.mode == RenderMode.SOLID:
             return self._render_solid(intent)
         elif self.mode == RenderMode.PULSE:
-            return self._render_pulse(intent, dt, beat)
+            return self._render_pulse(intent, dt, beat, params)
         elif self.mode == RenderMode.BREATHE:
-            return self._render_breathe(intent, dt)
+            return self._render_breathe(intent, dt, params)
         elif self.mode == RenderMode.SCROLL:
-            return self._render_scroll(intent, dt, beat)
+            return self._render_scroll(intent, dt, beat, params)
         return self._render_solid(intent)
 
     # -- Solid ---------------------------------------------------------------
@@ -78,12 +79,14 @@ class SegmentRenderer:
     # -- Pulse ---------------------------------------------------------------
 
     def _render_pulse(
-        self, intent: LightingIntent, dt: float, beat: bool
+        self, intent: LightingIntent, dt: float, beat: bool,
+        params: dict | None = None,
     ) -> list[tuple[int, int, int]]:
+        decay = params.get("pulse_decay", self._pulse_decay) if params else self._pulse_decay
         if beat:
             self._pulse_brightness = 1.0
         else:
-            self._pulse_brightness *= math.exp(-self._pulse_decay * dt)
+            self._pulse_brightness *= math.exp(-decay * dt)
 
         r, g, b = _parse_hex(intent.color) if intent.color else _DEFAULT_COLOR
         level = self._pulse_brightness * max(0.0, min(1.0, intent.intensity))
@@ -93,10 +96,11 @@ class SegmentRenderer:
     # -- Breathe -------------------------------------------------------------
 
     def _render_breathe(
-        self, intent: LightingIntent, dt: float
+        self, intent: LightingIntent, dt: float,
+        params: dict | None = None,
     ) -> list[tuple[int, int, int]]:
         bpm = max(1.0, intent.bpm)
-        freq = bpm / 60.0  # cycles per second
+        freq = (bpm / 60.0) * (params.get("breathe_rate_mult", 1.0) if params else 1.0)
         self._breathe_phase += freq * dt
         # Sine wave 0→1→0
         wave = (math.sin(2.0 * math.pi * self._breathe_phase) + 1.0) / 2.0
@@ -109,7 +113,8 @@ class SegmentRenderer:
     # -- Scroll --------------------------------------------------------------
 
     def _render_scroll(
-        self, intent: LightingIntent, dt: float, beat: bool
+        self, intent: LightingIntent, dt: float, beat: bool,
+        params: dict | None = None,
     ) -> list[tuple[int, int, int]]:
         half = len(self._scroll_buf)
         bpm = max(1.0, intent.bpm)
@@ -131,7 +136,8 @@ class SegmentRenderer:
             color = _parse_hex(intent.color) if intent.color else _DEFAULT_COLOR
             cf = (float(color[0]), float(color[1]), float(color[2]))
             # Inject center + neighbors: ~20% of half-buffer, minimum 2 pixels
-            inject_width = max(2, half // 5)
+            inject_frac = params.get("scroll_inject_width", 0.2) if params else 0.2
+            inject_width = max(2, int(half * inject_frac))
             for i in range(min(inject_width, half)):
                 self._scroll_buf[i] = cf
 
