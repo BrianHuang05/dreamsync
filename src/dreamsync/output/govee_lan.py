@@ -321,24 +321,26 @@ class GoveeLanAdapter:
 
 @dataclass(frozen=True)
 class GoveeDeviceSpec:
-    """Parsed --device spec: IP:SEGMENTS[:ROLE]."""
+    """Parsed --device spec: IP:SEGMENTS[:ROLE[:TRANSPORT]]."""
 
     ip: str
     segments: int
     role: DeviceRole = DeviceRole.PRIMARY
+    transport: TransportMode | None = None
 
 
 def parse_device_spec(spec: str) -> GoveeDeviceSpec:
-    """Parse 'IP:SEGMENTS' or 'IP:SEGMENTS:ROLE' into a GoveeDeviceSpec."""
+    """Parse 'IP:SEGMENTS[:ROLE[:TRANSPORT]]' into a GoveeDeviceSpec."""
     parts = spec.split(":")
-    if len(parts) < 2:
+    if len(parts) < 2 or len(parts) > 4:
         raise ValueError(
-            f"Device spec must be IP:SEGMENTS or IP:SEGMENTS:ROLE, got: {spec!r}"
+            f"Device spec must be IP:SEGMENTS[:ROLE[:TRANSPORT]], got: {spec!r}"
         )
     ip = parts[0]
     segments = int(parts[1])
     role = DeviceRole(parts[2]) if len(parts) >= 3 else DeviceRole.PRIMARY
-    return GoveeDeviceSpec(ip=ip, segments=segments, role=role)
+    transport = TransportMode(parts[3]) if len(parts) >= 4 else None
+    return GoveeDeviceSpec(ip=ip, segments=segments, role=role, transport=transport)
 
 
 class MultiGoveeLanAdapter:

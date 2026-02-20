@@ -453,8 +453,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--device",
         action="append",
         dest="govee_devices",
-        metavar="IP:SEGMENTS[:ROLE]",
-        help="Govee device spec (repeatable). Example: --device 192.168.1.23:15 --device 192.168.1.24:10:accent",
+        metavar="IP:SEGMENTS[:ROLE[:TRANSPORT]]",
+        help="Govee device spec (repeatable). TRANSPORT overrides --transport per device. Example: --device 10.0.0.1:7:primary:ptreal --device 10.0.0.2:25:primary:razer",
     )
     govee_live.add_argument("--segments", type=int, default=15, help="Number of addressable segments (used with --device-ip).")
     govee_live.add_argument("--duration", type=float, required=True, help="Capture duration in seconds.")
@@ -887,16 +887,17 @@ def main(argv: list[str] | None = None) -> int:
             from .output.govee_lan import GoveeDeviceSpec
             specs = [GoveeDeviceSpec(ip=args.device_ip, segments=args.segments)]
 
-        transport = TransportMode(args.transport)
-        # colorwc doesn't need high FPS; ptreal is heavier than razer
-        if transport == TransportMode.COLORWC:
-            effective_fps = min(fps, 10)
-        elif transport == TransportMode.PTREAL:
-            effective_fps = min(fps, 20)
-        else:
-            effective_fps = fps
+        global_transport = TransportMode(args.transport)
         device_triples = []
         for spec in specs:
+            transport = spec.transport if spec.transport is not None else global_transport
+            # colorwc doesn't need high FPS; ptreal is heavier than razer
+            if transport == TransportMode.COLORWC:
+                effective_fps = min(fps, 10)
+            elif transport == TransportMode.PTREAL:
+                effective_fps = min(fps, 20)
+            else:
+                effective_fps = fps
             config = GoveeLanConfig(
                 device_ip=spec.ip, segments=spec.segments, fps=effective_fps,
                 brightness=brightness, transport=transport,
@@ -910,7 +911,10 @@ def main(argv: list[str] | None = None) -> int:
         multi_adapter = MultiGoveeLanAdapter(device_triples)
 
         device_info = [
-            {"ip": s.ip, "segments": s.segments, "role": s.role.value}
+            {
+                "ip": s.ip, "segments": s.segments, "role": s.role.value,
+                "transport": (s.transport or global_transport).value,
+            }
             for s in specs
         ]
         print(json.dumps(

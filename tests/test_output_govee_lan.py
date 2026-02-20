@@ -593,9 +593,24 @@ class ParseDeviceSpecTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_device_spec("192.168.1.23")
 
+    def test_ip_segments_role_transport(self) -> None:
+        spec = parse_device_spec("10.0.0.1:25:primary:razer")
+        self.assertEqual(spec.ip, "10.0.0.1")
+        self.assertEqual(spec.segments, 25)
+        self.assertEqual(spec.role, DeviceRole.PRIMARY)
+        self.assertEqual(spec.transport, TransportMode.RAZER)
+
+    def test_transport_defaults_to_none(self) -> None:
+        spec = parse_device_spec("10.0.0.1:7:accent")
+        self.assertIsNone(spec.transport)
+
     def test_invalid_role_raises(self) -> None:
         with self.assertRaises(ValueError):
             parse_device_spec("192.168.1.23:15:invalid")
+
+    def test_invalid_transport_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            parse_device_spec("192.168.1.23:15:primary:bogus")
 
 
 class MultiGoveeLanAdapterTests(unittest.TestCase):
