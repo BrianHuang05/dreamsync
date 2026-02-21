@@ -200,7 +200,7 @@ class EffectCycler:
         t: float,
         beat: bool,
         bpm: float,
-        rms: float,
+        energy: float,
     ) -> EffectPreset:
         # --- DROP handling ---
         if mood == Mood.DROP:

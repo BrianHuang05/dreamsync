@@ -17,7 +17,7 @@ class FeatureRowFromFrameTests(unittest.TestCase):
     def test_returns_all_expected_keys(self) -> None:
         frame = self._make_frame()
         features = _feature_row_from_frame(frame, rms=0.1, t=1.0, bpm=120.0, beat=True)
-        expected_keys = {"t", "rms", "zcr", "centroid", "bass", "beat", "bpm"}
+        expected_keys = {"t", "rms", "zcr", "centroid", "bass", "bass_ratio", "spectral_flux", "onset_strength", "beat", "bpm"}
         self.assertEqual(set(features.keys()), expected_keys)
 
     def test_rms_passthrough(self) -> None:

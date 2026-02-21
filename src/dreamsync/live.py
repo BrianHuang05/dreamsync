@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import time
 from collections import deque
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -60,6 +61,7 @@ class LiveBpmEstimator:
 
     def update(self, energy: float, t: float) -> tuple[float, bool]:
         onset = max(0.0, energy - self.prev_rms)
+        self.last_onset = onset
         self.prev_rms = energy
         self.onset_env.append(onset)
         while len(self.onset_env) > self.max_frames:
@@ -195,6 +197,14 @@ class LiveBpmEstimator:
         return np.array(deduped, dtype=int)
 
 
+@dataclass
+class SpectralFeatures:
+    bass: float
+    bass_ratio: float
+    spectral_flux: float
+    mag: np.ndarray
+
+
 def _prepare_bass_window(frame_size: int, sample_rate: int) -> tuple[np.ndarray, np.ndarray]:
     window = np.hanning(frame_size).astype(np.float32)
     freqs = np.fft.rfftfreq(frame_size, d=1.0 / sample_rate)
@@ -202,10 +212,22 @@ def _prepare_bass_window(frame_size: int, sample_rate: int) -> tuple[np.ndarray,
     return window, mask
 
 
-def _bass_energy(frame: np.ndarray, window: np.ndarray, mask: np.ndarray) -> float:
+def _spectral_features(
+    frame: np.ndarray,
+    window: np.ndarray,
+    mask: np.ndarray,
+    prev_mag: np.ndarray | None,
+) -> SpectralFeatures:
     spectrum = np.fft.rfft(frame * window)
     mag = np.abs(spectrum)
-    return float(mag[mask].sum())
+    bass = float(mag[mask].sum())
+    total = float(mag.sum()) + 1e-8
+    bass_ratio = float(mag[mask].sum()) / total
+    if prev_mag is not None:
+        spectral_flux = float(np.maximum(0.0, mag - prev_mag).sum())
+    else:
+        spectral_flux = 0.0
+    return SpectralFeatures(bass=bass, bass_ratio=bass_ratio, spectral_flux=spectral_flux, mag=mag)
 
 
 def _feature_row_from_frame(
@@ -215,6 +237,9 @@ def _feature_row_from_frame(
     bpm: float,
     beat: bool,
     bass: float = 0.0,
+    bass_ratio: float = 0.0,
+    spectral_flux: float = 0.0,
+    onset_strength: float = 0.0,
 ) -> dict[str, float | bool]:
     signs = np.sign(frame)
     zcr = float(np.mean(np.abs(np.diff(signs)) > 0))
@@ -224,6 +249,9 @@ def _feature_row_from_frame(
         "zcr": zcr,
         "centroid": 0.0,
         "bass": float(bass),
+        "bass_ratio": float(bass_ratio),
+        "spectral_flux": float(spectral_flux),
+        "onset_strength": float(onset_strength),
         "beat": bool(beat),
         "bpm": float(bpm),
     }
@@ -296,6 +324,7 @@ def run_live_to_govee(
     next_telemetry = started_at + max(0.1, telemetry_interval_seconds)
     last_print = started_at
     window, bass_mask = _prepare_bass_window(frame_size, sample_rate)
+    prev_mag: np.ndarray | None = None
 
     # Activate all devices (activate() includes its own delays)
     multi_adapter.activate(brightness=100)
@@ -325,12 +354,17 @@ def run_live_to_govee(
                 frame = buffer[:frame_size]
                 buffer = buffer[hop_size:]
                 rms = float(np.sqrt(np.mean(frame**2)))
-                bass = _bass_energy(frame, window, bass_mask)
-                bpm, beat = bpm_estimator.update(bass, stream_t)
+                sf = _spectral_features(frame, window, bass_mask, prev_mag)
+                prev_mag = sf.mag
+                bpm, beat = bpm_estimator.update(sf.bass, stream_t)
                 if half_time and bpm > 0:
                     bpm *= 0.5
                 last_features = _feature_row_from_frame(
-                    frame, rms, stream_t, bpm, beat, bass=bass,
+                    frame, rms, stream_t, bpm, beat,
+                    bass=sf.bass,
+                    bass_ratio=sf.bass_ratio,
+                    spectral_flux=sf.spectral_flux,
+                    onset_strength=bpm_estimator.last_onset,
                 )
                 last_intent = director.update(last_features)
                 if beat:
@@ -341,12 +375,12 @@ def run_live_to_govee(
             # --- Effect cycling (mood → preset → palette/mode swap) ---
             if auto_cycle and mood_classifier is not None and effect_cycler is not None and last_features is not None:
                 mood = mood_classifier.update(
-                    director.ema_rms, director.stability,
+                    director.energy, director.stability,
                     director.effective_bpm, stream_t,
                 )
                 preset = effect_cycler.update(
                     mood, stream_t, beat_this_tick,
-                    bpm_estimator.last_bpm, director.ema_rms,
+                    bpm_estimator.last_bpm, director.energy,
                 )
                 # Swap render mode on all devices
                 for _, renderer, _ in multi_adapter.devices:
@@ -359,7 +393,7 @@ def run_live_to_govee(
                         f"mood={mood.value} effect={preset.name} "
                         f"palette={effect_cycler.current_palette} "
                         f"mode={preset.render_mode.value} "
-                        f"ema_rms={director.ema_rms:.4f} "
+                        f"energy={director.energy:.4f} "
                         f"stability={director.stability:.4f} "
                         f"bpm={director.effective_bpm:.1f}"
                     )

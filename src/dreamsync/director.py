@@ -50,6 +50,21 @@ class DirectorConfig:
     colors: tuple[str, ...] = (
         "#ff0000", "#00ff00", "#0000ff", "#ff8800", "#aa00ff", "#00ffcc",
     )
+    # --- Composite energy: EMA alphas ---
+    ema_alpha_spectral_flux: float = 0.15
+    ema_alpha_bass_ratio: float = 0.15
+    ema_alpha_onset_strength: float = 0.15
+    # --- RMS dynamic normalization ---
+    rms_floor_alpha: float = 0.005
+    rms_ceil_alpha: float = 0.02
+    # --- Feature max decay ---
+    flux_max_decay: float = 0.998
+    onset_max_decay: float = 0.998
+    # --- Composite energy weights ---
+    w_rms: float = 0.25
+    w_spectral_flux: float = 0.30
+    w_bass_ratio: float = 0.20
+    w_onset_strength: float = 0.25
 
 
 class Director:
@@ -69,6 +84,15 @@ class Director:
         self.last_beat_event = False
         self._last_stability = 0.0
         self._last_effective_bpm = 0.0
+        # --- Composite energy state ---
+        self._ema_spectral_flux = 0.0
+        self._ema_bass_ratio = 0.0
+        self._ema_onset_strength = 0.0
+        self._rms_floor = 0.0
+        self._rms_ceil = 0.001  # small initial ceiling to avoid div-by-zero
+        self._flux_max = 1e-6
+        self._onset_max = 1e-6
+        self._energy = 0.0
 
     def set_colors(self, colors: tuple[str, ...]) -> None:
         """Replace the active color palette and clamp the cycle index."""
@@ -90,6 +114,31 @@ class Director:
     def effective_bpm(self) -> float:
         return self._last_effective_bpm
 
+    @property
+    def energy(self) -> float:
+        return self._energy
+
+    def _compute_energy(self) -> float:
+        """Compute composite energy score [0,1] from normalized sub-features."""
+        cfg = self.config
+        # Normalize RMS against rolling floor/ceiling
+        span = self._rms_ceil - self._rms_floor
+        if span > 1e-8:
+            norm_rms = max(0.0, min(1.0, (self._ema_rms - self._rms_floor) / span))
+        else:
+            norm_rms = 0.0
+        # Normalize spectral flux and onset against rolling max
+        norm_flux = min(1.0, self._ema_spectral_flux / self._flux_max) if self._flux_max > 1e-8 else 0.0
+        norm_onset = min(1.0, self._ema_onset_strength / self._onset_max) if self._onset_max > 1e-8 else 0.0
+        # Bass ratio is already [0,1], just use EMA value
+        norm_bass = min(1.0, self._ema_bass_ratio)
+        return (
+            cfg.w_rms * norm_rms
+            + cfg.w_spectral_flux * norm_flux
+            + cfg.w_bass_ratio * norm_bass
+            + cfg.w_onset_strength * norm_onset
+        )
+
     def _can_switch(self, t: float) -> bool:
         return (t - self._last_switch_time) >= self.config.min_switch_interval_seconds
 
@@ -102,21 +151,56 @@ class Director:
         self._history.append((t, rms, zcr, bpm))
         self._prune_history(t)
 
-    def _update_ema(self, rms: float, zcr: float, bpm: float) -> None:
-        self._ema_rms = (self.config.ema_alpha_rms * rms) + (
-            (1.0 - self.config.ema_alpha_rms) * self._ema_rms
+    def _update_ema(
+        self,
+        rms: float,
+        zcr: float,
+        bpm: float,
+        spectral_flux: float = 0.0,
+        bass_ratio: float = 0.0,
+        onset_strength: float = 0.0,
+    ) -> None:
+        cfg = self.config
+        self._ema_rms = (cfg.ema_alpha_rms * rms) + (
+            (1.0 - cfg.ema_alpha_rms) * self._ema_rms
         )
-        self._ema_zcr = (self.config.ema_alpha_zcr * zcr) + (
-            (1.0 - self.config.ema_alpha_zcr) * self._ema_zcr
+        self._ema_zcr = (cfg.ema_alpha_zcr * zcr) + (
+            (1.0 - cfg.ema_alpha_zcr) * self._ema_zcr
         )
         if bpm > 0.0:
             if self._ema_bpm <= 0.0:
                 self._ema_bpm = bpm
             else:
-                if abs(bpm - self._ema_bpm) <= self.config.bpm_jump_limit:
-                    self._ema_bpm = (self.config.ema_alpha_bpm * bpm) + (
-                        (1.0 - self.config.ema_alpha_bpm) * self._ema_bpm
+                if abs(bpm - self._ema_bpm) <= cfg.bpm_jump_limit:
+                    self._ema_bpm = (cfg.ema_alpha_bpm * bpm) + (
+                        (1.0 - cfg.ema_alpha_bpm) * self._ema_bpm
                     )
+        # --- New feature EMAs ---
+        self._ema_spectral_flux = (cfg.ema_alpha_spectral_flux * spectral_flux) + (
+            (1.0 - cfg.ema_alpha_spectral_flux) * self._ema_spectral_flux
+        )
+        self._ema_bass_ratio = (cfg.ema_alpha_bass_ratio * bass_ratio) + (
+            (1.0 - cfg.ema_alpha_bass_ratio) * self._ema_bass_ratio
+        )
+        self._ema_onset_strength = (cfg.ema_alpha_onset_strength * onset_strength) + (
+            (1.0 - cfg.ema_alpha_onset_strength) * self._ema_onset_strength
+        )
+        # --- Dynamic normalization ---
+        # RMS floor (slow-tracking) and ceiling (faster-tracking)
+        self._rms_floor = (cfg.rms_floor_alpha * self._ema_rms) + (
+            (1.0 - cfg.rms_floor_alpha) * self._rms_floor
+        )
+        self._rms_ceil = max(
+            self._rms_floor + 1e-8,
+            (cfg.rms_ceil_alpha * self._ema_rms) + (
+                (1.0 - cfg.rms_ceil_alpha) * self._rms_ceil
+            ),
+        )
+        # Rolling max with slow decay for flux and onset
+        self._flux_max = max(self._ema_spectral_flux, self._flux_max * cfg.flux_max_decay)
+        self._onset_max = max(self._ema_onset_strength, self._onset_max * cfg.onset_max_decay)
+        # --- Compute composite energy ---
+        self._energy = self._compute_energy()
 
     def _beat_stability(self) -> float:
         # Small values imply more stable beat timing.
@@ -160,6 +244,9 @@ class Director:
         bpm = float(features.get("bpm", 0.0))
         zcr = float(features.get("zcr", 0.0))
         beat = bool(features.get("beat", False))
+        spectral_flux = float(features.get("spectral_flux", 0.0))
+        bass_ratio = float(features.get("bass_ratio", 0.0))
+        onset_strength = float(features.get("onset_strength", 0.0))
 
         # Advance color on beat
         self.last_beat_event = beat
@@ -168,7 +255,12 @@ class Director:
         color = self._colors[self._color_idx] if self._colors else None
 
         self._update_history(t, rms, zcr, bpm)
-        self._update_ema(rms, zcr, bpm)
+        self._update_ema(
+            rms, zcr, bpm,
+            spectral_flux=spectral_flux,
+            bass_ratio=bass_ratio,
+            onset_strength=onset_strength,
+        )
         bpm = self._effective_bpm(bpm)
         stability = self._beat_stability()
         self._last_stability = stability
