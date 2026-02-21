@@ -358,7 +358,10 @@ def run_live_to_govee(
                     print(
                         f"mood={mood.value} effect={preset.name} "
                         f"palette={effect_cycler.current_palette} "
-                        f"mode={preset.render_mode.value}"
+                        f"mode={preset.render_mode.value} "
+                        f"ema_rms={director.ema_rms:.4f} "
+                        f"stability={director.stability:.4f} "
+                        f"bpm={director.effective_bpm:.1f}"
                     )
 
             # Render and send a frame on every tick (animation-driven)
