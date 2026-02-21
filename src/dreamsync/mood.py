@@ -14,21 +14,22 @@ class Mood(str, Enum):
 @dataclass(frozen=True)
 class MoodConfig:
     # --- Entry thresholds (higher than exit to create hysteresis) ---
-    chill_rms_ceiling: float = 0.10
-    groove_rms_ceiling: float = 0.24
+    # Calibrated for WASAPI loopback where ema_rms range is ~0.00–0.07
+    chill_rms_ceiling: float = 0.015
+    groove_rms_ceiling: float = 0.035
     stability_threshold: float = 0.07
     min_bpm_for_groove: float = 70.0
 
     # --- Exit thresholds (lower than entry) ---
-    chill_rms_exit: float = 0.13       # must exceed this to leave CHILL
-    groove_rms_exit_low: float = 0.07  # drop below this to fall to CHILL
-    groove_rms_exit_high: float = 0.27 # exceed this to rise to HYPE
-    hype_rms_exit: float = 0.20        # drop below this to fall to GROOVE
+    chill_rms_exit: float = 0.020      # must exceed this to leave CHILL
+    groove_rms_exit_low: float = 0.010 # drop below this to fall to CHILL
+    groove_rms_exit_high: float = 0.040 # exceed this to rise to HYPE
+    hype_rms_exit: float = 0.028       # drop below this to fall to GROOVE
     stability_exit: float = 0.09       # exceed this to lose stable-beat requirement
 
     # --- DROP detection ---
-    drop_rms_spike: float = 0.15   # RMS must jump by this much
-    drop_rms_dip: float = 0.10     # RMS must have been below this recently
+    drop_rms_spike: float = 0.020  # RMS must jump by this much
+    drop_rms_dip: float = 0.012    # RMS must have been below this recently
     drop_window: float = 0.5       # spike must happen within this many seconds of dip
     drop_duration: float = 3.0     # DROP auto-expires after this many seconds
     drop_cooldown: float = 10.0    # minimum seconds between DROP detections
