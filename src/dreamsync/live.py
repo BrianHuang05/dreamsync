@@ -31,6 +31,8 @@ class LiveBpmEstimator:
         max_jump_bpm: float = 6.0,
         confirm_updates: int = 4,
         half_time: bool = False,
+        onset_mode: str = "hybrid",
+        threshold_mode: str = "adaptive",
     ) -> None:
         self.sample_rate = sample_rate
         self.hop_size = hop_size
@@ -43,6 +45,13 @@ class LiveBpmEstimator:
         self.max_jump_bpm = max_jump_bpm
         self.confirm_updates = max(1, confirm_updates)
         self.half_time = half_time
+        _valid_onset_modes = ("spectral_flux", "bass_diff", "kick_flux", "whitened_flux", "hybrid")
+        if onset_mode not in _valid_onset_modes:
+            raise ValueError(f"onset_mode must be one of {_valid_onset_modes}, got {onset_mode!r}")
+        self.onset_mode = onset_mode
+        if threshold_mode not in ("adaptive", "global"):
+            raise ValueError(f"threshold_mode must be 'adaptive' or 'global', got {threshold_mode!r}")
+        self.threshold_mode = threshold_mode
         self.max_frames = max(8, int(window_seconds * sample_rate / hop_size))
         self.min_frames = max(8, int(3.0 * sample_rate / hop_size))
         self.onset_env: deque[float] = deque()
@@ -58,11 +67,32 @@ class LiveBpmEstimator:
         self._candidate_hits = 0
         self._last_onset_beat_t = -1e9
         self._prev_onset = 0.0
+        # Hybrid onset mode state: EMA of bass onset activity vs kick flux activity
+        self._bass_activity = 0.0
+        self._kick_activity = 0.0
+        self._hybrid_source = "bass"  # current active source in hybrid mode
 
-    def update(self, energy: float, t: float) -> tuple[float, bool]:
-        onset = max(0.0, energy - self.prev_rms)
-        self.last_onset = onset
+    def update(
+        self,
+        energy: float,
+        t: float,
+        spectral_flux: float = 0.0,
+        kick_spectral_flux: float = 0.0,
+        whitened_flux: float = 0.0,
+    ) -> tuple[float, bool]:
+        bass_onset = max(0.0, energy - self.prev_rms)
         self.prev_rms = energy
+        if self.onset_mode == "spectral_flux":
+            onset = spectral_flux
+        elif self.onset_mode == "kick_flux":
+            onset = kick_spectral_flux if kick_spectral_flux > 0 else spectral_flux
+        elif self.onset_mode == "whitened_flux":
+            onset = whitened_flux
+        elif self.onset_mode == "hybrid":
+            onset = self._hybrid_onset(bass_onset, kick_spectral_flux)
+        else:
+            onset = bass_onset
+        self.last_onset = onset
         self.onset_env.append(onset)
         while len(self.onset_env) > self.max_frames:
             self.onset_env.popleft()
@@ -76,7 +106,10 @@ class LiveBpmEstimator:
         ):
             onset_arr = np.asarray(self.onset_env, dtype=np.float32)
             onset_arr = _smooth_signal(onset_arr, width=5)
-            beat_idx = self._detect_beats_live(onset_arr)
+            if self.threshold_mode == "adaptive":
+                beat_idx = self._detect_beats_adaptive(onset_arr)
+            else:
+                beat_idx = self._detect_beats_live(onset_arr)
             bpm_from_beats = _estimate_bpm_from_beats(
                 beat_idx, self.hop_size, self.sample_rate
             )
@@ -157,6 +190,32 @@ class LiveBpmEstimator:
         self._prev_onset = onset
         return is_beat
 
+    def _hybrid_onset(
+        self,
+        bass_onset: float,
+        kick_flux: float,
+        alpha: float = 0.05,
+        switch_ratio: float = 3.0,
+    ) -> float:
+        """Choose between bass_diff and kick_flux based on signal activity.
+
+        Uses bass_diff (best noise rejection) as the primary source.
+        Switches to kick_flux only when bass onset activity is very low
+        relative to kick flux activity — meaning bass_diff isn't picking
+        up the beats but the kick band still has rhythmic content.
+        """
+        self._bass_activity = alpha * bass_onset + (1.0 - alpha) * self._bass_activity
+        self._kick_activity = alpha * kick_flux + (1.0 - alpha) * self._kick_activity
+
+        if self._bass_activity > 0 and self._kick_activity / (self._bass_activity + 1e-12) > switch_ratio:
+            # Kick band has much more activity than broadband bass diff —
+            # bass_diff is probably missing beats, use kick_flux
+            self._hybrid_source = "kick"
+            return kick_flux
+        else:
+            self._hybrid_source = "bass"
+            return bass_onset
+
     def _advance_beat_phase(self) -> bool:
         if self.last_bpm <= 0.0:
             return False
@@ -196,20 +255,78 @@ class LiveBpmEstimator:
         self.last_thresh = thresh
         return np.array(deduped, dtype=int)
 
+    def _detect_beats_adaptive(
+        self,
+        onset_env: np.ndarray,
+        window_seconds: float = 0.5,
+        multiplier: float = 1.8,
+        offset: float = 0.0,
+    ) -> np.ndarray:
+        """Detect beats using a local adaptive threshold (median of surrounding frames)."""
+        if onset_env.size < 3:
+            return np.array([], dtype=int)
+
+        n = onset_env.size
+        w = max(1, int(window_seconds * self.sample_rate / self.hop_size))
+
+        # Compute local median threshold for each frame
+        local_thresh = np.empty(n, dtype=np.float32)
+        for i in range(n):
+            lo = max(0, i - w)
+            hi = min(n, i + w + 1)
+            local_thresh[i] = float(np.median(onset_env[lo:hi])) * multiplier + offset
+
+        # Find local maxima that exceed adaptive threshold
+        peaks = (onset_env[1:-1] > onset_env[:-2]) & (onset_env[1:-1] >= onset_env[2:])
+        peaks &= onset_env[1:-1] > local_thresh[1:-1]
+        peak_idx = (np.where(peaks)[0] + 1).tolist()
+
+        if not peak_idx:
+            self.last_onset_mean = float(onset_env.mean())
+            self.last_onset_std = float(onset_env.std())
+            self.last_thresh = float(local_thresh.mean())
+            return np.array([], dtype=int)
+
+        # De-duplicate with minimum gap
+        min_gap_frames = max(1, int((self.sample_rate * 0.15) / self.hop_size))
+        deduped: list[int] = [peak_idx[0]]
+        for idx in peak_idx[1:]:
+            if idx - deduped[-1] >= min_gap_frames:
+                deduped.append(idx)
+
+        self.last_onset_mean = float(onset_env.mean())
+        self.last_onset_std = float(onset_env.std())
+        self.last_thresh = float(local_thresh.mean())
+        return np.array(deduped, dtype=int)
+
 
 @dataclass
 class SpectralFeatures:
     bass: float
     bass_ratio: float
     spectral_flux: float
+    kick_energy: float
+    kick_ratio: float
+    kick_spectral_flux: float
     mag: np.ndarray
 
 
-def _prepare_bass_window(frame_size: int, sample_rate: int) -> tuple[np.ndarray, np.ndarray]:
+def _prepare_bass_window(
+    frame_size: int,
+    sample_rate: int,
+    kick_low: float = 50.0,
+    kick_high: float = 130.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return (hanning_window, bass_mask, kick_mask).
+
+    bass_mask: freqs <= 200 Hz (broadband bass).
+    kick_mask: kick_low <= freqs <= kick_high (narrow kick band).
+    """
     window = np.hanning(frame_size).astype(np.float32)
     freqs = np.fft.rfftfreq(frame_size, d=1.0 / sample_rate)
-    mask = freqs <= 200.0
-    return window, mask
+    bass_mask = freqs <= 200.0
+    kick_mask = (freqs >= kick_low) & (freqs <= kick_high)
+    return window, bass_mask, kick_mask
 
 
 def _spectral_features(
@@ -217,6 +334,7 @@ def _spectral_features(
     window: np.ndarray,
     mask: np.ndarray,
     prev_mag: np.ndarray | None,
+    kick_mask: np.ndarray | None = None,
 ) -> SpectralFeatures:
     spectrum = np.fft.rfft(frame * window)
     mag = np.abs(spectrum)
@@ -227,7 +345,50 @@ def _spectral_features(
         spectral_flux = float(np.maximum(0.0, mag - prev_mag).sum())
     else:
         spectral_flux = 0.0
-    return SpectralFeatures(bass=bass, bass_ratio=bass_ratio, spectral_flux=spectral_flux, mag=mag)
+
+    # Kick-band features
+    if kick_mask is not None:
+        kick_energy = float(mag[kick_mask].sum())
+        kick_ratio = kick_energy / (bass + 1e-8)
+        if prev_mag is not None:
+            kick_spectral_flux = float(np.maximum(0.0, mag[kick_mask] - prev_mag[kick_mask]).sum())
+        else:
+            kick_spectral_flux = 0.0
+    else:
+        kick_energy = 0.0
+        kick_ratio = 0.0
+        kick_spectral_flux = 0.0
+
+    return SpectralFeatures(
+        bass=bass, bass_ratio=bass_ratio, spectral_flux=spectral_flux,
+        kick_energy=kick_energy, kick_ratio=kick_ratio,
+        kick_spectral_flux=kick_spectral_flux, mag=mag,
+    )
+
+
+def _compute_whitened_flux(
+    mag: np.ndarray,
+    spectral_mean: np.ndarray | None,
+    prev_whitened_mag: np.ndarray | None,
+    alpha: float = 0.05,
+) -> tuple[float, np.ndarray, np.ndarray]:
+    """Compute spectral flux on a pre-whitened (normalized) spectrum.
+
+    Returns (whitened_flux, updated_spectral_mean, whitened_mag).
+    """
+    if spectral_mean is None:
+        spectral_mean = mag.copy()
+    else:
+        spectral_mean = alpha * mag + (1.0 - alpha) * spectral_mean
+
+    whitened_mag = mag / (spectral_mean + 1e-8)
+
+    if prev_whitened_mag is not None:
+        whitened_flux = float(np.maximum(0.0, whitened_mag - prev_whitened_mag).sum())
+    else:
+        whitened_flux = 0.0
+
+    return whitened_flux, spectral_mean, whitened_mag
 
 
 def _feature_row_from_frame(
@@ -323,8 +484,10 @@ def run_live_to_govee(
     started_at = time.monotonic()
     next_telemetry = started_at + max(0.1, telemetry_interval_seconds)
     last_print = started_at
-    window, bass_mask = _prepare_bass_window(frame_size, sample_rate)
+    window, bass_mask, kick_mask = _prepare_bass_window(frame_size, sample_rate)
     prev_mag: np.ndarray | None = None
+    spectral_mean: np.ndarray | None = None
+    prev_whitened_mag: np.ndarray | None = None
 
     # Activate all devices (activate() includes its own delays)
     multi_adapter.activate(brightness=100)
@@ -354,9 +517,17 @@ def run_live_to_govee(
                 frame = buffer[:frame_size]
                 buffer = buffer[hop_size:]
                 rms = float(np.sqrt(np.mean(frame**2)))
-                sf = _spectral_features(frame, window, bass_mask, prev_mag)
+                sf = _spectral_features(frame, window, bass_mask, prev_mag, kick_mask=kick_mask)
                 prev_mag = sf.mag
-                bpm, beat = bpm_estimator.update(sf.bass, stream_t)
+                wf, spectral_mean, prev_whitened_mag = _compute_whitened_flux(
+                    sf.mag, spectral_mean, prev_whitened_mag,
+                )
+                bpm, beat = bpm_estimator.update(
+                    sf.bass, stream_t,
+                    spectral_flux=sf.spectral_flux,
+                    kick_spectral_flux=sf.kick_spectral_flux,
+                    whitened_flux=wf,
+                )
                 if half_time and bpm > 0:
                     bpm *= 0.5
                 last_features = _feature_row_from_frame(
