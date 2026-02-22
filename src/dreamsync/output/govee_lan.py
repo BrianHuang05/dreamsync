@@ -344,19 +344,28 @@ def parse_device_spec(spec: str) -> GoveeDeviceSpec:
 
 
 class MultiGoveeLanAdapter:
-    """Drives multiple Govee devices simultaneously with per-device roles and renderers."""
+    """Drives multiple Govee devices simultaneously with per-device roles and renderers.
+
+    Optionally includes BLE mood-follower devices that receive a single
+    (color, brightness) derived from the current LightingIntent rather
+    than per-segment RGB frames.
+    """
 
     def __init__(
         self,
         devices: list[tuple[GoveeLanAdapter, SegmentRenderer, DeviceRole]],
+        ble_followers: list | None = None,
     ) -> None:
         self.devices = devices
+        # list of GoveeBleAdapter instances (imported lazily to avoid hard dep)
+        self._ble_followers: list = ble_followers or []
 
     def activate(self, brightness: int = 100) -> None:
         """Turn on all devices and set brightness.
 
         Includes delays between commands so devices have time to process
         power-on before receiving brightness and color data.
+        BLE followers are started (background threads launched).
         """
         for adapter, _renderer, _role in self.devices:
             adapter.turn_on()
@@ -364,16 +373,30 @@ class MultiGoveeLanAdapter:
         for adapter, _renderer, _role in self.devices:
             adapter.set_brightness(brightness)
         time.sleep(0.3)
+        # Start BLE follower threads
+        for ble_adapter in self._ble_followers:
+            ble_adapter.start()
+
+    def deactivate(self) -> None:
+        """Stop BLE follower threads."""
+        for ble_adapter in self._ble_followers:
+            ble_adapter.stop()
 
     def send_frame(
         self, t: float, intent: LightingIntent, beat: bool = False,
         params: dict | None = None,
     ) -> bool:
-        """Render and send one frame to all devices, applying role transforms."""
+        """Render and send one frame to all devices, applying role transforms.
+
+        BLE mood followers receive the intent's color + intensity directly.
+        """
         any_sent = False
         for adapter, renderer, role in self.devices:
             device_intent = transform_intent(intent, role)
             colors = renderer.render(t, device_intent, beat=beat, params=params)
             if adapter.send_frame(colors):
                 any_sent = True
+        # Push to BLE followers (fire-and-forget, they rate-limit internally)
+        for ble_adapter in self._ble_followers:
+            ble_adapter.emit(t, intent)
         return any_sent

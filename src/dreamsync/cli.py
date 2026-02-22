@@ -94,11 +94,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Test pattern: solid (one color), alternate (odd/even), rainbow (per-segment), walk (one segment at a time).",
     )
 
+    # -- Govee BLE commands --------------------------------------------------
+    ble_scan = sub.add_parser("govee-ble-scan", help="Scan for Govee BLE devices.")
+    ble_scan.add_argument("--timeout", type=float, default=10.0, help="Scan duration in seconds.")
+
+    ble_test = sub.add_parser(
+        "govee-ble-test",
+        help="Connect to a Govee BLE device and set a color.",
+    )
+    ble_test.add_argument("--address", required=True, help="BLE device address (MAC or UUID).")
+    ble_test.add_argument("--color", type=str, default="#ff0000", help="Hex color to display.")
+    ble_test.add_argument("--brightness", type=int, default=100, help="Brightness 0-100.")
+    ble_test.add_argument("--duration", type=float, default=5.0, help="Duration in seconds.")
+
     govee_live = sub.add_parser(
         "govee-live",
         help="Live audio → beat detection → renderer → Govee device (no LedFx).",
     )
-    govee_device_group = govee_live.add_mutually_exclusive_group(required=True)
+    govee_device_group = govee_live.add_mutually_exclusive_group(required=False)
     govee_device_group.add_argument("--device-ip", help="Govee device IP address (single device, use with --segments).")
     govee_device_group.add_argument(
         "--device",
@@ -108,6 +121,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Govee device spec (repeatable). TRANSPORT overrides --transport per device. Example: --device 10.0.0.1:7:primary:ptreal --device 10.0.0.2:25:primary:razer",
     )
     govee_live.add_argument("--segments", type=int, default=15, help="Number of addressable segments (used with --device-ip).")
+    govee_live.add_argument(
+        "--ble-device",
+        action="append",
+        dest="ble_devices",
+        metavar="ADDRESS",
+        help="BLE device address for mood following (repeatable). Example: --ble-device AA:BB:CC:DD:EE:FF",
+    )
     govee_live.add_argument("--duration", type=float, required=True, help="Capture duration in seconds.")
     govee_live.add_argument(
         "--render-mode",
@@ -360,6 +380,60 @@ def main(argv: list[str] | None = None) -> int:
         ))
         return 0
 
+    if args.command == "govee-ble-scan":
+        from .output.govee_ble import scan_ble_devices
+
+        print(f"Scanning for Govee BLE devices ({args.timeout:.0f} seconds)...")
+        devices = scan_ble_devices(timeout=args.timeout)
+        if not devices:
+            print("No BLE devices found.")
+        for dev in devices:
+            print(json.dumps(
+                {"name": dev.name, "address": dev.address, "rssi": dev.rssi},
+                separators=(",", ":"),
+            ))
+        print(json.dumps({"ble_devices_found": len(devices)}, separators=(",", ":")))
+        return 0
+
+    if args.command == "govee-ble-test":
+        import time
+        from .output.govee_ble import GoveeBleAdapter, GoveeBleConfig
+
+        hex_color = args.color.lstrip("#")
+        r = int(hex_color[0:2], 16)
+        g = int(hex_color[2:4], 16)
+        b = int(hex_color[4:6], 16)
+
+        print(json.dumps(
+            {"address": args.address, "color": args.color,
+             "brightness": args.brightness, "duration": args.duration},
+            separators=(",", ":"),
+        ))
+
+        config = GoveeBleConfig(address=args.address)
+        adapter = GoveeBleAdapter(config)
+        adapter.start()
+
+        # Wait for connection
+        print("Connecting...")
+        connect_start = time.monotonic()
+        while not adapter.connected and (time.monotonic() - connect_start) < config.connect_timeout:
+            time.sleep(0.2)
+
+        if not adapter.connected:
+            print("Failed to connect.")
+            adapter.stop()
+            return 1
+
+        print("Connected. Setting color...")
+        adapter.send_color(r, g, b, args.brightness)
+        time.sleep(args.duration)
+
+        print("Done. Disconnecting...")
+        adapter.stop()
+        print(json.dumps({"done": True}, separators=(",", ":")))
+        return 0
+
     if args.command == "govee-live":
         render_mode = RenderMode(args.render_mode)
         brightness = max(0.0, min(1.0, float(args.brightness)))
@@ -375,11 +449,16 @@ def main(argv: list[str] | None = None) -> int:
         director_config = DirectorConfig(**director_kwargs)
 
         # Build device list from --device specs or legacy --device-ip/--segments
+        ble_addresses = getattr(args, "ble_devices", None) or []
+        specs = []
         if args.govee_devices:
             specs = [parse_device_spec(s) for s in args.govee_devices]
-        else:
+        elif args.device_ip:
             from .output.govee_lan import GoveeDeviceSpec
             specs = [GoveeDeviceSpec(ip=args.device_ip, segments=args.segments)]
+        elif not ble_addresses:
+            print("Error: at least one of --device-ip, --device, or --ble-device is required.")
+            return 1
 
         global_transport = TransportMode(args.transport)
         device_triples = []
@@ -402,7 +481,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             device_triples.append((adapter, renderer, spec.role))
 
-        multi_adapter = MultiGoveeLanAdapter(device_triples)
+        # Build BLE mood followers
+        ble_followers = []
+        if ble_addresses:
+            from .output.govee_ble import GoveeBleAdapter, GoveeBleConfig
+            for addr in ble_addresses:
+                ble_config = GoveeBleConfig(address=addr)
+                ble_followers.append(GoveeBleAdapter(ble_config))
+
+        multi_adapter = MultiGoveeLanAdapter(device_triples, ble_followers=ble_followers)
 
         device_info = [
             {
@@ -411,9 +498,11 @@ def main(argv: list[str] | None = None) -> int:
             }
             for s in specs
         ]
+        ble_info = [{"address": addr} for addr in ble_addresses]
         print(json.dumps(
             {
                 "devices": device_info,
+                "ble_followers": ble_info,
                 "render_mode": args.render_mode,
                 "fps": fps,
                 "brightness": brightness,

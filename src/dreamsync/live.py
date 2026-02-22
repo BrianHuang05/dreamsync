@@ -624,6 +624,10 @@ def run_live_to_govee(
                     )
             time.sleep(0.005)  # ~200Hz tick for responsive rendering
 
+    # Stop BLE follower threads
+    multi_adapter.deactivate()
+
+    ble_count = len(getattr(multi_adapter, "_ble_followers", []))
     summary = {
         "duration_seconds": float(duration_seconds),
         "sample_rate": int(sample_rate),
@@ -637,5 +641,6 @@ def run_live_to_govee(
         "sent": int(sent_count),
         "beats": int(beat_count),
         "device_count": len(multi_adapter.devices),
+        "ble_followers": ble_count,
     }
     return logs, summary

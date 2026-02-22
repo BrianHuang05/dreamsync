@@ -12,6 +12,7 @@ dependencies = [
 
 [project.optional-dependencies]
 stream = ["sounddevice>=0.4"]
+ble = ["bleak>=0.21"]
 
 [build-system]
 requires = ["setuptools>=69", "wheel"]
