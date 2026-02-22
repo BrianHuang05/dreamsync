@@ -106,6 +106,10 @@ def build_parser() -> argparse.ArgumentParser:
     ble_test.add_argument("--color", type=str, default="#ff0000", help="Hex color to display.")
     ble_test.add_argument("--brightness", type=int, default=100, help="Brightness 0-100.")
     ble_test.add_argument("--duration", type=float, default=5.0, help="Duration in seconds.")
+    ble_test.add_argument(
+        "--protocol", choices=["segment", "bulb"], default="segment",
+        help="BLE protocol: segment (strips, default) or bulb (H6006 family).",
+    )
 
     govee_live = sub.add_parser(
         "govee-live",
@@ -125,8 +129,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--ble-device",
         action="append",
         dest="ble_devices",
-        metavar="ADDRESS",
-        help="BLE device address for mood following (repeatable). Example: --ble-device AA:BB:CC:DD:EE:FF",
+        metavar="ADDRESS[:PROTOCOL]",
+        help="BLE mood follower (repeatable). PROTOCOL is 'segment' (strips, default) or 'bulb' (H6006). Example: --ble-device AA:BB:CC:DD:EE:FF:bulb",
     )
     govee_live.add_argument("--duration", type=float, required=True, help="Capture duration in seconds.")
     govee_live.add_argument(
@@ -397,20 +401,22 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "govee-ble-test":
         import time
-        from .output.govee_ble import GoveeBleAdapter, GoveeBleConfig
+        from .output.govee_ble import BleProtocol, GoveeBleAdapter, GoveeBleConfig
 
         hex_color = args.color.lstrip("#")
         r = int(hex_color[0:2], 16)
         g = int(hex_color[2:4], 16)
         b = int(hex_color[4:6], 16)
 
+        protocol = BleProtocol(args.protocol)
         print(json.dumps(
             {"address": args.address, "color": args.color,
-             "brightness": args.brightness, "duration": args.duration},
+             "brightness": args.brightness, "duration": args.duration,
+             "protocol": protocol.value},
             separators=(",", ":"),
         ))
 
-        config = GoveeBleConfig(address=args.address)
+        config = GoveeBleConfig(address=args.address, protocol=protocol)
         adapter = GoveeBleAdapter(config)
         adapter.start()
 
@@ -481,13 +487,24 @@ def main(argv: list[str] | None = None) -> int:
             )
             device_triples.append((adapter, renderer, spec.role))
 
-        # Build BLE mood followers
+        # Build BLE mood followers — spec format: ADDRESS[:PROTOCOL]
         ble_followers = []
+        ble_info = []
         if ble_addresses:
-            from .output.govee_ble import GoveeBleAdapter, GoveeBleConfig
-            for addr in ble_addresses:
-                ble_config = GoveeBleConfig(address=addr)
+            from .output.govee_ble import BleProtocol, GoveeBleAdapter, GoveeBleConfig
+            for spec_str in ble_addresses:
+                parts = spec_str.rsplit(":", 1)
+                # Distinguish "AA:BB:CC:DD:EE:FF:bulb" from "AA:BB:CC:DD:EE:FF"
+                # MAC addresses have 5 colons; if last part is a protocol name, split it off
+                if len(parts) == 2 and parts[1] in ("segment", "bulb"):
+                    addr = parts[0]
+                    proto = BleProtocol(parts[1])
+                else:
+                    addr = spec_str
+                    proto = BleProtocol.SEGMENT
+                ble_config = GoveeBleConfig(address=addr, protocol=proto)
                 ble_followers.append(GoveeBleAdapter(ble_config))
+                ble_info.append({"address": addr, "protocol": proto.value})
 
         multi_adapter = MultiGoveeLanAdapter(device_triples, ble_followers=ble_followers)
 
@@ -498,7 +515,6 @@ def main(argv: list[str] | None = None) -> int:
             }
             for s in specs
         ]
-        ble_info = [{"address": addr} for addr in ble_addresses]
         print(json.dumps(
             {
                 "devices": device_info,

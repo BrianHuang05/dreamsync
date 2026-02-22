@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from dreamsync.director import EffectMode, LightingIntent
 from dreamsync.output.govee_ble import (
+    BleProtocol,
     GOVEE_BLE_CHAR_UUID,
     GOVEE_BLE_SERVICE_UUID,
     GOVEE_NAME_PREFIXES,
@@ -20,6 +21,7 @@ from dreamsync.output.govee_ble import (
     GoveeBleDevice,
     MultiBleAdapter,
     _SHUTDOWN,
+    build_ble_bulb_color_packet,
     build_ble_color_packet,
     build_ble_manual_mode_packet,
 )
@@ -68,6 +70,67 @@ class BuildBleColorPacketTests(unittest.TestCase):
         self.assertEqual(pkt[3], 300 & 0xFF)
         self.assertEqual(pkt[4], (-10) & 0xFF)
         self.assertEqual(pkt[5], 256 & 0xFF)
+
+
+class BuildBleBulbColorPacketTests(unittest.TestCase):
+    """Tests for the H6006 bulb color command (33 05 0D RR GG BB)."""
+
+    def test_packet_length(self) -> None:
+        pkt = build_ble_bulb_color_packet(255, 0, 0)
+        self.assertEqual(len(pkt), 20)
+
+    def test_header_bytes(self) -> None:
+        pkt = build_ble_bulb_color_packet(0, 0, 0)
+        self.assertEqual(pkt[0], 0x33)
+        self.assertEqual(pkt[1], 0x05)
+        self.assertEqual(pkt[2], 0x0D)
+
+    def test_rgb_bytes(self) -> None:
+        pkt = build_ble_bulb_color_packet(100, 200, 50)
+        self.assertEqual(pkt[3], 100)
+        self.assertEqual(pkt[4], 200)
+        self.assertEqual(pkt[5], 50)
+
+    def test_differs_from_segment_color_packet(self) -> None:
+        bulb = build_ble_bulb_color_packet(255, 0, 0)
+        seg = build_ble_color_packet(255, 0, 0)
+        # Same RGB but different command byte at position 2
+        self.assertNotEqual(bulb, seg)
+        self.assertEqual(bulb[2], 0x0D)
+        self.assertEqual(seg[2], 0x02)
+
+    def test_checksum(self) -> None:
+        pkt = build_ble_bulb_color_packet(0xAA, 0xBB, 0xCC)
+        expected = _ptreal_checksum(list(pkt[:19]))
+        self.assertEqual(pkt[19], expected)
+
+    def test_clamped_to_byte(self) -> None:
+        pkt = build_ble_bulb_color_packet(300, -10, 256)
+        self.assertEqual(pkt[3], 300 & 0xFF)
+        self.assertEqual(pkt[4], (-10) & 0xFF)
+        self.assertEqual(pkt[5], 256 & 0xFF)
+
+
+class BleProtocolTests(unittest.TestCase):
+    """Tests for the BleProtocol enum."""
+
+    def test_segment_value(self) -> None:
+        self.assertEqual(BleProtocol.SEGMENT, "segment")
+
+    def test_bulb_value(self) -> None:
+        self.assertEqual(BleProtocol.BULB, "bulb")
+
+    def test_default_config_protocol(self) -> None:
+        cfg = GoveeBleConfig(address="AA:BB:CC:DD:EE:FF")
+        self.assertEqual(cfg.protocol, BleProtocol.SEGMENT)
+
+    def test_bulb_config_protocol(self) -> None:
+        cfg = GoveeBleConfig(address="AA:BB:CC:DD:EE:FF", protocol=BleProtocol.BULB)
+        self.assertEqual(cfg.protocol, BleProtocol.BULB)
+
+    def test_is_string_enum(self) -> None:
+        self.assertIsInstance(BleProtocol.SEGMENT, str)
+        self.assertIsInstance(BleProtocol.BULB, str)
 
 
 class BuildBleManualModePacketTests(unittest.TestCase):

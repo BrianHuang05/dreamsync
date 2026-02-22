@@ -34,6 +34,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 from dreamsync.director import LightingIntent
@@ -57,25 +58,28 @@ GOVEE_BLE_CHAR_UUID = "00010203-0405-0607-0809-0a0b0c0d2b11"
 GOVEE_NAME_PREFIXES = ("Govee_", "ihoment_")
 
 # ---------------------------------------------------------------------------
-# BLE color command (0x33 0x05 0x02 — whole-device single color)
+# BLE protocol variants
 # ---------------------------------------------------------------------------
 
 
-def build_ble_color_packet(r: int, g: int, b: int) -> bytes:
-    """Build a 20-byte BLE packet to set whole-device color.
+class BleProtocol(str, Enum):
+    """Which BLE command format to use for setting color."""
 
-    Uses command ``33 05 02`` which sets the entire device to a single RGB
-    color, unlike ``33 05 15 01`` which targets individual segments.
-    """
-    packet = [
-        0x33, 0x05, 0x02,
-        r & 0xFF, g & 0xFF, b & 0xFF,
-    ]
-    # Pad to 19 bytes, then append XOR checksum
+    SEGMENT = "segment"  # 33 05 15 01 + bitmask — strips (H617A, H612F family)
+    BULB = "bulb"        # 33 05 0D RR GG BB — bulbs (H6006 family)
+
+
+# ---------------------------------------------------------------------------
+# BLE color commands
+# ---------------------------------------------------------------------------
+
+
+def _build_ble_packet(cmd_bytes: list[int]) -> bytes:
+    """Build a 20-byte BLE packet: pad to 19 bytes + XOR checksum."""
+    packet = list(cmd_bytes)
     while len(packet) < 19:
         packet.append(0x00)
     packet = packet[:19]
-    # XOR checksum over first 19 bytes
     chk = 0
     for byte in packet[:19]:
         chk ^= byte
@@ -83,9 +87,21 @@ def build_ble_color_packet(r: int, g: int, b: int) -> bytes:
     return bytes(packet)
 
 
-# ---------------------------------------------------------------------------
-# BLE scene/mode command (optional — sets device to "manual" color mode)
-# ---------------------------------------------------------------------------
+def build_ble_color_packet(r: int, g: int, b: int) -> bytes:
+    """Build a 20-byte BLE packet to set whole-device color.
+
+    Uses command ``33 05 02`` which works on some device families.
+    """
+    return _build_ble_packet([0x33, 0x05, 0x02, r & 0xFF, g & 0xFF, b & 0xFF])
+
+
+def build_ble_bulb_color_packet(r: int, g: int, b: int) -> bytes:
+    """Build a 20-byte BLE packet for bulb color (H6006 family).
+
+    Uses command ``33 05 0D RR GG BB`` — the direct color command for
+    Govee bulbs that use the ihoment BLE protocol.
+    """
+    return _build_ble_packet([0x33, 0x05, 0x0D, r & 0xFF, g & 0xFF, b & 0xFF])
 
 
 def build_ble_manual_mode_packet() -> bytes:
@@ -94,12 +110,7 @@ def build_ble_manual_mode_packet() -> bytes:
     Command ``33 05 01`` tells the device to accept direct color commands
     rather than running a built-in scene or music mode.
     """
-    packet = [0x33, 0x05, 0x01] + [0x00] * 16
-    chk = 0
-    for byte in packet[:19]:
-        chk ^= byte
-    packet.append(chk)
-    return bytes(packet)
+    return _build_ble_packet([0x33, 0x05, 0x01])
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +186,8 @@ class GoveeBleConfig:
 
     address: str  # BLE MAC address or platform identifier
     name: str = ""  # Human-readable name (from discovery)
-    segments: int = 15  # Segment count for ptreal segment packets
+    protocol: BleProtocol = BleProtocol.SEGMENT  # Command format
+    segments: int = 15  # Segment count (only used by SEGMENT protocol)
     max_fps: float = 5.0  # Maximum color updates per second
     reconnect_delay: float = 2.0  # Seconds between reconnection attempts
     connect_timeout: float = 10.0  # BLE connection timeout
@@ -361,11 +373,15 @@ class GoveeBleAdapter:
                         await self._ble_write(client, build_ptreal_brightness_packet(brightness))
                         last_brightness = brightness
 
-                    # Set color via segment packets (proven on H617A, H612F family)
-                    seg_count = self.config.segments
-                    packets = build_ptreal_segment_packets([(r, g, b)] * seg_count)
-                    for pkt in packets:
-                        await self._ble_write(client, pkt)
+                    # Set color using the appropriate protocol
+                    if self.config.protocol == BleProtocol.BULB:
+                        await self._ble_write(client, build_ble_bulb_color_packet(r, g, b))
+                    else:
+                        # SEGMENT: ptreal segment packets (H617A, H612F family)
+                        seg_count = self.config.segments
+                        packets = build_ptreal_segment_packets([(r, g, b)] * seg_count)
+                        for pkt in packets:
+                            await self._ble_write(client, pkt)
                     self._state.last_send_at = time.monotonic()
 
             except Exception as exc:
