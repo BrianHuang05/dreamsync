@@ -338,6 +338,13 @@ class GoveeBleAdapter:
                 self._state.reconnect_attempts = 0
                 _logger.info("Connected to BLE device %s", self.config.address)
 
+                # Drain stale queue items from while we were disconnected
+                while not self._queue.empty():
+                    try:
+                        self._queue.get_nowait()
+                    except queue.Empty:
+                        break
+
                 # Initialize: power on + brightness
                 await self._ble_write(client, build_ptreal_power_packet(True))
                 await asyncio.sleep(0.3)
@@ -399,9 +406,9 @@ class GoveeBleAdapter:
             if not self._started:
                 return
 
-            # Reconnect with backoff
+            # Reconnect with capped backoff (fast retries, max 5s)
             self._state.reconnect_attempts += 1
-            delay = min(30.0, self.config.reconnect_delay * self._state.reconnect_attempts)
+            delay = min(5.0, self.config.reconnect_delay * min(self._state.reconnect_attempts, 3))
             _logger.info(
                 "Reconnecting to %s in %.1fs (attempt %d)",
                 self.config.address, delay, self._state.reconnect_attempts,

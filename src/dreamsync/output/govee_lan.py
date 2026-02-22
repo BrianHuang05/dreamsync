@@ -399,4 +399,5 @@ class MultiGoveeLanAdapter:
         # Push to BLE followers (fire-and-forget, they rate-limit internally)
         for ble_adapter in self._ble_followers:
             ble_adapter.emit(t, intent)
+            any_sent = True
         return any_sent

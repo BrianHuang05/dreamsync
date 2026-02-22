@@ -382,14 +382,14 @@ python scripts/ble_throughput_bench.py | tee data/ble_throughput_results.json
 
 Only proceed here if Phase 2 and Phase 4 passed.
 
-### Test 5A: BLE-only live session
+### Test 5A: BLE-only live session (single bulb)
 
 ```bash
 python -m dreamsync govee-live \
-  --ble-device AA:BB:CC:DD:EE:FF \
+  --ble-device D0:C9:07:C5:14:45:bulb \
   --duration 60 \
   --debug-mood \
-  --jsonl data/ble_live_solo_60s.jsonl
+  --jsonl data/ble_live_solo_60s.jsonl 2>&1 | tee data/ble_live_solo_60s_console.txt
 ```
 
 Play music with clear dynamics (quiet intro, loud chorus, beat drop). While it runs:
@@ -400,16 +400,6 @@ Play music with clear dynamics (quiet intro, loud chorus, beat drop). While it r
 3. Is there visible lag between a beat hit and the color change?
 4. Does the device disconnect or flicker unexpectedly?
 5. What mood transitions do you see in the `--debug-mood` output?
-
-**Save:** the JSONL log is automatically saved. Also copy the terminal output:
-
-```bash
-python -m dreamsync govee-live \
-  --ble-device AA:BB:CC:DD:EE:FF \
-  --duration 60 \
-  --debug-mood \
-  --jsonl data/ble_live_solo_60s.jsonl 2>&1 | tee data/ble_live_solo_60s_console.txt
-```
 
 **Give to Claude:** paste:
 1. The console output (mood transitions + telemetry)
@@ -429,7 +419,8 @@ This is the real goal — BLE devices following alongside your existing LAN stri
 python -m dreamsync govee-live \
   --device 10.126.166.180:7:primary:ptreal \
   --device 10.126.166.156:25:primary:razer \
-  --ble-device AA:BB:CC:DD:EE:FF \
+  --ble-device C7:90:80:C6:44:74:segment \
+  --ble-device D0:C9:07:C5:14:45:bulb \
   --duration 120 \
   --debug-mood \
   --jsonl data/mixed_lan_ble_120s.jsonl 2>&1 | tee data/mixed_lan_ble_120s_console.txt
@@ -437,23 +428,30 @@ python -m dreamsync govee-live \
 
 **Observe and note:**
 1. Do the LAN strips still animate normally (scroll/pulse/wave)?
-2. Does the BLE device roughly match the current mood color?
-3. Is there a noticeable delay between the LAN strips changing color and the BLE device catching up?
+2. Does the BLE strip/bulb roughly match the current mood color?
+3. Is there a noticeable delay between the LAN strips changing color and the BLE devices catching up?
 4. Does adding BLE cause any stutter or frame drops on the LAN devices?
 5. During a DROP event, do all devices react together?
 
-### Test 5C: Multiple BLE devices (if you have more than one)
+### Test 5C: Full fleet — all BLE devices + LAN
 
 ```bash
 python -m dreamsync govee-live \
-  --ble-device AA:BB:CC:DD:EE:FF \
-  --ble-device 11:22:33:44:55:66 \
-  --duration 60 \
+  --device 10.126.166.180:7:primary:ptreal \
+  --device 10.126.166.156:25:primary:razer \
+  --ble-device C7:90:80:C6:44:74:segment \
+  --ble-device D0:C9:07:C5:14:45:bulb \
+  --ble-device 98:17:3C:09:7E:ED:bulb \
+  --ble-device D0:C9:07:95:15:DB:bulb \
+  --ble-device D0:C9:07:70:AD:A3:bulb \
+  --ble-device D0:C9:07:95:14:8B:bulb \
+  --ble-device 98:17:3C:07:BA:47:bulb \
+  --duration 120 \
   --debug-mood \
-  --jsonl data/multi_ble_60s.jsonl
+  --jsonl data/full_fleet_120s.jsonl 2>&1 | tee data/full_fleet_120s_console.txt
 ```
 
-**Observe:** Do both devices change at the same time, or is there stagger?
+**Observe:** Do all BLE devices change at roughly the same time? Is there visible stagger between devices? Does the LAN animation degrade?
 
 ---
 
