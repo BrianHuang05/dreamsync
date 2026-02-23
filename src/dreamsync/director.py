@@ -94,6 +94,30 @@ class Director:
         self._onset_max = 1e-6
         self._energy = 0.0
 
+    def reset(self) -> None:
+        """Clear accumulated state for a new song."""
+        self.mode = EffectMode.AMBIENT
+        self._last_switch_time = -1e9
+        self._last_t = None
+        self._ema_rms = 0.0
+        self._ema_bpm = 0.0
+        self._ema_zcr = 0.0
+        self._ema_spectral_flux = 0.0
+        self._ema_bass_ratio = 0.0
+        self._ema_onset_strength = 0.0
+        self._rms_floor = 0.0
+        self._rms_ceil = 0.001
+        self._flux_max = 1e-6
+        self._onset_max = 1e-6
+        self._energy = 0.0
+        self._history.clear()
+        self._last_intensity = self.config.intensity_floor
+        self._last_speed = self.config.ambient_speed
+        self._last_stability = 0.0
+        self._last_effective_bpm = 0.0
+        self._color_idx = 0
+        self.last_beat_event = False
+
     def set_colors(self, colors: tuple[str, ...]) -> None:
         """Replace the active color palette and clamp the cycle index."""
         self._colors = colors

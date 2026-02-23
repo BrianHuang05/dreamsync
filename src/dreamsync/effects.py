@@ -154,6 +154,15 @@ class EffectCycler:
         self._in_drop: bool = False
         self._drop_start_t: float = -1e9
 
+    def reset(self) -> None:
+        """Clear accumulated state for a new song."""
+        self._current_effect = None
+        self._current_mood = None
+        self._effect_start_t = -1e9
+        self._palette_name = None
+        self._in_drop = False
+        self._drop_start_t = -1e9
+
     @property
     def current_effect(self) -> str | None:
         return self._current_effect

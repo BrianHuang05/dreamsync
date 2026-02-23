@@ -16,11 +16,16 @@
 | BLE output (bleak GATT, mood-follower mode) | Done | `src/dreamsync/output/govee_ble.py` |
 | BLE CLI (govee-ble-scan, govee-ble-test, --ble-device) | Done | `src/dreamsync/cli.py` |
 | Multi-device orchestration (LAN 30 Hz + BLE 5 Hz) | Done | `src/dreamsync/output/govee_lan.py` |
+| Song boundary detection (silence-gap detector + full state reset) | Done (unit tested, hardware untested) | `src/dreamsync/live.py` |
+| Auto-detect device roles (latency-based classification) | Done (unit tested, hardware untested) | `src/dreamsync/output/auto_detect.py` |
+| Infinite session runner (YAML config + Ctrl+C shutdown) | Done (unit tested, hardware untested) | `src/dreamsync/session.py` |
+| CLI `session` subcommand | Done (untested) | `src/dreamsync/cli.py` |
 
 ### Test Coverage
 
+- `tests/test_song_boundary.py` — 14 tests (boundary detector, reset methods for BPM/Director/Mood/Effects)
 - `tests/test_govee_ble.py` — 54 tests (BLE adapter, packet builders, threading, keep-alive)
-- All tests passing on current branch
+- 341 total tests passing on current branch
 
 ---
 
@@ -130,153 +135,32 @@ BLE latency is ~20x higher than LAN UDP but well under the 200ms threshold for m
 
 ## Next Steps
 
-### Step 1: Latency-Based Automatic Role Detection
+### Hardware Testing
 
-**Goal:** Auto-detect whether each device should be a realtime renderer (LAN) or a slow follower (BLE) based on measured latency at startup.
+All recent work (song boundary detection, auto-detect, session runner) has been unit tested but **not yet validated on hardware**. The following need live testing:
 
-#### Device Configuration File
+1. **Song boundary detection** — Play a multi-song playlist with `--debug-mood` and verify:
+   - "Song boundary detected" messages appear at track transitions
+   - BPM/mood adapt quickly to the new song after reset
+   - No false triggers during quiet musical passages or mid-song breakdowns
+   - Tuning parameters (`silence_threshold_rms`, `min_silence_seconds`, `min_song_seconds`) may need adjustment based on real playback gaps
 
-Replace CLI flags with a YAML config file:
+2. **Auto-detect latency classification** — Run `dreamsync session --config devices.yaml` and verify:
+   - LAN devices are classified as `realtime`
+   - BLE devices are classified as `follower` or `slow`
+   - Unreachable devices are logged and skipped
+   - Latency numbers match expectations from earlier manual BLE testing
 
-```yaml
-# devices.yaml
-devices:
-  - name: "Living Room Strip"
-    address: "10.126.166.180"
-    type: auto
-    segments: 7
-    transport: ptreal
+3. **Infinite session mode** — Run `dreamsync session --config devices.yaml --debug-mood` for 10+ minutes and verify:
+   - Ctrl+C cleanly shuts down all devices
+   - No memory growth or degraded performance over time
+   - Song boundaries fire and state resets work across multiple songs
 
-  - name: "TV Backlight"
-    address: "10.126.166.156"
-    type: auto
-    segments: 25
-    transport: razer
+### Future Work
 
-  - name: "Desk Bulb"
-    address: "D0:C9:07:C5:14:45"
-    type: auto
-    protocol: bulb
-
-  - name: "Side Strip"
-    address: "C7:90:80:C6:44:74"
-    type: auto
-    segments: 15
-```
-
-#### Startup Latency Test
-
-At startup, before the main audio loop:
-
-1. **LAN probe:** Send UDP `scan` packet to port 4001 for each device, listen for response. Devices that respond are LAN-capable.
-2. **BLE probe:** Connect remaining devices via bleak, write a power-on packet, measure round-trip.
-3. **Sustained latency test:** 100 packets at 5 Hz per device, record min/median/P95/max.
-4. **Classify:**
-   - **Realtime** (median <20ms) — full segment rendering at 30 Hz
-   - **Follower** (median 20-200ms) — mood follower at 5 Hz
-   - **Slow** (median >200ms) — mood follower at 2 Hz
-   - **Unreachable** — skip, log warning
-5. **Report** classification to user before starting main loop.
-
-#### New Module
-
-```
-src/dreamsync/output/auto_detect.py
-```
-
-```python
-@dataclass
-class DetectedDevice:
-    name: str
-    address: str
-    connection_type: Literal["lan", "ble", "unreachable"]
-    latency_median_ms: float
-    latency_p95_ms: float
-    role: Literal["realtime", "follower", "slow"]
-    transport: TransportMode | BleProtocol | None
-
-async def detect_device_roles(
-    devices: list[DeviceConfig],
-    test_duration: float = 60.0,
-    test_rate_hz: float = 5.0,
-) -> list[DetectedDevice]:
-    """Run latency tests on all devices and assign roles."""
-    ...
-
-def build_multi_adapter_from_detected(
-    detected: list[DetectedDevice],
-    render_mode: RenderMode,
-    mirror: bool,
-    brightness: float,
-    fps: int,
-) -> MultiGoveeLanAdapter:
-    """Build a MultiGoveeLanAdapter with appropriate adapters and renderers."""
-    ...
-```
-
-### Step 2: Infinite Loop Mode
-
-**Goal:** Replace `--duration` with an infinite loop that runs until Ctrl+C.
-
-#### New Module
-
-```
-src/dreamsync/session.py
-```
-
-```python
-def run_session(
-    config_path: Path,
-    sample_rate: int = 44100,
-    channels: int = 1,
-    audio_device: int | None = None,
-    auto_cycle: bool = True,
-    debug_mood: bool = False,
-) -> None:
-    """Run an infinite DreamSync session.
-
-    1. Load device config from YAML file
-    2. Run latency detection
-    3. Build multi-adapter with auto-assigned roles
-    4. Enter infinite audio-reactive loop (Ctrl+C to stop)
-    5. Gracefully shut down all devices on exit
-    """
-    ...
-```
-
-#### Signal Handling
-
-```python
-import signal
-
-_running = True
-
-def _handle_sigint(sig, frame):
-    global _running
-    _running = False
-    print("\nShutting down...")
-
-signal.signal(signal.SIGINT, _handle_sigint)
-
-while _running:
-    # process audio, render, send frames
-```
-
-#### CLI Command
-
-```
-python -m dreamsync session --config devices.yaml [--audio-device N] [--debug-mood]
-```
-
-Replaces `govee-live` for production use. `govee-live` remains for testing with explicit device flags and duration.
-
-### Step 3: Implementation Order
-
-1. `auto_detect.py` — latency testing and role classification
-2. `session.py` — infinite loop session runner with device config loading
-3. CLI `session` command — new subparser in `cli.py`
-4. Tests — unit tests for auto-detection logic (mocked network/BLE)
-5. Update README — usage examples for new `session` command
+- **Crossfade-aware boundaries**: Some players crossfade tracks (audio never hits silence). Could detect BPM discontinuities or spectral centroid jumps as an alternative trigger.
+- **Per-song telemetry**: Log BPM/mood/energy stats per song (between boundaries) for post-session analysis.
+- **Device config hot-reload**: Watch `devices.yaml` for changes and add/remove devices without restarting the session.
 
 ---
 

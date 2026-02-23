@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -71,6 +72,25 @@ class LiveBpmEstimator:
         self._bass_activity = 0.0
         self._kick_activity = 0.0
         self._hybrid_source = "bass"  # current active source in hybrid mode
+
+    def reset(self) -> None:
+        """Clear accumulated state for a new song."""
+        self.onset_env.clear()
+        self.prev_rms = 0.0
+        self.last_bpm = 0.0
+        self.last_update_t = -1e9
+        self.last_beat_idx = -1
+        self.last_onset_mean = 0.0
+        self.last_onset_std = 0.0
+        self.last_thresh = 0.0
+        self._beat_phase = 0.0
+        self._candidate_bpm = 0.0
+        self._candidate_hits = 0
+        self._last_onset_beat_t = -1e9
+        self._prev_onset = 0.0
+        self._bass_activity = 0.0
+        self._kick_activity = 0.0
+        self._hybrid_source = "bass"
 
     def update(
         self,
@@ -300,6 +320,47 @@ class LiveBpmEstimator:
         return np.array(deduped, dtype=int)
 
 
+class SongBoundaryDetector:
+    """Detects silence gaps between songs in continuous audio playback."""
+
+    def __init__(
+        self,
+        silence_threshold_rms: float = 0.005,
+        min_silence_seconds: float = 0.8,
+        min_song_seconds: float = 30.0,
+        hop_size: int = 512,
+        sample_rate: int = 44100,
+    ) -> None:
+        self.silence_threshold_rms = silence_threshold_rms
+        self.min_silence_frames = int(min_silence_seconds * sample_rate / hop_size)
+        self.min_song_frames = int(min_song_seconds * sample_rate / hop_size)
+        self._silent_frames = 0
+        self._frames_since_reset = 0
+        self._boundary_count = 0
+
+    def update(self, rms: float) -> bool:
+        """Feed one frame's RMS. Returns True on song boundary detection."""
+        self._frames_since_reset += 1
+        if rms < self.silence_threshold_rms:
+            self._silent_frames += 1
+        else:
+            if (
+                self._silent_frames >= self.min_silence_frames
+                and self._frames_since_reset >= self.min_song_frames
+            ):
+                # Silence gap ended — this is the start of a new song
+                self._silent_frames = 0
+                self._frames_since_reset = 0
+                self._boundary_count += 1
+                return True
+            self._silent_frames = 0
+        return False
+
+    @property
+    def boundary_count(self) -> int:
+        return self._boundary_count
+
+
 @dataclass
 class SpectralFeatures:
     bass: float
@@ -420,7 +481,7 @@ def _feature_row_from_frame(
 
 def run_live_to_govee(
     multi_adapter: MultiGoveeLanAdapter,
-    duration_seconds: float,
+    duration_seconds: float | None,
     sample_rate: int = 44100,
     channels: int = 1,
     device: int | None = None,
@@ -434,13 +495,17 @@ def run_live_to_govee(
     auto_cycle: bool = True,
     cycle_interval: float = 16.0,
     debug_mood: bool = False,
+    stop_event: threading.Event | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Audio capture → beat detection → renderer → Govee UDP streaming.
 
     Drives one or more Govee devices via a MultiGoveeLanAdapter.
     Each device has its own renderer and role for independent rendering.
+
+    If *duration_seconds* is None the loop runs until *stop_event* is set
+    (or forever if no stop_event is provided either).
     """
-    if duration_seconds <= 0:
+    if duration_seconds is not None and duration_seconds <= 0:
         raise ValueError("duration_seconds must be > 0")
     if sample_rate <= 0:
         raise ValueError("sample_rate must be > 0")
@@ -456,6 +521,9 @@ def run_live_to_govee(
     logs: list[dict[str, Any]] = []
     bpm_estimator = LiveBpmEstimator(
         sample_rate=sample_rate, hop_size=hop_size, half_time=half_time,
+    )
+    song_detector = SongBoundaryDetector(
+        hop_size=hop_size, sample_rate=sample_rate,
     )
     director = Director(director_config)
     mood_classifier = MoodClassifier() if auto_cycle else None
@@ -501,9 +569,11 @@ def run_live_to_govee(
         callback=_callback,
     ):
         while True:
+            if stop_event is not None and stop_event.is_set():
+                break
             now = time.monotonic()
             elapsed = now - started_at
-            if elapsed >= duration_seconds:
+            if duration_seconds is not None and elapsed >= duration_seconds:
                 break
 
             while audio_queue:
@@ -517,6 +587,23 @@ def run_live_to_govee(
                 frame = buffer[:frame_size]
                 buffer = buffer[hop_size:]
                 rms = float(np.sqrt(np.mean(frame**2)))
+                if song_detector.update(rms):
+                    # Song boundary: reset all state
+                    bpm_estimator.reset()
+                    director.reset()
+                    if mood_classifier is not None:
+                        mood_classifier.reset()
+                    if effect_cycler is not None:
+                        effect_cycler.reset()
+                    prev_mag = None
+                    spectral_mean = None
+                    prev_whitened_mag = None
+                    if debug_mood:
+                        print(
+                            f"*** Song boundary detected "
+                            f"(#{song_detector.boundary_count}) "
+                            f"— state reset ***"
+                        )
                 sf = _spectral_features(frame, window, bass_mask, prev_mag, kick_mask=kick_mask)
                 prev_mag = sf.mag
                 wf, spectral_mean, prev_whitened_mag = _compute_whitened_flux(
@@ -627,9 +714,10 @@ def run_live_to_govee(
     # Stop BLE follower threads
     multi_adapter.deactivate()
 
+    actual_duration = time.monotonic() - started_at
     ble_count = len(getattr(multi_adapter, "_ble_followers", []))
     summary = {
-        "duration_seconds": float(duration_seconds),
+        "duration_seconds": float(duration_seconds) if duration_seconds is not None else round(actual_duration, 3),
         "sample_rate": int(sample_rate),
         "channels": int(channels),
         "device": device,
@@ -642,5 +730,6 @@ def run_live_to_govee(
         "beats": int(beat_count),
         "device_count": len(multi_adapter.devices),
         "ble_followers": ble_count,
+        "song_boundaries": song_detector.boundary_count,
     }
     return logs, summary

@@ -217,6 +217,74 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print mood/effect transitions to stdout.",
     )
 
+    # -- Session command (YAML config + auto-detect + infinite loop) ----------
+    session = sub.add_parser(
+        "session",
+        help="Run an infinite DreamSync session from a YAML device config.",
+    )
+    session.add_argument("--config", type=Path, required=True, help="Path to YAML device config file.")
+    session.add_argument("--sample-rate", type=int, default=44100, help="Input sample rate.")
+    session.add_argument("--channels", type=int, default=1, help="Input channel count.")
+    session.add_argument("--audio-device", type=int, default=None, dest="audio_device", help="Optional input device id.")
+    session.add_argument("--fps", type=int, default=30, help="Frame rate.")
+    session.add_argument("--brightness", type=float, default=1.0, help="Global brightness (0-1).")
+    session.add_argument(
+        "--mirror",
+        dest="mirror",
+        action="store_true",
+        default=True,
+        help="Scroll from center outward (default).",
+    )
+    session.add_argument(
+        "--no-mirror",
+        dest="mirror",
+        action="store_false",
+        help="Scroll left-to-right instead of center-outward.",
+    )
+    session.add_argument(
+        "--render-mode",
+        choices=["solid", "pulse", "scroll", "breathe"],
+        default="scroll",
+        help="Visual render mode.",
+    )
+    session.add_argument(
+        "--half-time", action="store_true",
+        help="Halve the detected BPM (fixes octave-doubled detection).",
+    )
+    session.add_argument(
+        "--max-brightness", action="store_true",
+        help="Force all frames to full intensity (overrides Director dynamics).",
+    )
+    session.add_argument(
+        "--auto-cycle",
+        dest="auto_cycle",
+        action="store_true",
+        default=True,
+        help="Enable mood-driven effect cycling (default).",
+    )
+    session.add_argument(
+        "--no-auto-cycle",
+        dest="auto_cycle",
+        action="store_false",
+        help="Disable effect cycling; use fixed --render-mode.",
+    )
+    session.add_argument(
+        "--cycle-interval",
+        type=float,
+        default=16.0,
+        help="Seconds between automatic effect changes within same mood (default: 16).",
+    )
+    session.add_argument(
+        "--debug-mood",
+        action="store_true",
+        help="Print mood/effect transitions to stdout.",
+    )
+    session.add_argument("--frame-size", type=int, default=2048, help="Frame size in samples.")
+    session.add_argument("--hop-size", type=int, default=512, help="Hop size in samples.")
+    session.add_argument("--blocksize", type=int, default=1024, help="PortAudio callback blocksize.")
+    session.add_argument("--probe-packets", type=int, default=100, help="Number of latency probe packets per device.")
+    session.add_argument("--probe-rate", type=float, default=5.0, help="Probe packet rate in Hz.")
+
     return parser
 
 
@@ -550,6 +618,36 @@ def main(argv: list[str] | None = None) -> int:
             with args.jsonl.open("w", encoding="utf-8") as f:
                 for item in logs:
                     f.write(json.dumps(item, separators=(",", ":")) + "\n")
+        print(json.dumps(summary, separators=(",", ":")))
+        return 0
+
+    if args.command == "session":
+        from .session import run_session
+
+        brightness = max(0.0, min(1.0, float(args.brightness)))
+        director_config = DirectorConfig()
+
+        summary = run_session(
+            config_path=args.config,
+            sample_rate=args.sample_rate,
+            channels=args.channels,
+            audio_device=args.audio_device,
+            frame_size=args.frame_size,
+            hop_size=args.hop_size,
+            blocksize=args.blocksize,
+            render_mode=args.render_mode,
+            fps=args.fps,
+            brightness=brightness,
+            mirror=args.mirror,
+            half_time=args.half_time,
+            max_brightness=args.max_brightness,
+            auto_cycle=args.auto_cycle,
+            cycle_interval=max(1.0, float(args.cycle_interval)),
+            debug_mood=args.debug_mood,
+            probe_packets=args.probe_packets,
+            probe_rate=args.probe_rate,
+            director_config=director_config,
+        )
         print(json.dumps(summary, separators=(",", ":")))
         return 0
 

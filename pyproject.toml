@@ -13,6 +13,8 @@ dependencies = [
 [project.optional-dependencies]
 stream = ["sounddevice>=0.4"]
 ble = ["bleak>=0.21"]
+yaml = ["pyyaml>=6.0"]
+session = ["bleak>=0.21", "pyyaml>=6.0"]
 
 [build-system]
 requires = ["setuptools>=69", "wheel"]

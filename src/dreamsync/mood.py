@@ -57,6 +57,16 @@ class MoodClassifier:
         self._dip_at: float = -1e9
         self._prev_energy: float = 0.0
 
+    def reset(self) -> None:
+        """Clear accumulated state for a new song."""
+        self.mood = Mood.CHILL
+        self._mood_entered_at = -1e9
+        self._drop_entered_at = -1e9
+        self._last_drop_at = -1e9
+        self._dip_seen = False
+        self._dip_at = -1e9
+        self._prev_energy = 0.0
+
     def _can_switch(self, t: float) -> bool:
         return (t - self._mood_entered_at) >= self.config.min_dwell_seconds
 
