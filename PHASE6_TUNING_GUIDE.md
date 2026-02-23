@@ -21,6 +21,32 @@ The Director computes EMA-smoothed values for each sub-feature, normalizes them 
 
 ---
 
+## My Devices
+
+| Device | Model | IP | Segments | Transport |
+|--------|-------|----|----------|-----------|
+| LED strip (small) | H612F | `10.126.166.180` | 7 | `ptreal` |
+| LED strip (large) | H808A | `10.126.166.156` | 25 | `razer` |
+
+### Copy-paste device flags
+
+Single device (H612F):
+```
+--device 10.126.166.180:7:primary:ptreal
+```
+
+Single device (H808A):
+```
+--device 10.126.166.156:25:primary:razer
+```
+
+Both devices:
+```
+--device 10.126.166.180:7:primary:ptreal --device 10.126.166.156:25:primary:razer
+```
+
+---
+
 ## Prerequisites
 
 Before starting, confirm everything works:
@@ -29,8 +55,9 @@ Before starting, confirm everything works:
 # Run the test suite -- all should pass
 python -m pytest tests/ -x -q
 
-# Verify your device is reachable (replace with your IP)
-python -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.sendto(b'hello', ('YOUR_DEVICE_IP', 4003)); print('OK')"
+# Verify devices are reachable
+python -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.sendto(b'hello', ('10.126.166.180', 4003)); print('H612F OK')"
+python -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.sendto(b'hello', ('10.126.166.156', 4003)); print('H808A OK')"
 ```
 
 ---
@@ -41,19 +68,26 @@ python -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.
 
 ### 1a. Run with `--debug-mood`
 
+Both devices, 5-minute session:
 ```bash
-dreamsync govee-live \
-  --device YOUR_IP:SEGMENTS:primary:TRANSPORT \
+python -m dreamsync govee-live \
+  --device 10.126.166.180:7:primary:ptreal \
+  --device 10.126.166.156:25:primary:razer \
   --duration 300 \
   --debug-mood \
   --auto-cycle \
   --brightness 1.0
 ```
 
-Replace:
-- `YOUR_IP` -- your Govee device IP (e.g. `10.0.0.45`)
-- `SEGMENTS` -- number of segments (e.g. `7` or `25`)
-- `TRANSPORT` -- your transport (`ptreal`, `razer`, or `colorwc`)
+Single device (H612F only):
+```bash
+python -m dreamsync govee-live \
+  --device 10.126.166.180:7:primary:ptreal \
+  --duration 300 \
+  --debug-mood \
+  --auto-cycle \
+  --brightness 1.0
+```
 
 ### 1b. What debug output looks like
 
@@ -85,7 +119,7 @@ While watching the lights with `--debug-mood` output scrolling, note:
 FEEDBACK LOG -- Session 1 (Baseline)
 Date: ____
 Song: ____
-Device: ____ (IP, segments, transport)
+Device: H612F (10.126.166.180, 7 seg, ptreal) / H808A (10.126.166.156, 25 seg, razer)
 
 For each song, note:
 ---------------------------------------
@@ -242,7 +276,7 @@ Higher alpha = more responsive but noisier. Lower alpha = smoother but laggier.
 ```
 CHILL:   warm_glow (2.0), slow_breathe (3.0), color_breathe (1.0), wave_drift (2.0), gradient_flow (2.0)
 GROOVE:  color_breathe (1.0), beat_pulse (3.0), color_scroll (2.0), wave_drift (1.0)
-HYPE:    fast_scroll (2.0), strobe (2.0), beat_pulse (1.0)
+HYPE:    fast_scroll (2.0), beat_pulse (1.0)
 DROP:    drop_blast (1.0)
 ```
 
@@ -258,9 +292,6 @@ Weights are relative. Higher weight = picked more often.
 
 **"A specific effect appears too often"**
 - Lower its weight in `src/dreamsync/effects.py` `MOOD_EFFECTS` dict
-
-**"Strobe is uncomfortable"**
-- Lower strobe weight in HYPE pool (e.g. 1.0 or 0.5), or remove it entirely
 
 ---
 
@@ -282,8 +313,9 @@ Weights are relative. Higher weight = picked more often.
 Test each palette in isolation:
 
 ```bash
-dreamsync govee-live \
-  --device YOUR_IP:SEGMENTS:primary:TRANSPORT \
+python -m dreamsync govee-live \
+  --device 10.126.166.180:7:primary:ptreal \
+  --device 10.126.166.156:25:primary:razer \
   --duration 60 \
   --no-auto-cycle \
   --render-mode scroll \
@@ -360,7 +392,6 @@ Since this system is designed for laptop mic capture (not line-in/loopback):
 | `pulse_decay` | PULSE | 6.0 | Higher = faster decay (shorter flash) |
 | `breathe_rate_mult` | BREATHE | 1.0 | 0.5 = half speed, 2.0 = double speed |
 | `scroll_inject_width` | SCROLL | 0.2 | Fraction of strip injected on beat |
-| `strobe_subdivision` | STROBE | 4 | Flashes per beat (4 = sixteenth notes) |
 | `wave_rate_mult` | WAVE | 1.0 | Wave oscillation speed multiplier |
 | `wave_wavelength` | WAVE | 1.0 | Spatial wavelength (higher = wider) |
 | `gradient_speed` | GRADIENT | 0.1 | Rotation speed |

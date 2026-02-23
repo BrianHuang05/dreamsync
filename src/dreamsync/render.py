@@ -12,7 +12,6 @@ class RenderMode(str, Enum):
     PULSE = "pulse"
     SCROLL = "scroll"
     BREATHE = "breathe"
-    STROBE = "strobe"
     WAVE = "wave"
     GRADIENT = "gradient"
 
@@ -46,9 +45,6 @@ class SegmentRenderer:
     # Breathe state
     _breathe_phase: float = field(default=0.0, init=False, repr=False)
 
-    # Strobe state
-    _strobe_phase: float = field(default=0.0, init=False, repr=False)
-
     # Wave state
     _wave_phase: float = field(default=0.0, init=False, repr=False)
 
@@ -78,8 +74,6 @@ class SegmentRenderer:
             return self._render_breathe(intent, dt, params)
         elif self.mode == RenderMode.SCROLL:
             return self._render_scroll(intent, dt, beat, params)
-        elif self.mode == RenderMode.STROBE:
-            return self._render_strobe(intent, dt, beat, params)
         elif self.mode == RenderMode.WAVE:
             return self._render_wave(intent, dt, params)
         elif self.mode == RenderMode.GRADIENT:
@@ -205,31 +199,6 @@ class SegmentRenderer:
             )
             for r, g, b in full
         ]
-
-    # -- Strobe --------------------------------------------------------------
-
-    def _render_strobe(
-        self, intent: LightingIntent, dt: float, beat: bool,
-        params: dict | None = None,
-    ) -> list[tuple[int, int, int]]:
-        bpm = max(1.0, intent.bpm)
-        subdivision = params.get("strobe_subdivision", 4) if params else 4
-        freq = (bpm / 60.0) * subdivision
-
-        if beat:
-            self._strobe_phase = 0.0
-        else:
-            self._strobe_phase += freq * dt
-
-        on = (self._strobe_phase % 1.0) < 0.5
-
-        r, g, b = _parse_hex(intent.color) if intent.color else _DEFAULT_COLOR
-        if on:
-            level = max(0.0, min(1.0, intent.intensity))
-            pixel = (int(r * level), int(g * level), int(b * level))
-        else:
-            pixel = (0, 0, 0)
-        return [pixel] * self.segments
 
     # -- Wave ----------------------------------------------------------------
 

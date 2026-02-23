@@ -113,6 +113,16 @@ def build_ble_manual_mode_packet() -> bytes:
     return _build_ble_packet([0x33, 0x05, 0x01])
 
 
+def build_ble_keepalive_packet() -> bytes:
+    """Build a 20-byte BLE keep-alive packet (``AA 01``).
+
+    Govee BLE devices disconnect after ~2-4 seconds of inactivity.
+    Send this packet every ~2 seconds to maintain the connection
+    during quiet periods when no color updates are being pushed.
+    """
+    return _build_ble_packet([0xAA, 0x01])
+
+
 # ---------------------------------------------------------------------------
 # Discovery
 # ---------------------------------------------------------------------------
@@ -345,6 +355,11 @@ class GoveeBleAdapter:
                     except queue.Empty:
                         break
 
+                # Reset duplicate-suppression so the first post-reconnect
+                # color update always reaches the device, even if the mood
+                # hasn't changed while we were disconnected.
+                self._last_color = None
+
                 # Initialize: power on + brightness
                 await self._ble_write(client, build_ptreal_power_packet(True))
                 await asyncio.sleep(0.3)
@@ -353,10 +368,20 @@ class GoveeBleAdapter:
 
                 # Process color updates
                 last_brightness = 100
+                keepalive_interval = 2.0  # seconds between keep-alive packets
+                last_keepalive_at = time.monotonic()
                 while self._started and client.is_connected:
                     try:
                         item = self._queue.get(timeout=0.5)
                     except queue.Empty:
+                        # No color update — send keep-alive if needed
+                        now = time.monotonic()
+                        if (now - last_keepalive_at) >= keepalive_interval:
+                            try:
+                                await self._ble_write(client, build_ble_keepalive_packet())
+                            except Exception:
+                                break  # connection likely lost
+                            last_keepalive_at = now
                         continue
 
                     if item is _SHUTDOWN:
@@ -390,6 +415,7 @@ class GoveeBleAdapter:
                         for pkt in packets:
                             await self._ble_write(client, pkt)
                     self._state.last_send_at = time.monotonic()
+                    last_keepalive_at = time.monotonic()
 
             except Exception as exc:
                 _logger.warning(

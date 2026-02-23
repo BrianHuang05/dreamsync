@@ -79,13 +79,7 @@ EFFECTS: dict[str, EffectPreset] = {
         color_palette=PALETTES["neon"],
         params={"scroll_inject_width": 0.35},
     ),
-    "strobe": EffectPreset(
-        name="strobe",
-        render_mode=RenderMode.STROBE,
-        color_palette=PALETTES["neon"],
-        params={"strobe_subdivision": 4},
-    ),
-    "drop_blast": EffectPreset(
+"drop_blast": EffectPreset(
         name="drop_blast",
         render_mode=RenderMode.PULSE,
         color_palette=PALETTES["fire"],
@@ -125,7 +119,6 @@ MOOD_EFFECTS: dict[Mood, list[tuple[str, float]]] = {
     ],
     Mood.HYPE: [
         ("fast_scroll", 2.0),
-        ("strobe", 2.0),
         ("beat_pulse", 1.0),
     ],
     Mood.DROP: [

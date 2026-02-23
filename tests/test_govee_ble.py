@@ -23,6 +23,7 @@ from dreamsync.output.govee_ble import (
     _SHUTDOWN,
     build_ble_bulb_color_packet,
     build_ble_color_packet,
+    build_ble_keepalive_packet,
     build_ble_manual_mode_packet,
 )
 from dreamsync.output.govee_lan import (
@@ -148,6 +149,34 @@ class BuildBleManualModePacketTests(unittest.TestCase):
         pkt = build_ble_manual_mode_packet()
         expected = _ptreal_checksum(list(pkt[:19]))
         self.assertEqual(pkt[19], expected)
+
+
+class BuildBleKeepalivePacketTests(unittest.TestCase):
+    """Tests for the BLE keep-alive packet (AA 01)."""
+
+    def test_packet_length(self) -> None:
+        pkt = build_ble_keepalive_packet()
+        self.assertEqual(len(pkt), 20)
+
+    def test_header_bytes(self) -> None:
+        pkt = build_ble_keepalive_packet()
+        self.assertEqual(pkt[0], 0xAA)
+        self.assertEqual(pkt[1], 0x01)
+
+    def test_padding_is_zero(self) -> None:
+        pkt = build_ble_keepalive_packet()
+        for i in range(2, 19):
+            self.assertEqual(pkt[i], 0, f"byte {i} should be zero padding")
+
+    def test_checksum(self) -> None:
+        pkt = build_ble_keepalive_packet()
+        expected = _ptreal_checksum(list(pkt[:19]))
+        self.assertEqual(pkt[19], expected)
+
+    def test_checksum_value(self) -> None:
+        # AA ^ 01 = AB
+        pkt = build_ble_keepalive_packet()
+        self.assertEqual(pkt[19], 0xAA ^ 0x01)
 
 
 class PtRealPacketReuseTests(unittest.TestCase):
