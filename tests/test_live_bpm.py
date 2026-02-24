@@ -92,7 +92,7 @@ class TestLiveBpmEstimatorOnsetMode(unittest.TestCase):
         """Spectral flux mode should detect ~120 BPM from a clean pulse train."""
         sr, bpm_target = 44100, 120.0
         frame_size, hop_size = 2048, 512
-        frames = _make_pulse_audio(sr, 8.0, bpm_target, frame_size, hop_size)
+        frames = _make_pulse_audio(sr, 12.0, bpm_target, frame_size, hop_size)
         result = _run_estimator_with_audio(
             frames, sr, hop_size, frame_size, onset_mode="spectral_flux"
         )
@@ -104,7 +104,7 @@ class TestLiveBpmEstimatorOnsetMode(unittest.TestCase):
         """Bass diff mode (legacy) should also detect ~120 BPM from a clean pulse."""
         sr, bpm_target = 44100, 120.0
         frame_size, hop_size = 2048, 512
-        frames = _make_pulse_audio(sr, 8.0, bpm_target, frame_size, hop_size)
+        frames = _make_pulse_audio(sr, 12.0, bpm_target, frame_size, hop_size)
         result = _run_estimator_with_audio(
             frames, sr, hop_size, frame_size, onset_mode="bass_diff"
         )
@@ -161,7 +161,7 @@ class TestAdaptiveThreshold(unittest.TestCase):
         """Adaptive threshold should detect ~120 BPM from a clean pulse train."""
         sr, bpm_target = 44100, 120.0
         frame_size, hop_size = 2048, 512
-        frames = _make_pulse_audio(sr, 8.0, bpm_target, frame_size, hop_size)
+        frames = _make_pulse_audio(sr, 12.0, bpm_target, frame_size, hop_size)
         result = _run_estimator_with_audio(
             frames, sr, hop_size, frame_size, onset_mode="spectral_flux"
         )
@@ -177,7 +177,7 @@ class TestAdaptiveThreshold(unittest.TestCase):
         """
         sr, bpm_target = 44100, 120.0
         frame_size, hop_size = 2048, 512
-        frames = _make_pulse_audio(sr, 8.0, bpm_target, frame_size, hop_size)
+        frames = _make_pulse_audio(sr, 12.0, bpm_target, frame_size, hop_size)
         # Scale down to very low amplitude (simulates distant mic)
         frames = [f * 0.01 for f in frames]
 
@@ -210,7 +210,7 @@ class TestAdaptiveThreshold(unittest.TestCase):
         """Both threshold modes should work on clean, loud signals."""
         sr, bpm_target = 44100, 120.0
         frame_size, hop_size = 2048, 512
-        frames = _make_pulse_audio(sr, 8.0, bpm_target, frame_size, hop_size)
+        frames = _make_pulse_audio(sr, 12.0, bpm_target, frame_size, hop_size)
 
         # Run with global threshold
         window, bass_mask, kick_mask = _prepare_bass_window(frame_size, sr)
@@ -282,7 +282,7 @@ class TestKickBandIsolation(unittest.TestCase):
     def test_kick_flux_detects_bpm_from_pulse(self) -> None:
         sr, bpm_target = 44100, 120.0
         frame_size, hop_size = 2048, 512
-        frames = _make_pulse_audio(sr, 8.0, bpm_target, frame_size, hop_size)
+        frames = _make_pulse_audio(sr, 12.0, bpm_target, frame_size, hop_size)
         result = _run_estimator_with_audio(
             frames, sr, hop_size, frame_size, onset_mode="kick_flux"
         )
@@ -340,7 +340,7 @@ class TestWhitenedFlux(unittest.TestCase):
     def test_whitened_flux_detects_bpm_from_pulse(self) -> None:
         sr, bpm_target = 44100, 120.0
         frame_size, hop_size = 2048, 512
-        frames = _make_pulse_audio(sr, 8.0, bpm_target, frame_size, hop_size)
+        frames = _make_pulse_audio(sr, 12.0, bpm_target, frame_size, hop_size)
         result = _run_estimator_with_audio(
             frames, sr, hop_size, frame_size, onset_mode="whitened_flux"
         )
@@ -384,7 +384,7 @@ class TestHybridOnset(unittest.TestCase):
         """Hybrid mode should detect ~120 BPM from a clean pulse train."""
         sr, bpm_target = 44100, 120.0
         frame_size, hop_size = 2048, 512
-        frames = _make_pulse_audio(sr, 8.0, bpm_target, frame_size, hop_size)
+        frames = _make_pulse_audio(sr, 12.0, bpm_target, frame_size, hop_size)
         result = _run_estimator_with_audio(
             frames, sr, hop_size, frame_size, onset_mode="hybrid"
         )
@@ -396,7 +396,7 @@ class TestHybridOnset(unittest.TestCase):
         """Hybrid should still detect BPM when signal is very quiet."""
         sr, bpm_target = 44100, 120.0
         frame_size, hop_size = 2048, 512
-        frames = _make_pulse_audio(sr, 8.0, bpm_target, frame_size, hop_size)
+        frames = _make_pulse_audio(sr, 12.0, bpm_target, frame_size, hop_size)
         frames = [f * 0.02 for f in frames]
         result = _run_estimator_with_audio(
             frames, sr, hop_size, frame_size, onset_mode="hybrid"

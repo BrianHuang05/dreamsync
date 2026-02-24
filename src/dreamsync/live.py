@@ -23,14 +23,14 @@ class LiveBpmEstimator:
         self,
         sample_rate: int,
         hop_size: int,
-        window_seconds: float = 12.0,
+        window_seconds: float = 20.0,
         min_update_interval: float = 0.5,
         beat_threshold_percentile: float = 65.0,
         beat_threshold_std_mult: float = 0.15,
         min_bpm: float = 80.0,
         max_bpm: float = 200.0,
         max_jump_bpm: float = 6.0,
-        confirm_updates: int = 4,
+        confirm_updates: int = 6,
         half_time: bool = False,
         onset_mode: str = "hybrid",
         threshold_mode: str = "adaptive",
@@ -54,7 +54,7 @@ class LiveBpmEstimator:
             raise ValueError(f"threshold_mode must be 'adaptive' or 'global', got {threshold_mode!r}")
         self.threshold_mode = threshold_mode
         self.max_frames = max(8, int(window_seconds * sample_rate / hop_size))
-        self.min_frames = max(8, int(3.0 * sample_rate / hop_size))
+        self.min_frames = max(8, int(5.0 * sample_rate / hop_size))
         self.onset_env: deque[float] = deque()
         self.prev_rms = 0.0
         self.last_bpm = 0.0
@@ -135,7 +135,13 @@ class LiveBpmEstimator:
             )
             bpm_from_corr = _estimate_bpm(onset_arr, self.hop_size, self.sample_rate)
             if bpm_from_beats > 0 and bpm_from_corr > 0:
-                bpm = 0.7 * bpm_from_beats + 0.3 * bpm_from_corr
+                # Weight beat-based estimate by number of detected beats.
+                # Fewer than 4 beats → low confidence, lean on autocorrelation.
+                # 8+ beats → high confidence, trust beat intervals.
+                beat_confidence = min(1.0, beat_idx.size / 8.0)
+                w_beats = 0.5 + 0.4 * beat_confidence   # 0.5–0.9
+                w_corr = 1.0 - w_beats                   # 0.1–0.5
+                bpm = w_beats * bpm_from_beats + w_corr * bpm_from_corr
             else:
                 bpm = bpm_from_beats if bpm_from_beats > 0 else bpm_from_corr
             if bpm > 0.0:
@@ -181,7 +187,11 @@ class LiveBpmEstimator:
             self._candidate_hits = 1
             return self.last_bpm
         self._candidate_hits += 1
-        if self._candidate_hits >= self.confirm_updates:
+        # Scale confirmation requirement by jump magnitude:
+        # 6 BPM jump → base confirms, 30+ BPM jump → 2x confirms
+        jump_ratio = min(2.0, abs(bpm - self.last_bpm) / (self.max_jump_bpm * 3))
+        required = int(self.confirm_updates * (1.0 + jump_ratio))
+        if self._candidate_hits >= required:
             self._candidate_bpm = 0.0
             self._candidate_hits = 0
             return bpm
