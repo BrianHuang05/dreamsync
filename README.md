@@ -61,7 +61,37 @@ python -m dreamsync govee-live \
 | `--mirror` / `--no-mirror` | mirror | Scroll from center outward vs left-to-right |
 | `--half-time` | off | Halve detected BPM (fixes octave-doubled detection) |
 | `--max-brightness` | off | Force all frames to full intensity |
+| `--auto-cycle` / `--no-auto-cycle` | on | Mood-driven effect cycling |
+| `--cycle-interval` | 16 | Seconds between effect changes within same mood |
+| `--debug-mood` | off | Print mood, effect, BPM, and song boundary events to stdout |
 | `--audio-device` | system default | PortAudio input device ID |
+
+## Debug / dry-run testing (no lights needed)
+
+Use a fake IP to test the audio analysis pipeline without any hardware connected. UDP sends are fire-and-forget, so they silently fail on unreachable IPs while the full BPM, mood, effect, and song boundary pipeline runs normally.
+
+```bash
+# Watch mood/effect/BPM transitions live (60 seconds)
+python -m dreamsync govee-live \
+    --device 192.168.0.99:7:primary:ptreal \
+    --duration 60 \
+    --debug-mood
+
+# Longer run to test song boundary detection across a playlist
+python -m dreamsync govee-live \
+    --device 192.168.0.99:7:primary:ptreal \
+    --duration 600 \
+    --debug-mood
+```
+
+With `--debug-mood` you'll see output like:
+
+```
+mood=chill effect=slow_breathe palette=cool mode=breathe energy=0.0812 stability=0.0340 bpm=127.3
+mood=groove effect=beat_pulse palette=vivid mode=pulse energy=0.3812 stability=0.0540 bpm=128.1
+*** Song boundary detected (#1) — state reset ***
+mood=chill effect=wave_drift palette=warm mode=wave energy=0.0023 stability=0.0000 bpm=0.0
+```
 
 ## Smoke tests
 
@@ -78,6 +108,16 @@ python -m dreamsync govee-test --device-ip 10.0.0.123 --segments 15 --pattern ra
 python -m dreamsync govee-test --device-ip 10.0.0.123 --segments 15 --pattern walk
 ```
 
+## Infinite session mode (YAML config)
+
+For production use with a device config file. Runs until Ctrl+C, auto-detects device roles, and handles song boundaries automatically.
+
+```bash
+python -m dreamsync session --config devices.yaml --debug-mood
+```
+
+See `IMPLEMENTATION.md` for device config format and auto-detect details.
+
 ## List audio devices
 
 ```bash
@@ -87,7 +127,7 @@ python -m dreamsync devices
 ## Run tests
 
 ```bash
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+python -m pytest tests/ -v
 ```
 
 ## Architecture
