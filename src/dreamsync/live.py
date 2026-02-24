@@ -180,7 +180,9 @@ class LiveBpmEstimator:
         if abs(bpm - self.last_bpm) <= self.max_jump_bpm:
             self._candidate_bpm = 0.0
             self._candidate_hits = 0
-            return bpm
+            # EMA smooth small changes to prevent oscillation.
+            # Persistent changes converge within ~5 updates (~2.5s).
+            return self.last_bpm * 0.7 + bpm * 0.3
         # Require a few consistent updates before accepting a big jump.
         if self._candidate_bpm <= 0.0 or abs(bpm - self._candidate_bpm) > self.max_jump_bpm:
             self._candidate_bpm = bpm
@@ -337,7 +339,7 @@ class SongBoundaryDetector:
         self,
         silence_threshold_rms: float = 0.005,
         min_silence_seconds: float = 0.8,
-        min_song_seconds: float = 30.0,
+        min_song_seconds: float = 45.0,
         hop_size: int = 512,
         sample_rate: int = 44100,
     ) -> None:
