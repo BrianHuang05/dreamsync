@@ -1,0 +1,41 @@
+Connected to C7:90:80:C6:44:74
+
+Power ON sent
+
+>>> mode: 33 05 01 (manual/solid)
+    Packet: 3305010000000000000000000000000000000037
+    Waiting 4 seconds — observe the device...
+
+>>> mode: 33 05 02 (color mode flag)
+    Packet: 3305020000000000000000000000000000000034
+    Waiting 4 seconds — observe the device...
+
+>>> color: 33 05 02 RR GG BB (whole-device)
+    Packet: 330502ff000000000000000000000000000000cb
+    Waiting 4 seconds — observe the device...
+
+>>> color: 33 05 04 RR GG BB (alt color cmd)
+    Packet: 330504ff000000000000000000000000000000cd
+    Waiting 4 seconds — observe the device...
+
+>>> color: 33 05 02 01 RR GG BB (with prefix byte)
+    Packet: 33050201ff0000000000000000000000000000ca
+    Waiting 4 seconds — observe the device...
+
+>>> color: 33 05 02 02 RR GG BB (with prefix 02)
+    Packet: 33050202ff0000000000000000000000000000c9
+    Waiting 4 seconds — observe the device...
+
+>>> color: 33 05 01 RR GG BB (mode+color combined)
+    Packet: 330501ff000000000000000000000000000000c8
+    Waiting 4 seconds — observe the device...
+
+>>> color: 33 05 0D 01 RR GG BB (scene-based)
+    Packet: 33050d01ff0000000000000000000000000000c5
+    Waiting 4 seconds — observe the device...
+
+>>> color: 33 05 15 01 RR GG BB + bitmask (segment)
+    Sending 1 segment packet(s)...
+    Waiting 4 seconds — observe the device...
+
+Power OFF sent. Done.
