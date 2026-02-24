@@ -145,11 +145,11 @@ All recent work (song boundary detection, auto-detect, session runner) has been 
    - No false triggers during quiet musical passages or mid-song breakdowns
    - Tuning parameters (`silence_threshold_rms`, `min_silence_seconds`, `min_song_seconds`) may need adjustment based on real playback gaps
 
-2. **Auto-detect latency classification** — Run `dreamsync session --config devices.yaml` and verify:
-   - LAN devices are classified as `realtime`
-   - BLE devices are classified as `follower` or `slow`
+2. **Auto-detect role classification** — Run `dreamsync session --config devices.yaml` and verify:
+   - LAN devices are always assigned `realtime` (no latency classification)
+   - BLE devices are classified by measured latency (`scripts/ble_latency_bench.py` protocol): `realtime` (<20ms), `follower` (20-200ms), or `slow` (>200ms)
    - Unreachable devices are logged and skipped
-   - Latency numbers match expectations from earlier manual BLE testing
+   - BLE latency numbers match expectations from earlier manual testing (median 4-5ms per device)
 
 3. **Infinite session mode** — Run `dreamsync session --config devices.yaml --debug-mood` for 10+ minutes and verify:
    - Ctrl+C cleanly shuts down all devices

@@ -311,7 +311,8 @@ def detect_all_devices(
         if device_type == "lan" or (device_type == "auto" and is_ip):
             stats = probe_lan_device(cfg.address, num_packets=num_packets, rate_hz=rate_hz)
             if stats.count > 0:
-                role = classify_role(stats)
+                # LAN devices are always realtime — no latency classification needed
+                role: Literal["realtime", "follower", "slow", "unreachable"] = "realtime"
                 transport = TransportMode(cfg.transport) if cfg.transport else TransportMode.PTREAL
                 detected.append(DetectedDevice(
                     name=cfg.name,
