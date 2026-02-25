@@ -231,3 +231,34 @@ song boundaries) and compare per-boundary mood data:
 4. **No regression at session start**: The first 8 seconds of a new session
    should behave identically to before (ambient mode, chill mood, gradual
    energy ramp).
+
+---
+
+## Implementation Status
+
+All three fixes have been implemented and pass automated testing.
+
+### Changes Made
+
+| Fix | File(s) | Status |
+|---|---|---|
+| Fix 1: Relative warmup guard | `src/dreamsync/director.py` | Done |
+| Fix 2: Seed normalization defaults | `src/dreamsync/director.py` | Done |
+| Fix 3: Dwell time after reset | `src/dreamsync/mood.py`, `src/dreamsync/live.py` | Done |
+
+### Test Results (Automated)
+
+- **341 existing tests**: All pass (no regressions)
+- **8 new Bug 3 regression tests** added to `tests/test_song_boundary.py`:
+  - `TestBug3WarmupGuardRelative`: Warmup forces AMBIENT after reset; expires correctly
+  - `TestBug3NormalizationSeeds`: Energy <0.50 on first frame after reset; seed values correct
+  - `TestBug3MoodDwellAfterReset`: Dwell guard works with/without time param; expires correctly
+  - `TestBug3EndToEnd`: Full Director+MoodClassifier integration stays CHILL during warmup
+
+### Next Steps
+
+1. **Live bar test**: Run a 5-10 minute session with `--debug-mood` and multiple song
+   boundaries. Compare per-boundary mood/energy data against the target metrics above.
+2. **Verify warmup logs**: After each boundary, confirm `mode=ambient` appears for 8s.
+3. **Verify energy levels**: First-frame energy after boundary should be <0.20.
+4. **Verify mood stability**: No HYPE within 8s of any boundary reset.

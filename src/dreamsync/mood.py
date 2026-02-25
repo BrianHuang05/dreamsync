@@ -57,10 +57,10 @@ class MoodClassifier:
         self._dip_at: float = -1e9
         self._prev_energy: float = 0.0
 
-    def reset(self) -> None:
+    def reset(self, t: float | None = None) -> None:
         """Clear accumulated state for a new song."""
         self.mood = Mood.CHILL
-        self._mood_entered_at = -1e9
+        self._mood_entered_at = t if t is not None else -1e9
         self._drop_entered_at = -1e9
         self._last_drop_at = -1e9
         self._dip_seen = False

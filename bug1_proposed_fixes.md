@@ -328,3 +328,41 @@ After applying fixes, re-run the bar test sessions and compare:
   2–4, currently 16)
 - **Hype flash count from Bug 3**: each false boundary triggers a mood reset → false
   HYPE flash; reducing boundaries directly reduces these (target: 0 false flashes)
+
+---
+
+## Implementation Status
+
+All five fixes have been implemented and pass automated testing.
+
+### Changes Made
+
+| Fix | Description | Status |
+|---|---|---|
+| Fix 1 | `min_song_seconds` 45→120 | Done |
+| Fix 2 | `silence_threshold_rms` 0.005→0.015 | Done |
+| Fix 3 | `min_silence_seconds` 0.8→2.0 | Done |
+| Fix 4 | Explicit cooldown timer (90s) | Done |
+| Fix 5 | Sustained post-silence energy (3 confirm frames) | Done |
+
+All changes are in `src/dreamsync/live.py`, `SongBoundaryDetector` class.
+
+### Test Results (Automated)
+
+- **352 total tests**: All pass (no regressions)
+- **3 new Bug 1 regression tests** added to `tests/test_song_boundary.py`:
+  - `test_single_noise_spike_does_not_trigger`: Verifies Fix 5 confirmation logic
+  - `test_cooldown_prevents_rapid_retrigger`: Verifies Fix 4 cooldown guard
+  - `test_new_defaults`: Verifies all new default parameter values (Fixes 1-3)
+- **6 existing tests updated** to work with the new confirmation logic (Feed 3 frames
+  instead of 1 to trigger boundary)
+
+### Next Steps
+
+1. **Live bar test**: Run a 10-minute session and count boundaries. Target: 2-4 (was 16).
+2. **Verify no false positives**: Boundaries should only fire during actual track gaps.
+3. **Verify no false negatives**: Play a playlist with known transitions and confirm all
+   real boundaries are detected.
+4. **Check interaction with Bug 3 fixes**: Each boundary now also benefits from the
+   warmup guard and seeded normalization, so even correctly-detected boundaries should
+   produce smooth mood transitions.

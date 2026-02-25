@@ -337,35 +337,51 @@ class SongBoundaryDetector:
 
     def __init__(
         self,
-        silence_threshold_rms: float = 0.005,
-        min_silence_seconds: float = 0.8,
-        min_song_seconds: float = 45.0,
+        silence_threshold_rms: float = 0.015,
+        min_silence_seconds: float = 2.0,
+        min_song_seconds: float = 120.0,
+        cooldown_seconds: float = 90.0,
         hop_size: int = 512,
         sample_rate: int = 44100,
     ) -> None:
         self.silence_threshold_rms = silence_threshold_rms
         self.min_silence_frames = int(min_silence_seconds * sample_rate / hop_size)
         self.min_song_frames = int(min_song_seconds * sample_rate / hop_size)
+        self._cooldown_frames = int(cooldown_seconds * sample_rate / hop_size)
         self._silent_frames = 0
         self._frames_since_reset = 0
         self._boundary_count = 0
+        self._confirm_frames = 0
+        self._confirm_required = 3
+        self._silence_armed = False
 
     def update(self, rms: float) -> bool:
         """Feed one frame's RMS. Returns True on song boundary detection."""
         self._frames_since_reset += 1
         if rms < self.silence_threshold_rms:
             self._silent_frames += 1
-        else:
+            # If we were confirming a boundary, reset — silence resumed
+            self._confirm_frames = 0
             if (
                 self._silent_frames >= self.min_silence_frames
                 and self._frames_since_reset >= self.min_song_frames
+                and self._frames_since_reset >= self._cooldown_frames
             ):
-                # Silence gap ended — this is the start of a new song
+                self._silence_armed = True
+        else:
+            if self._silence_armed:
+                self._confirm_frames += 1
+                if self._confirm_frames >= self._confirm_required:
+                    # Sustained energy after silence — this is a real boundary
+                    self._silent_frames = 0
+                    self._frames_since_reset = 0
+                    self._boundary_count += 1
+                    self._silence_armed = False
+                    self._confirm_frames = 0
+                    return True
+            else:
                 self._silent_frames = 0
-                self._frames_since_reset = 0
-                self._boundary_count += 1
-                return True
-            self._silent_frames = 0
+                self._confirm_frames = 0
         return False
 
     @property
@@ -604,7 +620,7 @@ def run_live_to_govee(
                     bpm_estimator.reset()
                     director.reset()
                     if mood_classifier is not None:
-                        mood_classifier.reset()
+                        mood_classifier.reset(stream_t)
                     if effect_cycler is not None:
                         effect_cycler.reset()
                     prev_mag = None

@@ -73,6 +73,7 @@ class Director:
         self.mode: EffectMode = EffectMode.AMBIENT
         self._last_switch_time = -1e9
         self._last_t: float | None = None
+        self._reset_t: float | None = None
         self._ema_rms = 0.0
         self._ema_bpm = 0.0
         self._ema_zcr = 0.0
@@ -99,16 +100,17 @@ class Director:
         self.mode = EffectMode.AMBIENT
         self._last_switch_time = -1e9
         self._last_t = None
+        self._reset_t = None
         self._ema_rms = 0.0
         self._ema_bpm = 0.0
         self._ema_zcr = 0.0
         self._ema_spectral_flux = 0.0
         self._ema_bass_ratio = 0.0
         self._ema_onset_strength = 0.0
-        self._rms_floor = 0.0
-        self._rms_ceil = 0.001
-        self._flux_max = 1e-6
-        self._onset_max = 1e-6
+        self._rms_floor = 0.01
+        self._rms_ceil = 0.10
+        self._flux_max = 10.0
+        self._onset_max = 0.05
         self._energy = 0.0
         self._history.clear()
         self._last_intensity = self.config.intensity_floor
@@ -290,7 +292,10 @@ class Director:
         self._last_stability = stability
         self._last_effective_bpm = bpm
 
-        if t < self.config.warmup_seconds:
+        if self._reset_t is None:
+            self._reset_t = t
+        time_since_reset = t - self._reset_t
+        if time_since_reset < self.config.warmup_seconds:
             rms_norm = min(1.0, max(0.0, self._ema_rms * 2.2))
             shaped = rms_norm ** self.config.intensity_gamma
             intensity_target = self.config.intensity_floor + (
