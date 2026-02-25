@@ -203,7 +203,58 @@ which does better with sparse data.
    margins. The blend weights only matter when both estimators disagree, which is
    common but the effect is smaller than the other fixes.
 
-## Testing
+## Implementation Status
+
+All four fixes were implemented on 2026-02-25 in commits `537e8b8` and `596e1d5`.
+
+### Round 1 (commit 537e8b8): Fixes 1–4
+
+All four fixes applied as specified above. 341 tests pass.
+
+**5-minute bar test results** (`bar_test_post_fix.txt`):
+
+| Metric | Before | After Round 1 | Target |
+|---|---|---|---|
+| Avg distinct BPM/segment | 11.3 | 7.8 | <5 |
+| Avg jumps >3 BPM/segment | 8.2 | 5.8 | <3 |
+| Max single jump | 30–50 | 35.0 | <15 |
+| Lock-in delay | 3s | 5s | 5s |
+
+- **Segments 0–2**: Excellent — 1–5 distinct values, max jump 5.6 BPM
+- **Segment 1**: Perfect — single BPM value (129.2) for 30s straight
+- **Segment 3**: 35 BPM jump at t=202s — genuine DJ crossfade (no silence gap),
+  not a noise artifact. BPM was stable at 149.7 for 70s beforehand.
+- **Segment 4**: BPM oscillated ±5 BPM every second (119↔124) — within-range
+  changes passed through inertia unchecked
+
+### Round 2 (commit 596e1d5): Fix 5 + boundary tuning
+
+Two additional changes to address remaining oscillation:
+
+**Fix 5: EMA smoothing for within-range changes**
+
+Within-range BPM changes (≤6 BPM) now use a 0.7/0.3 EMA blend instead of
+accepting raw values. Dampens ±5 BPM oscillations to ±0.5 BPM; persistent
+changes converge within ~2.5s (5 updates).
+
+```python
+# In _apply_inertia, within-range branch:
+return self.last_bpm * 0.7 + bpm * 0.3  # was: return bpm
+```
+
+**Boundary tuning**: `min_song_seconds` raised from 30 to 45 to reduce false
+boundary detections (5 boundaries in 5 min → expected 3–4).
+
+### Next Steps
+
+- **Re-test with Round 2 fixes** — run another 5-minute bar session and compare
+  metrics. The EMA smoothing should dramatically reduce segment 4–style oscillation.
+- **If still unstable**: consider reducing `max_jump_bpm` from 6.0 to 4.0, or
+  adding a cumulative drift rate limiter to prevent chained small jumps.
+- **Boundary detector**: further tuning may be needed — see `bug1_proposed_fixes.md`
+  for dedicated analysis.
+
+## Original Testing Targets
 
 After applying fixes, re-run the bar test and compare:
 - Distinct BPM values per 30s post-boundary window (target: <5, currently avg 11.3)
