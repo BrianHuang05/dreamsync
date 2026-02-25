@@ -16,7 +16,7 @@
 | BLE output (bleak GATT, mood-follower mode) | Done | `src/dreamsync/output/govee_ble.py` |
 | BLE CLI (govee-ble-scan, govee-ble-test, --ble-device) | Done | `src/dreamsync/cli.py` |
 | Multi-device orchestration (LAN 30 Hz + BLE 5 Hz) | Done | `src/dreamsync/output/govee_lan.py` |
-| Song boundary detection (silence-gap detector + full state reset) | Done (unit tested, hardware untested) | `src/dreamsync/live.py` |
+| Song boundary detection (silence-gap detector + full state reset) | Done (live validated) | `src/dreamsync/live.py` |
 | Auto-detect device roles (latency-based classification) | Done (unit tested, hardware untested) | `src/dreamsync/output/auto_detect.py` |
 | Infinite session runner (YAML config + Ctrl+C shutdown) | Done (unit tested, hardware untested) | `src/dreamsync/session.py` |
 | CLI `session` subcommand | Done (untested) | `src/dreamsync/cli.py` |

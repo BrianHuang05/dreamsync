@@ -472,7 +472,7 @@ def main() -> None:
         for n, e in enumerate(events, start=1):
             t_str = f"{e.approx_t_seconds:.1f}s" if e.approx_t_seconds is not None else "unknown"
             idx = f"#{e.boundary_index}" if e.boundary_index is not None else "(no index)"
-            print(f"[{n}] {e.kind.upper()} boundary {idx} at line {e.line_no} (t≈{t_str})")
+            print(f"[{n}] {e.kind.upper()} boundary {idx} at line {e.line_no} (t~{t_str})")
             print(f"     reason: {e.reason}")
             print(f"     pre : {format_snapshot(e.pre)}")
             print(f"     post: {format_snapshot(e.post)}")
