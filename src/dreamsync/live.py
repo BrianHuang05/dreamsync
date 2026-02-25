@@ -5,6 +5,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -524,6 +525,7 @@ def run_live_to_govee(
     cycle_interval: float = 16.0,
     debug_mood: bool = False,
     stop_event: threading.Event | None = None,
+    telemetry_dir: Path | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Audio capture → beat detection → renderer → Govee UDP streaming.
 
@@ -544,9 +546,12 @@ def run_live_to_govee(
     if hop_size <= 0:
         raise ValueError("hop_size must be > 0")
 
+    from dreamsync.telemetry import SongTelemetryWriter
+
     sd = _require_sounddevice()
     audio_queue: deque[np.ndarray] = deque()
     logs: list[dict[str, Any]] = []
+    telemetry: SongTelemetryWriter | None = SongTelemetryWriter(telemetry_dir) if telemetry_dir else None
     bpm_estimator = LiveBpmEstimator(
         sample_rate=sample_rate, hop_size=hop_size, half_time=half_time,
     )
@@ -626,6 +631,8 @@ def run_live_to_govee(
                     prev_mag = None
                     spectral_mean = None
                     prev_whitened_mag = None
+                    if telemetry:
+                        telemetry.on_boundary(song_detector.boundary_count, stream_t)
                     if debug_mood:
                         print(
                             f"*** Song boundary detected "
@@ -712,6 +719,23 @@ def run_live_to_govee(
                     log_row["effect"] = effect_cycler.current_effect
                 logs.append(log_row)
 
+                if telemetry and mood_classifier is not None:
+                    telemetry.write_frame({
+                        "t": round(stream_t, 4),
+                        "bpm": round(float(bpm_estimator.last_bpm), 2),
+                        "beat": bool(beat_this_tick),
+                        "rms": round(float(last_features["rms"]), 5) if last_features else 0.0,
+                        "energy": round(director.energy, 4),
+                        "stability": round(director.stability, 4),
+                        "mood": mood_classifier.mood.value,
+                        "effect": effect_cycler.current_effect if effect_cycler else None,
+                        "palette": effect_cycler.current_palette if effect_cycler else None,
+                        "render_mode": preset.render_mode.value if preset else None,
+                        "bass_ratio": round(float(last_features["bass_ratio"]), 4) if last_features else 0.0,
+                        "spectral_flux": round(float(last_features["spectral_flux"]), 4) if last_features else 0.0,
+                        "onset_strength": round(float(last_features.get("onset_strength", 0)), 4) if last_features else 0.0,
+                    })
+
             if now >= next_telemetry:
                 logs.append(
                     {
@@ -741,6 +765,9 @@ def run_live_to_govee(
 
     # Stop BLE follower threads
     multi_adapter.deactivate()
+
+    if telemetry:
+        telemetry.close()
 
     actual_duration = time.monotonic() - started_at
     ble_count = len(getattr(multi_adapter, "_ble_followers", []))

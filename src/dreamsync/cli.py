@@ -216,6 +216,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print mood/effect transitions to stdout.",
     )
+    govee_live.add_argument(
+        "--telemetry-dir",
+        type=Path,
+        default=None,
+        help="Write per-song telemetry files to this directory.",
+    )
 
     # -- Session command (YAML config + auto-detect + infinite loop) ----------
     session = sub.add_parser(
@@ -284,6 +290,12 @@ def build_parser() -> argparse.ArgumentParser:
     session.add_argument("--blocksize", type=int, default=1024, help="PortAudio callback blocksize.")
     session.add_argument("--probe-packets", type=int, default=100, help="Number of latency probe packets per device.")
     session.add_argument("--probe-rate", type=float, default=5.0, help="Probe packet rate in Hz.")
+    session.add_argument(
+        "--telemetry-dir",
+        type=Path,
+        default=None,
+        help="Write per-song telemetry files to this directory.",
+    )
 
     return parser
 
@@ -612,6 +624,7 @@ def main(argv: list[str] | None = None) -> int:
             auto_cycle=args.auto_cycle,
             cycle_interval=max(1.0, float(args.cycle_interval)),
             debug_mood=args.debug_mood,
+            telemetry_dir=args.telemetry_dir,
         )
         if args.jsonl:
             args.jsonl.parent.mkdir(parents=True, exist_ok=True)
@@ -647,6 +660,7 @@ def main(argv: list[str] | None = None) -> int:
             probe_packets=args.probe_packets,
             probe_rate=args.probe_rate,
             director_config=director_config,
+            telemetry_dir=args.telemetry_dir,
         )
         print(json.dumps(summary, separators=(",", ":")))
         return 0

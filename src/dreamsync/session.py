@@ -44,6 +44,7 @@ def run_session(
     probe_packets: int = 100,
     probe_rate: float = 5.0,
     director_config: DirectorConfig | None = None,
+    telemetry_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Run an infinite DreamSync session from a YAML config.
 
@@ -99,6 +100,7 @@ def run_session(
             cycle_interval=cycle_interval,
             debug_mood=debug_mood,
             stop_event=stop_event,
+            telemetry_dir=telemetry_dir,
         )
     finally:
         # 6. Cleanup
