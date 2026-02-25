@@ -25,7 +25,7 @@
 
 - `tests/test_song_boundary.py` — 14 tests (boundary detector, reset methods for BPM/Director/Mood/Effects)
 - `tests/test_govee_ble.py` — 54 tests (BLE adapter, packet builders, threading, keep-alive)
-- 341 total tests passing on current branch
+- 352 total tests passing on current branch
 
 ---
 
