@@ -319,25 +319,11 @@ python -m dreamsync govee-live \
 **Analyze after run:**
 
 ```bash
-python -c "
-import json, glob, statistics
-bpms = []
-for f in sorted(glob.glob('out/longrun/bpm-15m/session-*/song-*.jsonl')):
-    for line in open(f):
-        row = json.loads(line)
-        b = row.get('bpm', 0)
-        if b > 0:
-            bpms.append(b)
-if bpms:
-    print(f'Samples: {len(bpms)}')
-    print(f'BPM: mean={statistics.mean(bpms):.1f}, stdev={statistics.stdev(bpms):.1f}')
-    print(f'Range: {min(bpms):.1f} – {max(bpms):.1f}')
-    # Check for nonsense values
-    outliers = [b for b in bpms if b < 40 or b > 220]
-    print(f'Outliers (<40 or >220): {len(outliers)} ({100*len(outliers)/len(bpms):.1f}%)')
-else:
-    print('No BPM data found')
-"
+# Full analysis (per-song breakdown, 30s windows, harmonic ratios)
+python scripts/analyze_bpm.py out/longrun/bpm-15m/session-YYYYMMDD-HHMMSS -o out/longrun/bpm-analysis.txt
+
+# Or analyze all sessions together
+python scripts/analyze_bpm.py out/longrun/bpm-15m -o out/longrun/bpm-analysis.txt
 ```
 
 **Pass criteria:**
@@ -469,7 +455,7 @@ Run these in order for a complete validation pass:
 - [ ] **7. Profile rotation** (3 profiles, 30s intervals)
 - [ ] **8. Health monitor** (probe lifecycle + telemetry)
 - [ ] **9. Offline/online** (power cycle a device during test 8)
-- [ ] **10. BPM stability** (15 min, no hardware)
+- [~] **10. BPM stability** (15 min, no hardware) — harmonic-lock v3 done, stdev ~28 (target <10), needs IOI Histogram
 - [ ] **11. Song boundary detection** (30 min, no hardware)
 - [ ] **12. Mood & effect cycling** (shared with test 11)
 - [ ] **13. Resource stability** (shared with test 11)

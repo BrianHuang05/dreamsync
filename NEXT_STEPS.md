@@ -1,44 +1,37 @@
 # Next Steps
 
-## Active — Hardware Validation Tests (2/27)
+## Active — BPM Stability (2/27)
 
-All Mk I+II features are implemented and unit tested (496 tests). Now running live hardware validation. See `VALIDATION_TESTS.md` for full test plan.
+### Current problem
 
-### Progress
+The BPM estimator has high within-song variance (stdev ~28, target <10). Harmonic-lock Layers 2+3 (classifier + resistant lock) are implemented and prevent out-of-range values, but the underlying raw estimates from the autocorrelation + beat-spacing fusion are too noisy for post-processing alone to fix. **Layer 1 (IOI Histogram)** is needed to replace/augment the raw estimation pipeline.
 
-- [x] 1. Unit tests (all systems)
-- [x] 2. Network scan (`govee-scan`)
-- [x] 3. Device connectivity (`govee-test`)
-- [x] 4. Auto-detect + role classification (session mode)
-- [x] 5. Profile basic (aurora + neon_city live on device)
-- [x] 6. Profile hot-swap (live YAML edit → reload, error recovery)
-- [ ] 7. Profile rotation (3 profiles, timed swap) — **requires hardware**
-- [ ] 8. Health monitor (probe lifecycle + telemetry) — **requires hardware**
-- [ ] 9. Offline/online detection (power cycle during session) — **requires hardware**
-- [ ] 10. BPM stability (15 min) — **no hardware needed**
-- [ ] 11. Song boundary detection (30 min) — **no hardware needed**
-- [ ] 12. Mood & effect cycling (shared with 11) — **no hardware needed**
-- [ ] 13. Resource stability (shared with 11) — **no hardware needed**
+See `plans/harmonic-lock.md` for the full plan. Layers 2+3 are done; Layer 1 is next.
+
+### Test results (harmonic-lock v3, 15min run)
+
+- Overall stdev: 28.4 (target: <10)
+- Range: 80.8–199.7 (good — stays in 80–200 corridor)
+- 1x ratio: 43.7% (target: >95%)
+- 2/3x ratio: 21.0% (target: <5%)
+- HIGH-VARIANCE 30s windows: 16 (target: 0)
+- Outliers >220: 0 (fixed by normalize)
 
 ### Resume here
 
-**Without hardware:** Run tests **10–13** now (long-run stability). These exercise the full audio pipeline with an unreachable device IP — UDP frames silently drop. See `VALIDATION_TESTS.md` Phase 4.
+Implement **Layer 1: IOI Histogram** from `plans/harmonic-lock.md`. This replaces the autocorrelation + beat-spacing BPM fusion with an onset-interval histogram that finds the dominant beat period in the time domain, avoiding octave ambiguity.
 
-```bash
-# 10. BPM stability (15 min) — play varied-tempo music
-mkdir -p out/longrun
-python -m dreamsync govee-live --device 10.126.166.180:7:primary:ptreal --duration 900 --debug-mood --telemetry-dir out/longrun/bpm-15m 2>&1 | tee out/longrun/bpm-15m-console.log
+### Validation progress
 
-# 11+12+13. Boundary + mood + memory (30 min) — play 6-8 song playlist
-python -m dreamsync govee-live --device 10.126.166.180:7:primary:ptreal --duration 1800 --debug-mood --crossfade-detect --telemetry-dir out/longrun/boundary-30m 2>&1 | tee out/longrun/boundary-30m-console.log
-```
+- [x] 1–6. Unit tests, scan, connectivity, auto-detect, profiles, hot-swap
+- [ ] 7–9. Profile rotation, health monitor, offline/online — **requires hardware**
+- [~] 10. BPM stability — harmonic-lock v3 done, needs Layer 1 for target stdev
+- [ ] 11–13. Song boundaries, mood cycling, resource stability — **no hardware needed**
 
-**With hardware:** Run tests **7–9** (profile rotation, health monitor, offline/online). See `VALIDATION_TESTS.md` Phases 2c and 3.
+### After BPM stability
 
-### After validation
-
-- Noisy-environment beat detection (bar/coffee shop) — see `plans/noise-robust-onset.md`
-- Crossfade boundary detection tuning
+- Finish validation tests 11–13 (boundary, mood, resource)
+- Hardware tests 7–9 when device available
 - Tuning pass (mood thresholds, effect weights)
 
 ---

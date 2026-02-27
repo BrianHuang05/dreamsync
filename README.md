@@ -171,7 +171,7 @@ python -m dreamsync devices
 python -m pytest tests/ -v
 ```
 
-548 tests covering all subsystems:
+561 tests covering all subsystems:
 
 | Test file | Tests | Scope |
 |---|---|---|
@@ -183,7 +183,7 @@ python -m pytest tests/ -v
 | `test_auto_detect.py` | 24 | Auto-detect role classification, latency probing |
 | `test_profile.py` | 63 | Profile loader/validator, EffectCycler integration, ProfileWatcher, rotation, all 8 built-ins |
 | `test_device_health.py` | 29 | Health monitor probe loop, offline/online thresholds, anti-flap, role reclass, discovery |
-| `test_live_bpm.py` | 65 | BPM estimation, hybrid onset, noise floor, HPSS percussive, spectral template, noise-lock fixes |
+| `test_live_bpm.py` | 87 | BPM estimation, hybrid onset, noise floor, HPSS percussive, spectral template, noise-lock fixes, harmonic classifier + lock |
 | `test_spectral_template.py` | 6 | SpectralBeatTemplate bootstrap, similarity, adaptation, reset |
 | `test_dsp_features.py` | 21 | Feature extraction, spectral features, BPM autocorrelation confidence |
 
@@ -211,7 +211,7 @@ System Audio → LiveBpmEstimator → beat events + BPM
 |---|---|
 | Audio capture (WASAPI loopback) | `src/dreamsync/live.py` |
 | Beat detection (hybrid onset, adaptive threshold, kick isolation) | `src/dreamsync/bpm.py` |
-| Noise-robust BPM (HPSS percussive onset, bass-frequency gating, subharmonic snap, autocorrelation confidence, energy-gated template, selectivity monitor) | `src/dreamsync/live.py`, `src/dreamsync/dsp/features.py` |
+| Noise-robust BPM (HPSS percussive onset, bass-frequency gating, subharmonic snap, autocorrelation confidence, energy-gated template, selectivity monitor, harmonic-lock stabilization) | `src/dreamsync/live.py`, `src/dreamsync/dsp/features.py` |
 | Composite energy metric (RMS + spectral flux + bass + onset) | `src/dreamsync/director.py` |
 | Mood classification (CHILL / GROOVE / HYPE / DROP) | `src/dreamsync/mood.py` |
 | Effect cycling + color profiles | `src/dreamsync/effects.py`, `profile.py` |

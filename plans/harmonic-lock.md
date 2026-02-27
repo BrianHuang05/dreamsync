@@ -181,11 +181,11 @@ Rayleigh statistic: 1.0 = all onsets perfectly on-grid, 0.0 = uniformly distribu
 
 ## Implementation Order
 
-1. **Layer 2: Harmonic Ratio Classifier** — Pure function, easy to test, no state changes. Write the classifier and unit tests first.
-2. **Layer 3: Harmonic-Resistant Lock** — Modify `_apply_inertia()` to use the classifier. This is the core fix. Unit test with synthetic BPM sequences.
-3. **Integration test** — Re-run the 15-minute stability test (test 10 from VALIDATION_TESTS.md) and compare analysis output.
-4. **Layer 1: IOI Histogram** — Only if Layers 2+3 don't bring stdev under 10. This is a bigger change to the estimation pipeline.
-5. **Layer 3b: Phase Coherence** — Only if harmonic-resistant lock alone still has edge cases.
+1. ~~**Layer 2: Harmonic Ratio Classifier**~~ — ✅ Done (commit d0926e5). `_classify_harmonic()` + 7 unit tests.
+2. ~~**Layer 3: Harmonic-Resistant Lock**~~ — ✅ Done (commit d0926e5). `_apply_inertia()` harmonic path + 6 unit tests.
+3. ~~**Integration test**~~ — ✅ Done. 15-min test (session-20260227-171407): stdev=28.4, range 80.8–199.7. Out-of-range values eliminated. But stdev still far from target (<10). Root cause: `_snap_to_last` corrects octaves before the harmonic lock sees them, so the lock rarely triggers. The instability is in the raw estimator itself.
+4. **Layer 1: IOI Histogram** — **NEXT**. Layers 2+3 confirmed insufficient alone. The autocorrelation + beat-spacing fusion produces noisy raw estimates that post-processing can't stabilize.
+5. **Layer 3b: Phase Coherence** — Evaluate after Layer 1.
 
 ## Files Changed
 
