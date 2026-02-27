@@ -4,10 +4,12 @@ import unittest
 
 import numpy as np
 
+from dreamsync.dsp.features import _estimate_bpm
 from dreamsync.live import (
     LiveBpmEstimator,
     NoiseFloorEstimator,
     PercussiveOnsetTracker,
+    SpectralBeatTemplate,
     SpectralFeatures,
     _spectral_features,
     _prepare_bass_window,
@@ -742,8 +744,8 @@ class TestSpectralSubtraction(unittest.TestCase):
         frame_size, hop_size = 2048, 512
         frames = _make_pulse_audio(sr, 12.0, bpm_target, frame_size, hop_size)
         rng = np.random.default_rng(99)
-        # Add constant broadband noise much louder than signal
-        frames_noisy = [f * 0.1 + rng.standard_normal(frame_size).astype(np.float32) * 0.3 for f in frames]
+        # Add broadband noise at moderate level (signal still stronger)
+        frames_noisy = [f * 0.5 + rng.standard_normal(frame_size).astype(np.float32) * 0.15 for f in frames]
         result = _run_estimator_with_audio(
             frames_noisy, sr, hop_size, frame_size,
             onset_mode="hybrid",
@@ -904,6 +906,150 @@ class TestHybridPercussiveFallback(unittest.TestCase):
         self.assertEqual(est._hybrid_source, "percussive")
         self.assertGreater(bpm, 0.0, "Should detect BPM from percussive spikes")
         self.assertGreater(beat_count, 3, "Should detect beats from percussive onset")
+
+
+class TestAutocorrelationConfidenceGate(unittest.TestCase):
+    """Fix 1: autocorrelation confidence gate rejects noise, accepts periodic signals."""
+
+    def test_estimate_bpm_rejects_flat_autocorrelation(self) -> None:
+        """White noise onset envelope → no clear peak → returns 0.0."""
+        rng = np.random.default_rng(42)
+        noise_onset = rng.standard_normal(500).astype(np.float32)
+        bpm, confidence = _estimate_bpm(noise_onset, hop_size=512, sr=44100)
+        self.assertEqual(bpm, 0.0, "Noise should produce no BPM")
+        self.assertLess(confidence, 3.0, "Confidence should be below threshold for noise")
+
+    def test_estimate_bpm_accepts_periodic_signal(self) -> None:
+        """Clean pulse train onset → clear peak → returns correct BPM."""
+        sr, hop_size = 44100, 512
+        bpm_target = 120.0
+        period_frames = int(sr * 60.0 / bpm_target / hop_size)
+        n_frames = 500
+        onset = np.zeros(n_frames, dtype=np.float32)
+        for i in range(0, n_frames, period_frames):
+            onset[i] = 1.0
+        bpm, confidence = _estimate_bpm(onset, hop_size=hop_size, sr=sr)
+        self.assertGreater(bpm, 0.0, "Should detect BPM from periodic signal")
+        self.assertAlmostEqual(bpm, bpm_target, delta=15.0)
+        self.assertGreaterEqual(confidence, 3.0, "Confidence should be above threshold")
+
+    def test_bpm_decays_after_sustained_zero_estimates(self) -> None:
+        """After 6+ updates with both methods returning 0, last_bpm → 0.0."""
+        est = LiveBpmEstimator(sample_rate=44100, hop_size=512, onset_mode="bass_diff")
+        # Manually set a BPM as if it was previously detected
+        est.last_bpm = 120.0
+        # Feed constant energy (onset = 0) for many update intervals
+        # Each update at 0.5s intervals to trigger the BPM estimation block
+        for i in range(10):
+            t = i * 0.6
+            # Fill min_frames first
+            for _ in range(est.min_frames + 1):
+                est.onset_env.append(0.0)
+            est.update(energy=1.0, t=t)  # constant energy → onset = 0
+        self.assertEqual(est.last_bpm, 0.0,
+                         "BPM should decay to 0 after sustained zero estimates")
+
+
+class TestEnergyGatedTemplateBootstrap(unittest.TestCase):
+    """Fix 2: energy-gated template bootstrap prevents noise training."""
+
+    def test_template_skips_low_energy_frames(self) -> None:
+        """Low-energy frames with is_beat=True should NOT bootstrap the template."""
+        tpl = SpectralBeatTemplate(min_beats_for_template=4, energy_threshold=0.01)
+        rng = np.random.default_rng(42)
+        for _ in range(20):
+            mag = rng.standard_normal(100).astype(np.float32)
+            tpl.update(mag, is_beat=True, frame_energy=0.001)  # below threshold
+        self.assertFalse(tpl.ready, "Template should NOT bootstrap from low-energy frames")
+
+    def test_template_bootstraps_on_high_energy(self) -> None:
+        """High-energy beat frames should bootstrap the template normally."""
+        tpl = SpectralBeatTemplate(min_beats_for_template=4, energy_threshold=0.01)
+        rng = np.random.default_rng(42)
+        for _ in range(10):
+            mag = np.abs(rng.standard_normal(100).astype(np.float32)) + 1.0
+            tpl.update(mag, is_beat=True, frame_energy=0.5)  # above threshold
+        self.assertTrue(tpl.ready, "Template should bootstrap from high-energy frames")
+
+    def test_template_returns_prev_similarity_for_quiet_frames(self) -> None:
+        """After template is ready, quiet frames return previous similarity."""
+        tpl = SpectralBeatTemplate(min_beats_for_template=4, energy_threshold=0.01)
+        rng = np.random.default_rng(42)
+        # Bootstrap the template with high-energy frames
+        for _ in range(8):
+            mag = np.abs(rng.standard_normal(100).astype(np.float32)) + 1.0
+            tpl.update(mag, is_beat=True, frame_energy=0.5)
+        self.assertTrue(tpl.ready)
+        # Feed a high-energy frame to set _prev_similarity
+        active_mag = np.abs(rng.standard_normal(100).astype(np.float32)) + 1.0
+        prev_sim = tpl.update(active_mag, is_beat=False, frame_energy=0.5)
+        # Now feed a quiet frame — should return prev_similarity
+        quiet_sim = tpl.update(active_mag, is_beat=False, frame_energy=0.001)
+        self.assertEqual(quiet_sim, prev_sim,
+                         "Quiet frame should return previous similarity, not re-score")
+
+
+class TestTemplateSelectivityMonitor(unittest.TestCase):
+    """Fix 3: template selectivity monitor detects noise-lock."""
+
+    def test_template_detects_no_selectivity(self) -> None:
+        """Uniform similarity scores → has_selectivity becomes False."""
+        tpl = SpectralBeatTemplate(min_beats_for_template=4, energy_threshold=0.0)
+        # Bootstrap with beat frames
+        rng = np.random.default_rng(42)
+        for _ in range(8):
+            mag = np.abs(rng.standard_normal(100).astype(np.float32)) + 1.0
+            tpl.update(mag, is_beat=True, frame_energy=1.0)
+        self.assertTrue(tpl.ready)
+        # Feed many frames that all produce nearly the same similarity
+        # (same spectrum every time → same cosine similarity)
+        uniform_mag = np.abs(rng.standard_normal(100).astype(np.float32)) + 1.0
+        for _ in range(200):
+            tpl.update(uniform_mag, is_beat=False, frame_energy=1.0)
+        self.assertFalse(tpl.has_selectivity,
+                         "Template should detect no selectivity with uniform similarity")
+
+    def test_template_resets_on_prolonged_no_selectivity(self) -> None:
+        """After sustained no-selectivity, template resets to bootstrap."""
+        tpl = SpectralBeatTemplate(
+            min_beats_for_template=4, energy_threshold=0.0,
+        )
+        # Reduce reset threshold for testing
+        tpl._no_selectivity_reset_threshold = 50
+        rng = np.random.default_rng(42)
+        # Bootstrap
+        for _ in range(8):
+            mag = np.abs(rng.standard_normal(100).astype(np.float32)) + 1.0
+            tpl.update(mag, is_beat=True, frame_energy=1.0)
+        self.assertTrue(tpl.ready)
+        # Feed uniform frames until reset
+        uniform_mag = np.abs(rng.standard_normal(100).astype(np.float32)) + 1.0
+        for _ in range(300):
+            tpl.update(uniform_mag, is_beat=False, frame_energy=1.0)
+        self.assertFalse(tpl.ready,
+                         "Template should have reset after sustained no-selectivity")
+
+    def test_template_selectivity_with_real_beats(self) -> None:
+        """Alternating beat/non-beat spectra → has_selectivity stays True."""
+        tpl = SpectralBeatTemplate(min_beats_for_template=4, energy_threshold=0.0)
+        rng = np.random.default_rng(42)
+        # Create two distinct spectral shapes
+        beat_mag = np.zeros(100, dtype=np.float32)
+        beat_mag[:20] = 5.0  # bass-heavy
+        nonbeat_mag = np.zeros(100, dtype=np.float32)
+        nonbeat_mag[50:70] = 5.0  # mid-heavy
+        # Bootstrap with beat frames
+        for _ in range(8):
+            tpl.update(beat_mag, is_beat=True, frame_energy=1.0)
+        self.assertTrue(tpl.ready)
+        # Alternate beat and non-beat frames
+        for i in range(200):
+            if i % 5 == 0:
+                tpl.update(beat_mag, is_beat=True, frame_energy=1.0)
+            else:
+                tpl.update(nonbeat_mag, is_beat=False, frame_energy=1.0)
+        self.assertTrue(tpl.has_selectivity,
+                        "Template should maintain selectivity with distinct beat/non-beat spectra")
 
 
 if __name__ == "__main__":

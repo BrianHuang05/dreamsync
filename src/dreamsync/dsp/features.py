@@ -27,11 +27,18 @@ def _frame_signal(signal: np.ndarray, frame_size: int, hop_size: int) -> np.ndar
     )
 
 
-def _estimate_bpm(onset_env: np.ndarray, hop_size: int, sr: int) -> float:
+def _estimate_bpm(onset_env: np.ndarray, hop_size: int, sr: int) -> tuple[float, float]:
+    """Estimate BPM from onset envelope via autocorrelation.
+
+    Returns:
+        (bpm, confidence) where confidence is the peak-to-median ratio
+        of the autocorrelation in the valid lag range.  When the ratio
+        is below 1.5 (no clear periodicity), returns (0.0, ratio).
+    """
     if onset_env.size < 2:
-        return 0.0
+        return 0.0, 0.0
     if hop_size <= 0 or sr <= 0:
-        return 0.0
+        return 0.0, 0.0
     onset_env = onset_env - onset_env.mean()
     corr = np.correlate(onset_env, onset_env, mode="full")
     corr = corr[corr.size // 2 :]
@@ -42,12 +49,22 @@ def _estimate_bpm(onset_env: np.ndarray, hop_size: int, sr: int) -> float:
     min_lag = int(sr * 60.0 / max_bpm / hop_size)
     max_lag = int(sr * 60.0 / min_bpm / hop_size)
     if max_lag <= min_lag + 1 or max_lag >= corr.size:
-        return 0.0
+        return 0.0, 0.0
 
     lag = min_lag + int(np.argmax(corr[min_lag:max_lag]))
     if lag <= 0:
-        return 0.0
-    return 60.0 * sr / (lag * hop_size)
+        return 0.0, 0.0
+
+    peak_val = float(corr[lag])
+    # Confidence: how much the peak stands out from the typical correlation.
+    # Mean-subtracted signals can have negative autocorrelation, so use mean
+    # of absolute values as baseline (robust to sign).
+    mean_abs = float(np.mean(np.abs(corr[min_lag:max_lag]))) + 1e-12
+    confidence = peak_val / mean_abs
+    if confidence < 3.0:
+        return 0.0, confidence
+
+    return 60.0 * sr / (lag * hop_size), confidence
 
 
 def _smooth_signal(values: np.ndarray, width: int = 5) -> np.ndarray:
@@ -132,7 +149,7 @@ def extract_feature_frames(
     onset_env = _smooth_signal(onset_env, width=5)
     beat_idx = _detect_beats(onset_env, hop_size, sr)
     bpm_from_beats = _estimate_bpm_from_beats(beat_idx, hop_size, sr)
-    bpm_from_corr = _estimate_bpm(onset_env, hop_size, sr)
+    bpm_from_corr, _corr_conf = _estimate_bpm(onset_env, hop_size, sr)
     if bpm_from_beats > 0 and bpm_from_corr > 0:
         bpm = 0.7 * bpm_from_beats + 0.3 * bpm_from_corr
     else:

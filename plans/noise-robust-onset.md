@@ -320,9 +320,57 @@ v3 energy-gated WF still fires uniformly on all active frames (p25=5.19, p75=5.5
 
 **Root cause:** Whitened flux measures spectral *change* between frames. When all active captures see similar ambient noise, all changes are similar magnitude — no beat/non-beat selectivity. HPSS (Phase 3a) addresses this by measuring per-frame *deviation from the ambient model* instead.
 
+### Post-live-test fixes (v5–v8.2) — Noise-lock feedback loop
+
+Bar testing revealed the BPM estimator locks onto noise and stays confidently wrong. The failure chain: quiet sections → phase accumulator fires on noise → template learns noise shape → similarity gate passes everything → autocorrelation finds spurious peaks → inertia holds wrong BPM.
+
+**Three core fixes break the loop at different points:**
+
+1. **Autocorrelation confidence gate** (`src/dreamsync/dsp/features.py`):
+   - `_estimate_bpm()` now returns `(bpm, confidence)` tuple
+   - Confidence = `peak_val / mean(abs(corr))` — periodic signals score ~25, noise scores ~2
+   - Returns `(0.0, confidence)` when confidence < 3.0
+   - Tracked as `autocorr_confidence` in telemetry
+
+2. **Energy-gated template bootstrap** (`SpectralBeatTemplate`):
+   - `update()` accepts `frame_energy` parameter
+   - Frames below `energy_threshold` (0.005) skip bootstrap and scoring
+   - Returns `_prev_similarity` for quiet frames (no-op)
+   - Prevents template from training on noise-dominated frames
+
+3. **Template selectivity monitor** (`SpectralBeatTemplate`):
+   - `_sim_buffer` (deque, maxlen=200) tracks recent similarity scores
+   - `has_selectivity` property: True if `std(sim_buffer) > 0.05`
+   - After sustained no-selectivity (350 frames ≈ 4s), auto-resets template
+   - `LiveBpmEstimator` skips gating when template has no selectivity
+
+**Additional fixes from iterative bar testing:**
+
+4. **Zero-estimate BPM decay** (`LiveBpmEstimator`):
+   - `_zero_estimate_count` increments when both estimation methods return 0
+   - After 6 consecutive zeros (~3s), `last_bpm` decays to 0.0
+   - Prevents holding stale wrong BPM indefinitely
+
+5. **Bass-frequency percussive onset filtering** (`PercussiveOnsetTracker`):
+   - `freq_mask` parameter restricts percussive energy to bass frequencies (≤300 Hz)
+   - Filters out speech (200–4000 Hz) and glass/plate noise (1–5 kHz)
+   - In bar testing, 97% of percussive energy was non-bass noise — filtering eliminated it
+
+6. **Subharmonic-aware BPM snap** (`LiveBpmEstimator._snap_to_last()`):
+   - Extended with subharmonic ratio candidates: 1.5, 2/3, 4/3, 0.75, 1.25, 0.8
+   - **Directional**: only applies for downward drift (`bpm < last_bpm * 0.9`)
+   - Prevents BPM drifting to 2/3, 3/4, 4/5 of true BPM while allowing upward escape from wrong state
+
+**Bar test results (v8.2, true BPM 164):** 77% locked at 80–85 BPM (correct half-time). Eliminated previous wild drift between 80–172 BPM. Quiet sections correctly show BPM = 0.
+
+9 new tests across 3 test classes:
+- `TestAutocorrelationConfidenceGate` (3 tests): rejects noise, accepts periodic, decays after sustained zeros
+- `TestEnergyGatedTemplateBootstrap` (3 tests): skips low energy, bootstraps high energy, returns prev similarity for quiet
+- `TestTemplateSelectivityMonitor` (3 tests): detects no selectivity, resets on prolonged, maintains with real beats
+
 ### Test results
 
-All 433 tests pass (65 in test_live_bpm.py, 10 new for Phase 3a).
+All 548 tests pass (65 in test_live_bpm.py, 6 in test_spectral_template.py, 21 in test_dsp_features.py).
 
 ---
 

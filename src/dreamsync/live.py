@@ -78,6 +78,11 @@ class LiveBpmEstimator:
         self._hybrid_source = "bass"  # current active source in hybrid mode
         # Spectral template matching
         self._beat_template = SpectralBeatTemplate()
+        # Zero-estimate decay: when both BPM methods return 0 for several
+        # consecutive updates, decay last_bpm to avoid holding stale values.
+        self._zero_estimate_count = 0
+        self._last_autocorr_confidence = 0.0
+        self._last_onset_activity = 0.0
 
     def reset(self) -> None:
         """Clear accumulated state for a new song."""
@@ -99,6 +104,9 @@ class LiveBpmEstimator:
         self._wf_activity = 0.0
         self._hybrid_source = "bass"
         self._beat_template.reset()
+        self._zero_estimate_count = 0
+        self._last_autocorr_confidence = 0.0
+        self._last_onset_activity = 0.0
 
     def update(
         self,
@@ -131,8 +139,10 @@ class LiveBpmEstimator:
         # Spectral template scoring
         if mag is not None:
             beat_from_phase = self._beat_phase > 0.9
-            similarity = self._beat_template.update(mag, beat_from_phase)
-            if self._beat_template.ready:
+            similarity = self._beat_template.update(
+                mag, beat_from_phase, frame_energy=energy,
+            )
+            if self._beat_template.ready and self._beat_template.has_selectivity:
                 gate = self._similarity_gate(similarity)
                 onset = onset * gate
                 self.last_onset = onset
@@ -150,32 +160,62 @@ class LiveBpmEstimator:
         ):
             onset_arr = np.asarray(self.onset_env, dtype=np.float32)
             onset_arr = _smooth_signal(onset_arr, width=5)
-            # Scale-only normalization: divide by std to make amplitude-
-            # invariant, but preserve the zero baseline (no mean subtraction).
-            # Zero-mean normalization would push sparse signals negative
-            # and create negative adaptive thresholds.
-            onset_std = float(onset_arr.std())
-            if onset_std > 1e-8:
-                onset_arr = onset_arr / onset_std
-            if self.threshold_mode == "adaptive":
-                beat_idx = self._detect_beats_adaptive(onset_arr)
+
+            # Onset activity gate: check if the recent window has enough
+            # non-zero onset frames.  In a bar, quiet/noise sections produce
+            # almost all-zero onset envelopes — don't try to estimate BPM
+            # from silence.  Use the last ~2 seconds of the envelope.
+            recent_n = min(len(onset_arr), int(2.0 * self.sample_rate / self.hop_size))
+            recent = onset_arr[-recent_n:]
+            # "active" = above 1% of the recent max (accounts for varying amplitude)
+            recent_max = float(recent.max())
+            if recent_max > 1e-8:
+                active_frac = float(np.sum(recent > 0.01 * recent_max)) / recent_n
             else:
-                beat_idx = self._detect_beats_live(onset_arr)
-            bpm_from_beats = _estimate_bpm_from_beats(
-                beat_idx, self.hop_size, self.sample_rate
-            )
-            bpm_from_corr = _estimate_bpm(onset_arr, self.hop_size, self.sample_rate)
-            if bpm_from_beats > 0 and bpm_from_corr > 0:
-                bpm = 0.7 * bpm_from_beats + 0.3 * bpm_from_corr
+                active_frac = 0.0
+            self._last_onset_activity = active_frac
+
+            if active_frac < 0.05:
+                # Onset is dead — no signal to estimate BPM from.
+                # Increment zero counter; BPM decays after threshold.
+                self._zero_estimate_count += 1
+                if self._zero_estimate_count >= 6:
+                    self.last_bpm = 0.0
+                self.last_update_t = t
             else:
-                bpm = bpm_from_beats if bpm_from_beats > 0 else bpm_from_corr
-            if bpm > 0.0:
-                bpm = self._normalize_bpm(bpm)
-                bpm = self._snap_to_last(bpm)
-                self.last_bpm = self._apply_inertia(bpm)
-            self.last_update_t = t
-            if beat_idx.size > 0:
-                self.last_beat_idx = int(beat_idx[-1])
+                # Scale-only normalization: divide by std to make amplitude-
+                # invariant, but preserve the zero baseline (no mean subtraction).
+                # Zero-mean normalization would push sparse signals negative
+                # and create negative adaptive thresholds.
+                onset_std = float(onset_arr.std())
+                if onset_std > 1e-8:
+                    onset_arr = onset_arr / onset_std
+                if self.threshold_mode == "adaptive":
+                    beat_idx = self._detect_beats_adaptive(onset_arr)
+                else:
+                    beat_idx = self._detect_beats_live(onset_arr)
+                bpm_from_beats = _estimate_bpm_from_beats(
+                    beat_idx, self.hop_size, self.sample_rate
+                )
+                bpm_from_corr, self._last_autocorr_confidence = _estimate_bpm(
+                    onset_arr, self.hop_size, self.sample_rate
+                )
+                if bpm_from_beats > 0 and bpm_from_corr > 0:
+                    bpm = 0.7 * bpm_from_beats + 0.3 * bpm_from_corr
+                else:
+                    bpm = bpm_from_beats if bpm_from_beats > 0 else bpm_from_corr
+                if bpm > 0.0:
+                    bpm = self._normalize_bpm(bpm)
+                    bpm = self._snap_to_last(bpm)
+                    self.last_bpm = self._apply_inertia(bpm)
+                    self._zero_estimate_count = 0
+                else:
+                    self._zero_estimate_count += 1
+                    if self._zero_estimate_count >= 6:
+                        self.last_bpm = 0.0
+                self.last_update_t = t
+                if beat_idx.size > 0:
+                    self.last_beat_idx = int(beat_idx[-1])
 
         beat = self._advance_beat_phase()
         return self.last_bpm, beat
@@ -193,6 +233,16 @@ class LiveBpmEstimator:
         if self.last_bpm <= 0.0 or bpm <= 0.0:
             return bpm
         candidates = [bpm, bpm * 2.0, bpm * 0.5]
+        # Subharmonic correction: in noisy environments the autocorrelation
+        # picks up 2/3, 3/4, 4/5 of the true period.  Only apply for
+        # DOWNWARD drift (bpm < last_bpm * 0.9) to prevent noise from
+        # pushing BPM to a lower subharmonic.  Upward changes use standard
+        # octave snapping so the system can escape a wrong subharmonic lock.
+        if bpm < self.last_bpm * 0.9:
+            for ratio in (1.5, 2.0 / 3.0, 4.0 / 3.0, 0.75, 1.25, 0.8):
+                mapped = self._normalize_bpm(bpm * ratio)
+                if abs(mapped - self.last_bpm) <= self.max_jump_bpm:
+                    candidates.append(mapped)
         candidates = [self._normalize_bpm(c) for c in candidates]
         best = min(candidates, key=lambda v: abs(v - self.last_bpm))
         return best
@@ -668,10 +718,12 @@ class SpectralBeatTemplate:
         min_beats_for_template: int = 8,
         ema_alpha: float = 0.08,
         similarity_floor: float = 0.3,
+        energy_threshold: float = 0.005,
     ):
         self.min_beats = min_beats_for_template
         self.ema_alpha = ema_alpha
         self.similarity_floor = similarity_floor
+        self._energy_threshold = energy_threshold
 
         # Bootstrap collection
         self._beat_mags: list[np.ndarray] = []
@@ -681,19 +733,31 @@ class SpectralBeatTemplate:
         # Frame state
         self._prev_similarity = 0.0
 
+        # Selectivity monitor: track similarity variance to detect noise-lock
+        self._sim_buffer: deque[float] = deque(maxlen=200)
+        self._no_selectivity_count = 0
+        _NO_SELECTIVITY_RESET = 350  # ~4s at 86 fps → reset template
+        self._no_selectivity_reset_threshold = _NO_SELECTIVITY_RESET
+
     # --- public API ---
 
-    def update(self, mag: np.ndarray, is_beat: bool) -> float:
+    def update(self, mag: np.ndarray, is_beat: bool, frame_energy: float = 0.0) -> float:
         """Score current frame against the beat template.
 
         Args:
             mag: magnitude spectrum from rfft (shape: n_bins,)
             is_beat: whether the current frame is a detected beat
+            frame_energy: RMS energy of the frame; low-energy frames are
+                skipped to prevent noise from training the template.
 
         Returns:
             similarity: 0.0-1.0, how much this frame looks like a beat.
                         Returns 0.0 during bootstrap.
         """
+        # Energy gate: skip noise-dominated frames
+        if frame_energy < self._energy_threshold:
+            return self._prev_similarity if self._template_ready else 0.0
+
         if not self._template_ready:
             if is_beat:
                 self._beat_mags.append(mag.copy())
@@ -702,6 +766,16 @@ class SpectralBeatTemplate:
             return 0.0
 
         similarity = self._cosine_similarity(mag)
+
+        # Track selectivity: append to buffer and check variance
+        self._sim_buffer.append(similarity)
+        if not self.has_selectivity:
+            self._no_selectivity_count += 1
+            if self._no_selectivity_count >= self._no_selectivity_reset_threshold:
+                self.reset()
+                return 0.0
+        else:
+            self._no_selectivity_count = 0
 
         # Adapt template with confirmed beat frames (high-similarity beats)
         if is_beat and similarity > 0.5:
@@ -719,12 +793,21 @@ class SpectralBeatTemplate:
     def ready(self) -> bool:
         return self._template_ready
 
+    @property
+    def has_selectivity(self) -> bool:
+        """True if the template discriminates between beat and non-beat frames."""
+        if len(self._sim_buffer) < 50:
+            return True  # not enough data yet, assume OK
+        return float(np.std(list(self._sim_buffer))) > 0.05
+
     def reset(self) -> None:
         """Clear template on song boundary."""
         self._beat_mags.clear()
         self._template = None
         self._template_ready = False
         self._prev_similarity = 0.0
+        self._sim_buffer.clear()
+        self._no_selectivity_count = 0
 
     # --- internals ---
 
@@ -804,10 +887,12 @@ class PercussiveOnsetTracker:
         n_bins: int,
         kernel_size: int = 43,
         energy_gate: float = 1.0,
+        freq_mask: np.ndarray | None = None,
     ) -> None:
         self._n_bins = n_bins
         self._kernel_size = kernel_size
         self._energy_gate = energy_gate
+        self._freq_mask = freq_mask  # restrict onset to these bins (e.g. bass only)
         self._mag_buffer: deque[np.ndarray] = deque(maxlen=kernel_size)
 
     @property
@@ -836,6 +921,11 @@ class PercussiveOnsetTracker:
 
         # Percussive = energy that exceeds the sustained ambient shape
         percussive = np.maximum(0.0, mag - harmonic)
+
+        # Restrict to frequency mask (e.g. bass only) to filter out
+        # speech, glass clinks, and other high-frequency bar noise.
+        if self._freq_mask is not None:
+            percussive = percussive[self._freq_mask]
 
         return float(percussive.sum())
 
@@ -1093,8 +1183,13 @@ def run_live_to_govee(
     last_print = started_at
     window, bass_mask, kick_mask, freqs = _prepare_bass_window(frame_size, sample_rate)
     n_bins = frame_size // 2 + 1
+    # Bass-frequency mask for percussive onset: restrict to < 300 Hz to
+    # filter out speech, glass clinks, and other high-frequency bar noise.
+    perc_freq_mask = freqs <= 300.0
     noise_estimator = NoiseFloorEstimator(n_bins=n_bins)
-    percussive_tracker = PercussiveOnsetTracker(n_bins=n_bins, energy_gate=1.0)
+    percussive_tracker = PercussiveOnsetTracker(
+        n_bins=n_bins, energy_gate=1.0, freq_mask=perc_freq_mask,
+    )
     prev_mag: np.ndarray | None = None
     spectral_mean: np.ndarray | None = None
     prev_whitened_mag: np.ndarray | None = None
@@ -1310,6 +1405,9 @@ def run_live_to_govee(
                         # Template matching
                         "template_similarity": round(bpm_estimator._beat_template._prev_similarity, 4),
                         "template_ready": bpm_estimator._beat_template.ready,
+                        "template_selectivity": bpm_estimator._beat_template.has_selectivity,
+                        "autocorr_confidence": round(bpm_estimator._last_autocorr_confidence, 4),
+                        "onset_activity": round(bpm_estimator._last_onset_activity, 4),
                     })
 
             if now >= next_telemetry:
