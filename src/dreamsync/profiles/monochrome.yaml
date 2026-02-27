@@ -1,0 +1,31 @@
+name: "Monochrome"
+description: "Grayscale palette with a single red accent — minimalist and dramatic"
+author: "dreamsync"
+tags: ["minimal", "monochrome", "dramatic"]
+version: 1
+
+palettes:
+  gray:       ["#333333", "#555555", "#777777", "#999999", "#bbbbbb", "#dddddd"]
+  dark_gray:  ["#111111", "#222222", "#333333", "#444444", "#555555", "#666666"]
+  red_accent: ["#ff0000", "#333333", "#666666", "#999999", "#cc0000", "#444444"]
+
+moods:
+  chill:
+    palettes: ["gray"]
+    params:
+      wave_rate_mult: 0.3
+  groove:
+    palettes: ["gray", "dark_gray"]
+  hype:
+    palettes: ["red_accent"]
+  drop:
+    palettes: ["red_accent"]
+    params:
+      pulse_decay: 3.0
+
+transitions:
+  - from: "groove"
+    to: "hype"
+    palette: "red_accent"
+
+cycle_interval: 18.0

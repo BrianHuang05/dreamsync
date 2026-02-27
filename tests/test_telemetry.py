@@ -197,6 +197,42 @@ class TestClose:
         assert result["songs"][0]["frames"] == 0
 
 
+class TestHealthSnapshot:
+    def test_write_health_snapshot(self, tmp_path: Path) -> None:
+        from dreamsync.device_health import DeviceHealth
+
+        writer = SongTelemetryWriter(tmp_path)
+        writer.write_frame(_make_frame(0.0))
+
+        devices = {
+            "10.0.0.1": DeviceHealth(
+                address="10.0.0.1", role="realtime", status="online",
+                latency_history=[8.2, 9.1],
+            ),
+            "10.0.0.2": DeviceHealth(
+                address="10.0.0.2", role="follower", status="offline",
+                consecutive_failures=4, offline_since=97.2,
+            ),
+        }
+        writer.write_health_snapshot(142.5, devices)
+        writer.close()
+
+        session_dir = list(tmp_path.glob("session-*"))[0]
+        lines = (session_dir / "song-001.jsonl").read_text().strip().split("\n")
+
+        # Frame + health snapshot + summary = 3 lines
+        assert len(lines) == 3
+
+        health_row = json.loads(lines[1])
+        assert health_row["kind"] == "device_health"
+        assert health_row["t"] == 142.5
+        assert health_row["devices"]["10.0.0.1"]["status"] == "online"
+        assert health_row["devices"]["10.0.0.1"]["latency_ms"] == 9.1
+        assert health_row["devices"]["10.0.0.2"]["status"] == "offline"
+        assert health_row["devices"]["10.0.0.2"]["consecutive_failures"] == 4
+        assert "offline_since_s" in health_row["devices"]["10.0.0.2"]
+
+
 class TestNoTelemetry:
     def test_none_telemetry_dir_is_noop(self) -> None:
         """When telemetry_dir is None, no SongTelemetryWriter is created.

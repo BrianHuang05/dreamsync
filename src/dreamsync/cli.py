@@ -222,6 +222,35 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Write per-song telemetry files to this directory.",
     )
+    govee_live.add_argument(
+        "--crossfade-detect",
+        action="store_true",
+        help="Enable crossfade-aware song boundary detection (experimental).",
+    )
+    govee_live.add_argument(
+        "--profile",
+        type=str,
+        default=None,
+        help="Color profile name or path (e.g. 'aurora' or './my_profile.yaml').",
+    )
+    govee_live.add_argument(
+        "--auto-profile",
+        action="store_true",
+        help="Automatically select a profile based on time of day.",
+    )
+    govee_live.add_argument(
+        "--profile-rotation",
+        type=str,
+        default=None,
+        metavar="NAME1,NAME2,...",
+        help="Rotate through multiple profiles (comma-separated names/paths).",
+    )
+    govee_live.add_argument(
+        "--rotation-interval",
+        type=float,
+        default=300.0,
+        help="Seconds between profile rotations when using --profile-rotation (default: 300).",
+    )
 
     # -- Session command (YAML config + auto-detect + infinite loop) ----------
     session = sub.add_parser(
@@ -296,8 +325,103 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Write per-song telemetry files to this directory.",
     )
+    session.add_argument(
+        "--hot-reload",
+        dest="hot_reload",
+        action="store_true",
+        default=True,
+        help="Watch devices.yaml and hot-reload on changes (default: enabled).",
+    )
+    session.add_argument(
+        "--no-hot-reload",
+        dest="hot_reload",
+        action="store_false",
+        help="Disable hot-reload of device config.",
+    )
+    session.add_argument(
+        "--health-monitor",
+        dest="health_monitor",
+        action="store_true",
+        default=False,
+        help="Enable periodic device health probing.",
+    )
+    session.add_argument(
+        "--health-interval",
+        type=float,
+        default=30.0,
+        help="Seconds between health probes (default: 30).",
+    )
+    session.add_argument(
+        "--health-discovery",
+        action="store_true",
+        default=False,
+        help="Scan for new devices on the network during health monitoring.",
+    )
+    session.add_argument(
+        "--profile",
+        type=str,
+        default=None,
+        help="Color profile name or path (e.g. 'aurora' or './my_profile.yaml').",
+    )
+    session.add_argument(
+        "--auto-profile",
+        action="store_true",
+        help="Automatically select a profile based on time of day.",
+    )
+    session.add_argument(
+        "--profile-rotation",
+        type=str,
+        default=None,
+        metavar="NAME1,NAME2,...",
+        help="Rotate through multiple profiles (comma-separated names/paths).",
+    )
+    session.add_argument(
+        "--rotation-interval",
+        type=float,
+        default=300.0,
+        help="Seconds between profile rotations when using --profile-rotation (default: 300).",
+    )
+
+    # -- Profile management commands -----------------------------------------
+    profiles_cmd = sub.add_parser(
+        "profiles",
+        help="List available color profiles.",
+    )
+    profiles_cmd.add_argument(
+        "--verbose", "-v", action="store_true",
+        help="Show full details including tags.",
+    )
+
+    validate_cmd = sub.add_parser(
+        "profile-validate",
+        help="Validate a color profile YAML and check color harmony.",
+    )
+    validate_cmd.add_argument("path", type=str, help="Profile name or path to validate.")
 
     return parser
+
+
+def _resolve_profile_from_args(args: argparse.Namespace):
+    """Resolve a ProfileConfig from --profile, --auto-profile, or None."""
+    from .profile import load_profile, resolve_profile_path, suggest_profile
+
+    profile_name = getattr(args, "profile", None)
+    auto_profile = getattr(args, "auto_profile", False)
+
+    if profile_name and auto_profile:
+        print("Error: --profile and --auto-profile are mutually exclusive.")
+        return "error"
+
+    if auto_profile:
+        profile_name = suggest_profile()
+        print(f"Auto-selected profile: {profile_name}")
+
+    if profile_name:
+        path = resolve_profile_path(profile_name)
+        profile = load_profile(path)
+        print(f"Loaded profile: {profile.name}")
+        return profile
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -608,6 +732,24 @@ def main(argv: list[str] | None = None) -> int:
             separators=(",", ":"),
         ))
 
+        profile = _resolve_profile_from_args(args)
+        if profile == "error":
+            return 1
+
+        # Profile rotation
+        rotation = None
+        rotation_names = getattr(args, "profile_rotation", None)
+        if rotation_names:
+            from .profile import ProfileRotation, load_profile, resolve_profile_path
+            names = [n.strip() for n in rotation_names.split(",") if n.strip()]
+            rotation_profiles = []
+            for n in names:
+                p = resolve_profile_path(n)
+                rotation_profiles.append(load_profile(p))
+            rotation = ProfileRotation(rotation_profiles, interval_seconds=args.rotation_interval)
+            profile = rotation.current
+            print(f"Profile rotation: {len(rotation_profiles)} profiles, rotating every {args.rotation_interval:.0f}s")
+
         logs, summary = run_live_to_govee(
             multi_adapter=multi_adapter,
             duration_seconds=args.duration,
@@ -625,6 +767,9 @@ def main(argv: list[str] | None = None) -> int:
             cycle_interval=max(1.0, float(args.cycle_interval)),
             debug_mood=args.debug_mood,
             telemetry_dir=args.telemetry_dir,
+            crossfade_detect=getattr(args, "crossfade_detect", False),
+            profile=profile,
+            profile_rotation=rotation,
         )
         if args.jsonl:
             args.jsonl.parent.mkdir(parents=True, exist_ok=True)
@@ -639,6 +784,26 @@ def main(argv: list[str] | None = None) -> int:
 
         brightness = max(0.0, min(1.0, float(args.brightness)))
         director_config = DirectorConfig()
+
+        profile = _resolve_profile_from_args(args)
+        if profile == "error":
+            return 1
+
+        # Profile rotation for session
+        rotation_names = getattr(args, "profile_rotation", None)
+        if rotation_names:
+            from .profile import ProfileRotation, load_profile, resolve_profile_path as _resolve
+            names = [n.strip() for n in rotation_names.split(",") if n.strip()]
+            rotation_profiles = []
+            for n in names:
+                p = _resolve(n)
+                rotation_profiles.append(load_profile(p))
+            profile = rotation_profiles[0] if rotation_profiles else profile
+            print(f"Profile rotation: {len(rotation_profiles)} profiles, rotating every {args.rotation_interval:.0f}s")
+
+        profile_path = None
+        if profile is not None:
+            profile_path = profile.source_path
 
         summary = run_session(
             config_path=args.config,
@@ -661,8 +826,57 @@ def main(argv: list[str] | None = None) -> int:
             probe_rate=args.probe_rate,
             director_config=director_config,
             telemetry_dir=args.telemetry_dir,
+            hot_reload=args.hot_reload,
+            profile=profile,
+            profile_path=profile_path,
+            health_monitor=getattr(args, "health_monitor", False),
+            health_interval=getattr(args, "health_interval", 30.0),
+            health_discovery=getattr(args, "health_discovery", False),
         )
         print(json.dumps(summary, separators=(",", ":")))
+        return 0
+
+    if args.command == "profiles":
+        from .profile import list_available_profiles
+
+        profiles = list_available_profiles()
+        if not profiles:
+            print("No profiles found.")
+            return 0
+        for p in profiles:
+            if getattr(args, "verbose", False):
+                print(json.dumps(p, separators=(",", ":")))
+            else:
+                desc = f" — {p['description']}" if p.get("description") else ""
+                print(f"  {p['name']}{desc}")
+        return 0
+
+    if args.command == "profile-validate":
+        from .profile import load_profile, resolve_profile_path, validate_color_harmony
+
+        try:
+            path = resolve_profile_path(args.path)
+            profile = load_profile(path)
+        except Exception as exc:
+            print(f"Validation failed: {exc}")
+            return 1
+
+        print(f"Profile: {profile.name}")
+        print(f"  Description: {profile.description or '(none)'}")
+        print(f"  Moods: {', '.join(sorted(profile.moods.keys()))}")
+        print(f"  Palettes: {', '.join(sorted(profile.palettes.keys()))}")
+
+        warnings_total = 0
+        for pal_name, colors in profile.palettes.items():
+            warnings = validate_color_harmony(colors)
+            for w in warnings:
+                print(f"  WARNING [{pal_name}]: {w}")
+                warnings_total += 1
+
+        if warnings_total == 0:
+            print("  No harmony warnings.")
+        else:
+            print(f"  {warnings_total} warning(s) found.")
         return 0
 
     parser.print_help()

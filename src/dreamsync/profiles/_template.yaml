@@ -1,0 +1,59 @@
+# DreamSync Color Profile Template
+# Copy this file and customize to create your own profile.
+#
+# Usage:
+#   dreamsync govee-live --device ... --duration 120 --profile my_profile.yaml
+#   dreamsync session --config devices.yaml --profile my_profile
+#
+# Profile names without a path are resolved:
+#   1. As an explicit file path
+#   2. In the current directory (with .yaml extension)
+#   3. In the built-in profiles directory
+
+name: "My Custom Profile"           # required, displayed in profile listings
+description: "Describe your vibe"   # optional
+author: "your-name"                 # optional
+tags: ["custom"]                    # optional, for filtering/search
+version: 1                          # must be 1
+
+# Named palettes: 3-8 hex colors each
+# These are local to this profile and referenced by mood configs below.
+# You can also reference built-in palette names: warm, cool, sunset, vivid,
+# pastel, neon, fire, ice
+palettes:
+  my_primary: ["#ff4400", "#ff8800", "#ffcc00", "#ff6600"]
+  my_accent:  ["#0044ff", "#0088ff", "#00ccff", "#0066ff"]
+  my_intense: ["#ff00ff", "#00ffff", "#ffff00"]
+
+# Per-mood configuration — all 4 moods must be defined
+moods:
+  chill:
+    palettes: ["my_primary"]          # list of palette names to randomly pick from
+    # effects:                        # optional: override the effect pool for this mood
+    #   - name: "wave_drift"          # must be a valid built-in effect name
+    #     weight: 3.0                 # higher weight = more likely to be picked
+    #   - name: "slow_breathe"
+    #     weight: 2.0
+    # params:                         # optional: merged onto active effect's params
+    #   wave_rate_mult: 0.3
+
+  groove:
+    palettes: ["my_primary", "my_accent"]
+
+  hype:
+    palettes: ["my_intense", "my_accent"]
+
+  drop:
+    palettes: ["my_intense"]
+    # params:
+    #   pulse_decay: 3.5
+
+# Transition rules (optional)
+# Force a specific palette when transitioning between moods.
+# transitions:
+#   - from: "chill"
+#     to: "groove"
+#     palette: "my_primary"
+
+# Override the effect cycle interval (default: 16 seconds)
+# cycle_interval: 24.0

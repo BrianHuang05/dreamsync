@@ -114,5 +114,37 @@ class RunSessionTests(unittest.TestCase):
         mock_adapter.deactivate.assert_called_once()
 
 
+    @patch("dreamsync.session.run_live_to_govee")
+    @patch("dreamsync.session.build_multi_adapter")
+    @patch("dreamsync.session.detect_all_devices")
+    @patch("dreamsync.session.load_device_config")
+    @patch("dreamsync.session.print_detection_report")
+    def test_health_monitor_started_and_stopped(
+        self, mock_report, mock_load, mock_detect, mock_build, mock_live
+    ) -> None:
+        mock_load.return_value = [DeviceConfig(name="Test", address="192.168.1.10")]
+        mock_detect.return_value = self._make_detected()
+        mock_adapter = MagicMock(spec=MultiGoveeLanAdapter)
+        mock_adapter.devices = []
+        mock_build.return_value = mock_adapter
+        mock_live.return_value = ([], {"duration_seconds": 1.0})
+
+        from dreamsync.session import run_session
+
+        with patch("dreamsync.device_health.DeviceHealthMonitor") as MockHealthMon:
+            mock_monitor = MagicMock()
+            MockHealthMon.return_value = mock_monitor
+
+            run_session(
+                config_path=Path("test.yaml"),
+                health_monitor=True,
+                health_interval=15.0,
+            )
+
+            MockHealthMon.assert_called_once()
+            mock_monitor.start.assert_called_once()
+            mock_monitor.stop.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

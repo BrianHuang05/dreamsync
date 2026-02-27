@@ -1,0 +1,34 @@
+name: "Ocean Deep"
+description: "Cool blues, teals, and seafoam — deep underwater atmosphere"
+author: "dreamsync"
+tags: ["cool", "water", "ambient"]
+version: 1
+
+palettes:
+  deep_blue:  ["#001a66", "#003399", "#0044cc", "#0055ff", "#0066ff", "#3388ff"]
+  teal:       ["#004d4d", "#006666", "#008080", "#009999", "#00b3b3", "#00cccc"]
+  seafoam:    ["#33ccaa", "#66ddbb", "#99eecc", "#00bb88", "#44ddaa", "#77eebb"]
+
+moods:
+  chill:
+    palettes: ["deep_blue", "teal"]
+    effects:
+      - name: "wave_drift"
+        weight: 3.0
+      - name: "slow_breathe"
+        weight: 2.0
+    params:
+      wave_rate_mult: 0.25
+  groove:
+    palettes: ["teal", "seafoam"]
+  hype:
+    palettes: ["seafoam", "deep_blue"]
+  drop:
+    palettes: ["deep_blue"]
+
+transitions:
+  - from: "chill"
+    to: "groove"
+    palette: "teal"
+
+cycle_interval: 20.0

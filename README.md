@@ -116,6 +116,22 @@ For production use with a device config file. Runs until Ctrl+C, auto-detects de
 python -m dreamsync session --config devices.yaml --debug-mood
 ```
 
+### Device health monitoring
+
+Enable periodic probing to detect offline/online transitions and auto-pause/resume devices:
+
+```bash
+python -m dreamsync session --config devices.yaml --health-monitor --health-interval 30 --debug-mood
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--health-monitor` | off | Enable periodic device health probing |
+| `--health-interval` | 30 | Seconds between health probes |
+| `--health-discovery` | off | Scan for new devices on the network |
+
+When a device goes offline (3 consecutive failed probes), its adapter is paused. When it comes back (2 consecutive successes), it resumes automatically. The audio pipeline is never blocked.
+
 See `IMPLEMENTATION.md` for device config format and auto-detect details.
 
 ## List audio devices

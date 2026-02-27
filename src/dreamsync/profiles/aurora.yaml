@@ -1,0 +1,39 @@
+name: "Aurora Borealis"
+description: "Shifting greens, purples, and pinks — northern lights in your room"
+author: "dreamsync"
+tags: ["aurora", "nature", "ambient"]
+version: 1
+
+palettes:
+  aurora_green:  ["#003300", "#006633", "#009966", "#00cc99", "#33ffcc", "#66ffcc"]
+  aurora_purple: ["#330066", "#6600cc", "#9933ff", "#cc66ff", "#9900ff", "#6633cc"]
+  aurora_vivid:  ["#00ff99", "#9933ff", "#ff0099", "#00ffcc", "#cc00ff", "#ff3366"]
+
+moods:
+  chill:
+    palettes: ["aurora_green"]
+    effects:
+      - name: "wave_drift"
+        weight: 3.0
+      - name: "slow_breathe"
+        weight: 2.0
+    params:
+      wave_rate_mult: 0.3
+  groove:
+    palettes: ["aurora_green", "aurora_purple"]
+  hype:
+    palettes: ["aurora_vivid", "aurora_purple"]
+  drop:
+    palettes: ["aurora_vivid"]
+    params:
+      pulse_decay: 3.5
+
+transitions:
+  - from: "chill"
+    to: "groove"
+    palette: "aurora_green"
+  - from: "groove"
+    to: "hype"
+    palette: "aurora_purple"
+
+cycle_interval: 24.0

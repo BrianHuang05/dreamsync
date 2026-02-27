@@ -224,12 +224,17 @@ class GoveeLanAdapter:
         self._monotonic = monotonic_fn or time.monotonic
         self._min_frame_interval = 1.0 / max(1, config.fps)
         self._last_frame_at = -1e9
+        self.last_send_ok: bool = True
+        self.paused: bool = False
 
     def send_frame(self, colors: list[tuple[int, int, int]]) -> bool:
         """Send a frame of RGB segment colors to the device.
 
-        Returns True if the frame was sent, False if rate-limited.
+        Returns True if the frame was sent, False if rate-limited or paused.
         """
+        if self.paused:
+            return False
+
         now = self._monotonic()
         if (now - self._last_frame_at) < self._min_frame_interval:
             return False
@@ -256,7 +261,12 @@ class GoveeLanAdapter:
             payload = build_command_json(
                 "colorwc", {"color": {"r": r, "g": g, "b": b}, "colorTemInKelvin": 0}
             )
-        self._transport(payload, self.config.device_ip, self.config.port)
+        try:
+            self._transport(payload, self.config.device_ip, self.config.port)
+            self.last_send_ok = True
+        except OSError as exc:
+            _logger.warning("send_frame failed for %s: %s", self.config.device_ip, exc)
+            self.last_send_ok = False
         self._last_frame_at = now
         return True
 
@@ -381,6 +391,21 @@ class MultiGoveeLanAdapter:
         """Stop BLE follower threads."""
         for ble_adapter in self._ble_followers:
             ble_adapter.stop()
+
+    def replace_devices(
+        self,
+        new_devices: list[tuple[GoveeLanAdapter, SegmentRenderer, DeviceRole]],
+    ) -> None:
+        """Atomically replace the device list (GIL-safe reference swap)."""
+        self.devices = new_devices
+
+    def replace_ble_followers(self, new_followers: list) -> None:
+        """Atomically replace the BLE follower list (GIL-safe reference swap)."""
+        self._ble_followers = new_followers
+
+    def get_device_addresses(self) -> list[str]:
+        """Return the IP/address of every LAN device currently in the list."""
+        return [adapter.config.device_ip for adapter, _, _ in self.devices]
 
     def send_frame(
         self, t: float, intent: LightingIntent, beat: bool = False,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import dataclasses
+import math
+import statistics
 import threading
 import time
 from collections import deque
@@ -24,14 +26,14 @@ class LiveBpmEstimator:
         self,
         sample_rate: int,
         hop_size: int,
-        window_seconds: float = 20.0,
+        window_seconds: float = 12.0,
         min_update_interval: float = 0.5,
         beat_threshold_percentile: float = 65.0,
         beat_threshold_std_mult: float = 0.15,
         min_bpm: float = 80.0,
         max_bpm: float = 200.0,
         max_jump_bpm: float = 6.0,
-        confirm_updates: int = 6,
+        confirm_updates: int = 4,
         half_time: bool = False,
         onset_mode: str = "hybrid",
         threshold_mode: str = "adaptive",
@@ -55,7 +57,7 @@ class LiveBpmEstimator:
             raise ValueError(f"threshold_mode must be 'adaptive' or 'global', got {threshold_mode!r}")
         self.threshold_mode = threshold_mode
         self.max_frames = max(8, int(window_seconds * sample_rate / hop_size))
-        self.min_frames = max(8, int(5.0 * sample_rate / hop_size))
+        self.min_frames = max(8, int(3.0 * sample_rate / hop_size))
         self.onset_env: deque[float] = deque()
         self.prev_rms = 0.0
         self.last_bpm = 0.0
@@ -72,7 +74,10 @@ class LiveBpmEstimator:
         # Hybrid onset mode state: EMA of bass onset activity vs kick flux activity
         self._bass_activity = 0.0
         self._kick_activity = 0.0
+        self._wf_activity = 0.0
         self._hybrid_source = "bass"  # current active source in hybrid mode
+        # Spectral template matching
+        self._beat_template = SpectralBeatTemplate()
 
     def reset(self) -> None:
         """Clear accumulated state for a new song."""
@@ -91,7 +96,9 @@ class LiveBpmEstimator:
         self._prev_onset = 0.0
         self._bass_activity = 0.0
         self._kick_activity = 0.0
+        self._wf_activity = 0.0
         self._hybrid_source = "bass"
+        self._beat_template.reset()
 
     def update(
         self,
@@ -100,6 +107,8 @@ class LiveBpmEstimator:
         spectral_flux: float = 0.0,
         kick_spectral_flux: float = 0.0,
         whitened_flux: float = 0.0,
+        percussive_onset: float = 0.0,
+        mag: np.ndarray | None = None,
     ) -> tuple[float, bool]:
         bass_onset = max(0.0, energy - self.prev_rms)
         self.prev_rms = energy
@@ -110,10 +119,24 @@ class LiveBpmEstimator:
         elif self.onset_mode == "whitened_flux":
             onset = whitened_flux
         elif self.onset_mode == "hybrid":
-            onset = self._hybrid_onset(bass_onset, kick_spectral_flux)
+            onset = self._hybrid_onset(
+                bass_onset, kick_spectral_flux,
+                whitened_flux=whitened_flux,
+                percussive_onset=percussive_onset,
+            )
         else:
             onset = bass_onset
         self.last_onset = onset
+
+        # Spectral template scoring
+        if mag is not None:
+            beat_from_phase = self._beat_phase > 0.9
+            similarity = self._beat_template.update(mag, beat_from_phase)
+            if self._beat_template.ready:
+                gate = self._similarity_gate(similarity)
+                onset = onset * gate
+                self.last_onset = onset
+
         self.onset_env.append(onset)
         while len(self.onset_env) > self.max_frames:
             self.onset_env.popleft()
@@ -127,6 +150,13 @@ class LiveBpmEstimator:
         ):
             onset_arr = np.asarray(self.onset_env, dtype=np.float32)
             onset_arr = _smooth_signal(onset_arr, width=5)
+            # Scale-only normalization: divide by std to make amplitude-
+            # invariant, but preserve the zero baseline (no mean subtraction).
+            # Zero-mean normalization would push sparse signals negative
+            # and create negative adaptive thresholds.
+            onset_std = float(onset_arr.std())
+            if onset_std > 1e-8:
+                onset_arr = onset_arr / onset_std
             if self.threshold_mode == "adaptive":
                 beat_idx = self._detect_beats_adaptive(onset_arr)
             else:
@@ -136,13 +166,7 @@ class LiveBpmEstimator:
             )
             bpm_from_corr = _estimate_bpm(onset_arr, self.hop_size, self.sample_rate)
             if bpm_from_beats > 0 and bpm_from_corr > 0:
-                # Weight beat-based estimate by number of detected beats.
-                # Fewer than 4 beats → low confidence, lean on autocorrelation.
-                # 8+ beats → high confidence, trust beat intervals.
-                beat_confidence = min(1.0, beat_idx.size / 8.0)
-                w_beats = 0.5 + 0.4 * beat_confidence   # 0.5–0.9
-                w_corr = 1.0 - w_beats                   # 0.1–0.5
-                bpm = w_beats * bpm_from_beats + w_corr * bpm_from_corr
+                bpm = 0.7 * bpm_from_beats + 0.3 * bpm_from_corr
             else:
                 bpm = bpm_from_beats if bpm_from_beats > 0 else bpm_from_corr
             if bpm > 0.0:
@@ -181,20 +205,14 @@ class LiveBpmEstimator:
         if abs(bpm - self.last_bpm) <= self.max_jump_bpm:
             self._candidate_bpm = 0.0
             self._candidate_hits = 0
-            # EMA smooth small changes to prevent oscillation.
-            # Persistent changes converge within ~5 updates (~2.5s).
-            return self.last_bpm * 0.7 + bpm * 0.3
+            return bpm
         # Require a few consistent updates before accepting a big jump.
         if self._candidate_bpm <= 0.0 or abs(bpm - self._candidate_bpm) > self.max_jump_bpm:
             self._candidate_bpm = bpm
             self._candidate_hits = 1
             return self.last_bpm
         self._candidate_hits += 1
-        # Scale confirmation requirement by jump magnitude:
-        # 6 BPM jump → base confirms, 30+ BPM jump → 2x confirms
-        jump_ratio = min(2.0, abs(bpm - self.last_bpm) / (self.max_jump_bpm * 3))
-        required = int(self.confirm_updates * (1.0 + jump_ratio))
-        if self._candidate_hits >= required:
+        if self._candidate_hits >= self.confirm_updates:
             self._candidate_bpm = 0.0
             self._candidate_hits = 0
             return bpm
@@ -227,27 +245,61 @@ class LiveBpmEstimator:
         self,
         bass_onset: float,
         kick_flux: float,
+        whitened_flux: float = 0.0,
+        percussive_onset: float = 0.0,
         alpha: float = 0.05,
         switch_ratio: float = 3.0,
+        wf_ratio: float = 10.0,
     ) -> float:
-        """Choose between bass_diff and kick_flux based on signal activity.
+        """Choose between bass_diff, kick_flux, percussive, and whitened_flux.
 
         Uses bass_diff (best noise rejection) as the primary source.
-        Switches to kick_flux only when bass onset activity is very low
-        relative to kick flux activity — meaning bass_diff isn't picking
-        up the beats but the kick band still has rhythmic content.
+        Switches to kick_flux when bass onset activity is very low
+        relative to kick flux activity.  Falls back to a noisy-environment
+        signal when both bass and kick are weak relative to whitened flux.
+
+        In the noisy fallback, prefers *percussive_onset* (HPSS-based)
+        over whitened flux when available, because HPSS has per-frame
+        selectivity (beat frames >> non-beat frames) while whitened flux
+        produces similar values for all active frames.
         """
         self._bass_activity = alpha * bass_onset + (1.0 - alpha) * self._bass_activity
         self._kick_activity = alpha * kick_flux + (1.0 - alpha) * self._kick_activity
+        self._wf_activity = alpha * whitened_flux + (1.0 - alpha) * self._wf_activity
+
+        primary = self._bass_activity + self._kick_activity
+
+        if self._wf_activity > wf_ratio * primary and self._wf_activity > 0.01:
+            # Noisy environment: primary signals are dead.
+            # Prefer percussive onset (HPSS) — it has per-frame selectivity
+            # that whitened flux lacks.
+            if percussive_onset > 0:
+                self._hybrid_source = "percussive"
+                return percussive_onset
+            self._hybrid_source = "whitened"
+            return math.log1p(whitened_flux)
 
         if self._bass_activity > 0 and self._kick_activity / (self._bass_activity + 1e-12) > switch_ratio:
-            # Kick band has much more activity than broadband bass diff —
-            # bass_diff is probably missing beats, use kick_flux
             self._hybrid_source = "kick"
             return kick_flux
-        else:
-            self._hybrid_source = "bass"
-            return bass_onset
+
+        self._hybrid_source = "bass"
+        return bass_onset
+
+    def _similarity_gate(self, similarity: float) -> float:
+        """Convert similarity [0,1] into an onset multiplier.
+
+        Maps similarity through a soft gate:
+        - similarity >= 0.7  -> multiplier = 1.0 (full pass)
+        - similarity ~= 0.5  -> multiplier ~= 0.7
+        - similarity <= 0.3  -> multiplier = 0.3 (floor, don't fully mute)
+        """
+        floor = 0.3
+        if similarity >= 0.7:
+            return 1.0
+        if similarity <= floor:
+            return floor
+        return floor + (similarity - floor) / (0.7 - floor) * (1.0 - floor)
 
     def _advance_beat_phase(self) -> bool:
         if self.last_bpm <= 0.0:
@@ -391,6 +443,407 @@ class SongBoundaryDetector:
 
 
 @dataclass
+class CrossfadeConfig:
+    """Tunable parameters for crossfade-aware song boundary detection."""
+
+    # Voting weights
+    w_bpm: float = 0.35
+    w_centroid: float = 0.25
+    w_bass: float = 0.15
+    w_energy: float = 0.10
+    w_onset: float = 0.15
+    trigger_threshold: float = 0.50
+
+    # Per-signal thresholds
+    bpm_jump_threshold: float = 12.0       # BPM
+    centroid_shift_threshold: float = 0.30  # relative
+    bass_shift_threshold: float = 0.15     # absolute
+    energy_range_threshold: float = 0.30   # absolute
+    ioi_std_threshold: float = 0.05        # seconds
+
+    # Timing
+    window_seconds: float = 10.0           # lookback for prior stats
+    recent_seconds: float = 3.0            # lookback for recent stats
+    min_song_seconds: float = 60.0         # min time between crossfade boundaries
+    confirm_frames: int = 5                # sustain vote for N frames before firing
+
+    # Centroid EMA
+    centroid_ema_alpha: float = 0.10
+
+
+class CrossfadeBoundaryDetector:
+    """Detects song transitions during crossfaded playback via weighted voting.
+
+    Runs alongside SongBoundaryDetector.  When multiple audio features
+    shift simultaneously (BPM, spectral centroid, bass ratio, energy
+    envelope, onset pattern) the detector fires a boundary.
+    """
+
+    def __init__(
+        self,
+        config: CrossfadeConfig | None = None,
+        hop_size: int = 512,
+        sample_rate: int = 44100,
+    ) -> None:
+        self.config = config or CrossfadeConfig()
+        self._hop_size = hop_size
+        self._sample_rate = sample_rate
+        self._seconds_per_frame = hop_size / sample_rate
+
+        # Rolling window sizes in frames
+        self._window_frames = int(self.config.window_seconds / self._seconds_per_frame)
+        self._recent_frames = int(self.config.recent_seconds / self._seconds_per_frame)
+        self._min_song_frames = int(self.config.min_song_seconds / self._seconds_per_frame)
+
+        self._boundary_count = 0
+        self.reset()
+
+    def reset(self) -> None:
+        """Clear all rolling state (called after any boundary fires)."""
+        cfg = self.config
+        max_len = int(cfg.window_seconds / self._seconds_per_frame) + 1
+        self._bpm_buf: deque[float] = deque(maxlen=max_len)
+        self._centroid_buf: deque[float] = deque(maxlen=max_len)
+        self._bass_buf: deque[float] = deque(maxlen=max_len)
+        self._energy_buf: deque[float] = deque(maxlen=max_len)
+        self._onset_times: deque[float] = deque(maxlen=max_len)
+        self._centroid_ema: float = 0.0
+        self._centroid_ema_init: bool = False
+        self._confirm_count: int = 0
+        self._frames_since_reset: int = 0
+
+    def update(
+        self,
+        bpm: float,
+        centroid: float,
+        bass_ratio: float,
+        energy: float,
+        onset_strength: float,
+        beat: bool,
+        t: float,
+    ) -> bool:
+        """Feed one frame of features. Returns True on crossfade boundary."""
+        self._frames_since_reset += 1
+
+        # Accumulate rolling buffers
+        self._bpm_buf.append(bpm)
+        self._bass_buf.append(bass_ratio)
+        self._energy_buf.append(energy)
+
+        # Track centroid with EMA for delta detection
+        alpha = self.config.centroid_ema_alpha
+        if not self._centroid_ema_init:
+            self._centroid_ema = centroid
+            self._centroid_ema_init = True
+        else:
+            self._centroid_ema = alpha * centroid + (1.0 - alpha) * self._centroid_ema
+        self._centroid_buf.append(centroid)
+
+        # Track onset times for IOI analysis
+        if beat:
+            self._onset_times.append(t)
+
+        # Not enough data yet
+        if len(self._bpm_buf) < self._recent_frames + 1:
+            return False
+
+        # Cooldown: respect min_song_seconds
+        if self._frames_since_reset < self._min_song_frames:
+            return False
+
+        # Compute per-signal votes
+        score = self._compute_score()
+
+        if score >= self.config.trigger_threshold:
+            self._confirm_count += 1
+            if self._confirm_count >= self.config.confirm_frames:
+                self._boundary_count += 1
+                return True
+        else:
+            self._confirm_count = 0
+        return False
+
+    @property
+    def boundary_count(self) -> int:
+        return self._boundary_count
+
+    # ------------------------------------------------------------------
+    # Signal scoring helpers
+    # ------------------------------------------------------------------
+
+    def _compute_score(self) -> float:
+        cfg = self.config
+        score = 0.0
+
+        if self._bpm_discontinuity():
+            score += cfg.w_bpm
+        if self._centroid_discontinuity():
+            score += cfg.w_centroid
+        if self._bass_discontinuity():
+            score += cfg.w_bass
+        if self._energy_envelope_break():
+            score += cfg.w_energy
+        if self._onset_pattern_break():
+            score += cfg.w_onset
+
+        return score
+
+    def _split_recent_prior(self, buf: deque) -> tuple[list, list]:
+        """Split buffer into recent (last N frames) and prior (the rest)."""
+        items = list(buf)
+        n = min(self._recent_frames, len(items) - 1)
+        recent = items[-n:]
+        prior = items[:-n]
+        return recent, prior
+
+    def _bpm_discontinuity(self) -> bool:
+        recent, prior = self._split_recent_prior(self._bpm_buf)
+        if not prior or not recent:
+            return False
+        # Filter out zero BPM values (estimator not locked yet)
+        recent_valid = [b for b in recent if b > 0]
+        prior_valid = [b for b in prior if b > 0]
+        if not recent_valid or not prior_valid:
+            return False
+        recent_med = float(sorted(recent_valid)[len(recent_valid) // 2])
+        prior_med = float(sorted(prior_valid)[len(prior_valid) // 2])
+        return abs(recent_med - prior_med) > self.config.bpm_jump_threshold
+
+    def _centroid_discontinuity(self) -> bool:
+        recent, prior = self._split_recent_prior(self._centroid_buf)
+        if not prior or not recent:
+            return False
+        recent_mean = sum(recent) / len(recent)
+        prior_mean = sum(prior) / len(prior)
+        if prior_mean < 1e-8:
+            return False
+        relative_shift = abs(recent_mean - prior_mean) / prior_mean
+        return relative_shift > self.config.centroid_shift_threshold
+
+    def _bass_discontinuity(self) -> bool:
+        recent, prior = self._split_recent_prior(self._bass_buf)
+        if not prior or not recent:
+            return False
+        recent_mean = sum(recent) / len(recent)
+        prior_mean = sum(prior) / len(prior)
+        return abs(recent_mean - prior_mean) > self.config.bass_shift_threshold
+
+    def _energy_envelope_break(self) -> bool:
+        # Look at the last ~2 seconds of energy for a spike/dip
+        n_frames = int(2.0 / self._seconds_per_frame)
+        if len(self._energy_buf) < n_frames:
+            return False
+        recent = list(self._energy_buf)[-n_frames:]
+        return (max(recent) - min(recent)) > self.config.energy_range_threshold
+
+    def _onset_pattern_break(self) -> bool:
+        times = list(self._onset_times)
+        if len(times) < 4:
+            return False
+        iois = [times[i + 1] - times[i] for i in range(len(times) - 1)]
+        n = min(self._recent_frames, len(iois) - 1)
+        if n < 2:
+            return False
+        # Split IOIs into recent and prior
+        recent_iois = iois[-n:]
+        prior_iois = iois[:-n]
+        if len(prior_iois) < 2 or len(recent_iois) < 2:
+            return False
+        recent_std = statistics.pstdev(recent_iois)
+        prior_std = statistics.pstdev(prior_iois)
+        return abs(recent_std - prior_std) > self.config.ioi_std_threshold
+
+
+class SpectralBeatTemplate:
+    """Learn and match against the spectral shape of beat frames.
+
+    During the bootstrap phase (first ~5s), collects magnitude spectra at
+    detected beat positions.  Once enough beats are collected, builds a
+    template via averaging and scores each new frame by cosine similarity
+    against the template.
+    """
+
+    def __init__(
+        self,
+        min_beats_for_template: int = 8,
+        ema_alpha: float = 0.08,
+        similarity_floor: float = 0.3,
+    ):
+        self.min_beats = min_beats_for_template
+        self.ema_alpha = ema_alpha
+        self.similarity_floor = similarity_floor
+
+        # Bootstrap collection
+        self._beat_mags: list[np.ndarray] = []
+        self._template: np.ndarray | None = None
+        self._template_ready = False
+
+        # Frame state
+        self._prev_similarity = 0.0
+
+    # --- public API ---
+
+    def update(self, mag: np.ndarray, is_beat: bool) -> float:
+        """Score current frame against the beat template.
+
+        Args:
+            mag: magnitude spectrum from rfft (shape: n_bins,)
+            is_beat: whether the current frame is a detected beat
+
+        Returns:
+            similarity: 0.0-1.0, how much this frame looks like a beat.
+                        Returns 0.0 during bootstrap.
+        """
+        if not self._template_ready:
+            if is_beat:
+                self._beat_mags.append(mag.copy())
+                if len(self._beat_mags) >= self.min_beats:
+                    self._build_template()
+            return 0.0
+
+        similarity = self._cosine_similarity(mag)
+
+        # Adapt template with confirmed beat frames (high-similarity beats)
+        if is_beat and similarity > 0.5:
+            norm_mag = mag / (np.linalg.norm(mag) + 1e-10)
+            self._template = (
+                self.ema_alpha * norm_mag
+                + (1.0 - self.ema_alpha) * self._template
+            )
+            self._template /= np.linalg.norm(self._template) + 1e-10
+
+        self._prev_similarity = similarity
+        return similarity
+
+    @property
+    def ready(self) -> bool:
+        return self._template_ready
+
+    def reset(self) -> None:
+        """Clear template on song boundary."""
+        self._beat_mags.clear()
+        self._template = None
+        self._template_ready = False
+        self._prev_similarity = 0.0
+
+    # --- internals ---
+
+    def _build_template(self) -> None:
+        """Average collected beat spectra into a template."""
+        stack = np.stack(self._beat_mags)
+        mean_mag = stack.mean(axis=0)
+        self._template = mean_mag / (np.linalg.norm(mean_mag) + 1e-10)
+        self._template_ready = True
+        self._beat_mags.clear()
+
+    def _cosine_similarity(self, mag: np.ndarray) -> float:
+        """Cosine similarity between frame spectrum and template."""
+        norm_mag = np.linalg.norm(mag)
+        if norm_mag < 1e-10:
+            return 0.0
+        sim = float(np.dot(mag, self._template) / (norm_mag + 1e-10))
+        return max(0.0, sim)
+
+
+class NoiseFloorEstimator:
+    """Per-frequency-bin minimum-statistics noise floor estimation.
+
+    Tracks the minimum magnitude per bin over a sliding window.
+    The noise floor is what's always present (ambient noise); music
+    adds energy on top of this minimum.
+    """
+
+    _MIN_READY_FRAMES = 86  # ~1 second at 86 fps before subtraction activates
+
+    def __init__(self, n_bins: int, window_frames: int = 200) -> None:
+        self._ring: deque[np.ndarray] = deque(maxlen=window_frames)
+        self._n_bins = n_bins
+        self._noise_floor: np.ndarray | None = None
+
+    def update(self, mag: np.ndarray) -> np.ndarray:
+        """Feed one frame's magnitude spectrum, return current noise floor estimate."""
+        self._ring.append(mag.copy())
+        self._noise_floor = np.min(np.stack(list(self._ring)), axis=0)
+        return self._noise_floor
+
+    @property
+    def noise_floor(self) -> np.ndarray | None:
+        return self._noise_floor
+
+    @property
+    def ready(self) -> bool:
+        return len(self._ring) >= self._MIN_READY_FRAMES
+
+    def reset(self) -> None:
+        self._ring.clear()
+        self._noise_floor = None
+
+
+class PercussiveOnsetTracker:
+    """HPSS-based percussive onset detection for noisy environments.
+
+    Maintains a rolling buffer of active-frame magnitude spectra and
+    computes the per-bin time-direction median as the *harmonic* estimate
+    (sustained ambient noise).  The percussive component is what exceeds
+    this stable spectral shape — transient events like kicks and snares.
+
+    Unlike whitened flux (which normalizes then computes frame-to-frame
+    differences), this returns per-frame *percussive energy* — each frame
+    is independently scored against the learned ambient model.  This
+    avoids the selectivity problem where all active frames produce
+    similar whitened flux values.
+
+    Only active frames (above *energy_gate*) are buffered and scored.
+    Silent/dropout frames return 0.0 without polluting the buffer.
+    """
+
+    _MIN_READY_FRAMES = 15  # need this many active frames to estimate median
+
+    def __init__(
+        self,
+        n_bins: int,
+        kernel_size: int = 43,
+        energy_gate: float = 1.0,
+    ) -> None:
+        self._n_bins = n_bins
+        self._kernel_size = kernel_size
+        self._energy_gate = energy_gate
+        self._mag_buffer: deque[np.ndarray] = deque(maxlen=kernel_size)
+
+    @property
+    def ready(self) -> bool:
+        return len(self._mag_buffer) >= min(self._MIN_READY_FRAMES, self._kernel_size)
+
+    def update(self, mag: np.ndarray) -> float:
+        """Feed one frame's magnitude spectrum.  Returns percussive onset energy.
+
+        Returns 0.0 for silent frames and during warmup.
+        """
+        frame_energy = float(mag.sum())
+        if self._energy_gate > 0 and frame_energy <= self._energy_gate:
+            return 0.0
+
+        self._mag_buffer.append(mag.copy())
+
+        if not self.ready:
+            return 0.0
+
+        # Time-median per frequency bin = harmonic (sustained) estimate.
+        # Crowd noise dominates the median; transients appear in < 50%
+        # of buffered frames so they don't affect the median.
+        S = np.stack(list(self._mag_buffer))
+        harmonic = np.median(S, axis=0)
+
+        # Percussive = energy that exceeds the sustained ambient shape
+        percussive = np.maximum(0.0, mag - harmonic)
+
+        return float(percussive.sum())
+
+    def reset(self) -> None:
+        self._mag_buffer.clear()
+
+
+@dataclass
 class SpectralFeatures:
     bass: float
     bass_ratio: float
@@ -398,7 +851,9 @@ class SpectralFeatures:
     kick_energy: float
     kick_ratio: float
     kick_spectral_flux: float
+    centroid: float
     mag: np.ndarray
+    raw_mag: np.ndarray | None = None  # pre-subtraction mag, set when noise_floor is used
 
 
 def _prepare_bass_window(
@@ -406,17 +861,18 @@ def _prepare_bass_window(
     sample_rate: int,
     kick_low: float = 50.0,
     kick_high: float = 130.0,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return (hanning_window, bass_mask, kick_mask).
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return (hanning_window, bass_mask, kick_mask, freqs).
 
     bass_mask: freqs <= 200 Hz (broadband bass).
     kick_mask: kick_low <= freqs <= kick_high (narrow kick band).
+    freqs: frequency bin centers for spectral centroid computation.
     """
     window = np.hanning(frame_size).astype(np.float32)
     freqs = np.fft.rfftfreq(frame_size, d=1.0 / sample_rate)
     bass_mask = freqs <= 200.0
     kick_mask = (freqs >= kick_low) & (freqs <= kick_high)
-    return window, bass_mask, kick_mask
+    return window, bass_mask, kick_mask, freqs
 
 
 def _spectral_features(
@@ -425,12 +881,25 @@ def _spectral_features(
     mask: np.ndarray,
     prev_mag: np.ndarray | None,
     kick_mask: np.ndarray | None = None,
+    freqs: np.ndarray | None = None,
+    noise_floor: np.ndarray | None = None,
 ) -> SpectralFeatures:
     spectrum = np.fft.rfft(frame * window)
-    mag = np.abs(spectrum)
+    raw_mag = np.abs(spectrum)
+
+    # Apply spectral subtraction if noise floor is provided
+    if noise_floor is not None:
+        mag = np.maximum(0.0, raw_mag - noise_floor)
+    else:
+        mag = raw_mag
+
     bass = float(mag[mask].sum())
     total = float(mag.sum()) + 1e-8
     bass_ratio = float(mag[mask].sum()) / total
+    if freqs is not None:
+        centroid = float(np.sum(freqs * mag) / (total))
+    else:
+        centroid = 0.0
     if prev_mag is not None:
         spectral_flux = float(np.maximum(0.0, mag - prev_mag).sum())
     else:
@@ -452,7 +921,8 @@ def _spectral_features(
     return SpectralFeatures(
         bass=bass, bass_ratio=bass_ratio, spectral_flux=spectral_flux,
         kick_energy=kick_energy, kick_ratio=kick_ratio,
-        kick_spectral_flux=kick_spectral_flux, mag=mag,
+        kick_spectral_flux=kick_spectral_flux, centroid=centroid, mag=mag,
+        raw_mag=raw_mag if noise_floor is not None else None,
     )
 
 
@@ -461,24 +931,44 @@ def _compute_whitened_flux(
     spectral_mean: np.ndarray | None,
     prev_whitened_mag: np.ndarray | None,
     alpha: float = 0.05,
+    energy_gate: float = 0.0,
 ) -> tuple[float, np.ndarray, np.ndarray]:
     """Compute spectral flux on a pre-whitened (normalized) spectrum.
 
-    Returns (whitened_flux, updated_spectral_mean, whitened_mag).
+    When *energy_gate* > 0, only frames with ``mag.sum() > energy_gate``
+    update the spectral mean and contribute to flux.  This prevents
+    silence frames (85 %+ in a noisy bar) from diluting the mean,
+    which would make ANY audio frame produce huge whitened flux.
+
+    The third return value is the last *active* frame's whitened mag
+    (unchanged for silent frames), so flux measures spectral change
+    between consecutive audio captures, not silence→audio transitions.
+
+    Returns (whitened_flux, updated_spectral_mean, last_active_whitened_mag).
     """
+    frame_energy = float(mag.sum())
+    is_active = energy_gate <= 0 or frame_energy > energy_gate
+
+    # Initialize spectral mean from first active frame
     if spectral_mean is None:
-        spectral_mean = mag.copy()
-    else:
+        if is_active:
+            spectral_mean = mag.copy()
+        return 0.0, spectral_mean, prev_whitened_mag
+
+    # Only update spectral mean from active frames
+    if is_active:
         spectral_mean = alpha * mag + (1.0 - alpha) * spectral_mean
 
     whitened_mag = mag / (spectral_mean + 1e-8)
 
-    if prev_whitened_mag is not None:
+    # Compute flux only between two active frames
+    if is_active and prev_whitened_mag is not None:
         whitened_flux = float(np.maximum(0.0, whitened_mag - prev_whitened_mag).sum())
     else:
         whitened_flux = 0.0
 
-    return whitened_flux, spectral_mean, whitened_mag
+    # Return current whitened mag only if active (preserve last active for silent frames)
+    return whitened_flux, spectral_mean, whitened_mag if is_active else prev_whitened_mag
 
 
 def _feature_row_from_frame(
@@ -491,6 +981,7 @@ def _feature_row_from_frame(
     bass_ratio: float = 0.0,
     spectral_flux: float = 0.0,
     onset_strength: float = 0.0,
+    centroid: float = 0.0,
 ) -> dict[str, float | bool]:
     signs = np.sign(frame)
     zcr = float(np.mean(np.abs(np.diff(signs)) > 0))
@@ -498,7 +989,7 @@ def _feature_row_from_frame(
         "t": t,
         "rms": rms,
         "zcr": zcr,
-        "centroid": 0.0,
+        "centroid": float(centroid),
         "bass": float(bass),
         "bass_ratio": float(bass_ratio),
         "spectral_flux": float(spectral_flux),
@@ -526,6 +1017,10 @@ def run_live_to_govee(
     debug_mood: bool = False,
     stop_event: threading.Event | None = None,
     telemetry_dir: Path | None = None,
+    crossfade_detect: bool = False,
+    profile: Any | None = None,
+    effect_cycler_override: "EffectCycler | None" = None,
+    profile_rotation: Any | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Audio capture → beat detection → renderer → Govee UDP streaming.
 
@@ -558,9 +1053,20 @@ def run_live_to_govee(
     song_detector = SongBoundaryDetector(
         hop_size=hop_size, sample_rate=sample_rate,
     )
+    crossfade_detector: CrossfadeBoundaryDetector | None = (
+        CrossfadeBoundaryDetector(hop_size=hop_size, sample_rate=sample_rate)
+        if crossfade_detect else None
+    )
     director = Director(director_config)
     mood_classifier = MoodClassifier() if auto_cycle else None
-    effect_cycler = EffectCycler(EffectCyclerConfig(cycle_interval=cycle_interval)) if auto_cycle else None
+    if effect_cycler_override is not None:
+        effect_cycler = effect_cycler_override
+    elif auto_cycle:
+        effect_cycler = EffectCycler(
+            EffectCyclerConfig(cycle_interval=cycle_interval), profile=profile,
+        )
+    else:
+        effect_cycler = None
     current_params: dict | None = None
     beat_count = 0
     sent_count = 0
@@ -585,10 +1091,14 @@ def run_live_to_govee(
     started_at = time.monotonic()
     next_telemetry = started_at + max(0.1, telemetry_interval_seconds)
     last_print = started_at
-    window, bass_mask, kick_mask = _prepare_bass_window(frame_size, sample_rate)
+    window, bass_mask, kick_mask, freqs = _prepare_bass_window(frame_size, sample_rate)
+    n_bins = frame_size // 2 + 1
+    noise_estimator = NoiseFloorEstimator(n_bins=n_bins)
+    percussive_tracker = PercussiveOnsetTracker(n_bins=n_bins, energy_gate=1.0)
     prev_mag: np.ndarray | None = None
     spectral_mean: np.ndarray | None = None
     prev_whitened_mag: np.ndarray | None = None
+    preset = None
 
     # Activate all devices (activate() includes its own delays)
     multi_adapter.activate(brightness=100)
@@ -616,11 +1126,58 @@ def run_live_to_govee(
             # Process audio frames for beat detection + feature extraction
             beat_this_tick = False
             last_features: dict[str, float | bool] | None = None
+            last_sf: SpectralFeatures | None = None
+            last_wf: float = 0.0
             while buffer.shape[0] >= frame_size:
                 frame = buffer[:frame_size]
                 buffer = buffer[hop_size:]
                 rms = float(np.sqrt(np.mean(frame**2)))
-                if song_detector.update(rms):
+                silence_boundary = song_detector.update(rms)
+
+                nf = noise_estimator.noise_floor if noise_estimator.ready else None
+                sf = _spectral_features(frame, window, bass_mask, prev_mag, kick_mask=kick_mask, freqs=freqs, noise_floor=nf)
+                # Use raw mag for noise floor estimation; cleaned mag for features
+                raw_mag = sf.raw_mag if sf.raw_mag is not None else sf.mag
+                noise_estimator.update(raw_mag)
+                prev_mag = sf.mag
+                wf, spectral_mean, prev_whitened_mag = _compute_whitened_flux(
+                    raw_mag, spectral_mean, prev_whitened_mag,
+                    energy_gate=1.0,
+                )
+                last_sf = sf
+                last_wf = wf
+                perc = percussive_tracker.update(raw_mag)
+                bpm, beat = bpm_estimator.update(
+                    sf.bass, stream_t,
+                    spectral_flux=sf.spectral_flux,
+                    kick_spectral_flux=sf.kick_spectral_flux,
+                    whitened_flux=wf,
+                    percussive_onset=perc,
+                    mag=sf.mag,
+                )
+                if half_time and bpm > 0:
+                    bpm *= 0.5
+
+                # Crossfade boundary detection (parallel to silence)
+                crossfade_boundary = False
+                if crossfade_detector is not None:
+                    crossfade_boundary = crossfade_detector.update(
+                        bpm=bpm,
+                        centroid=sf.centroid,
+                        bass_ratio=sf.bass_ratio,
+                        energy=director.energy,
+                        onset_strength=bpm_estimator.last_onset,
+                        beat=beat,
+                        t=stream_t,
+                    )
+
+                boundary_type: str | None = None
+                if silence_boundary:
+                    boundary_type = "silence"
+                elif crossfade_boundary:
+                    boundary_type = "crossfade"
+
+                if boundary_type is not None:
                     # Song boundary: reset all state
                     bpm_estimator.reset()
                     director.reset()
@@ -628,42 +1185,46 @@ def run_live_to_govee(
                         mood_classifier.reset(stream_t)
                     if effect_cycler is not None:
                         effect_cycler.reset()
+                    if crossfade_detector is not None:
+                        crossfade_detector.reset()
                     prev_mag = None
                     spectral_mean = None
                     prev_whitened_mag = None
+                    noise_estimator.reset()
+                    percussive_tracker.reset()
+                    boundary_idx = song_detector.boundary_count + (
+                        crossfade_detector.boundary_count if crossfade_detector else 0
+                    )
                     if telemetry:
-                        telemetry.on_boundary(song_detector.boundary_count, stream_t)
+                        telemetry.on_boundary(boundary_idx, stream_t, boundary_type=boundary_type)
                     if debug_mood:
                         print(
-                            f"*** Song boundary detected "
-                            f"(#{song_detector.boundary_count}) "
+                            f"*** Song boundary detected [{boundary_type}] "
+                            f"(#{boundary_idx}) "
                             f"— state reset ***"
                         )
-                sf = _spectral_features(frame, window, bass_mask, prev_mag, kick_mask=kick_mask)
-                prev_mag = sf.mag
-                wf, spectral_mean, prev_whitened_mag = _compute_whitened_flux(
-                    sf.mag, spectral_mean, prev_whitened_mag,
-                )
-                bpm, beat = bpm_estimator.update(
-                    sf.bass, stream_t,
-                    spectral_flux=sf.spectral_flux,
-                    kick_spectral_flux=sf.kick_spectral_flux,
-                    whitened_flux=wf,
-                )
-                if half_time and bpm > 0:
-                    bpm *= 0.5
+
                 last_features = _feature_row_from_frame(
                     frame, rms, stream_t, bpm, beat,
                     bass=sf.bass,
                     bass_ratio=sf.bass_ratio,
                     spectral_flux=sf.spectral_flux,
                     onset_strength=bpm_estimator.last_onset,
+                    centroid=sf.centroid,
                 )
                 last_intent = director.update(last_features)
                 if beat:
                     beat_count += 1
                     beat_this_tick = True
                 stream_t += float(hop_size) / float(sample_rate)
+
+            # --- Profile rotation ---
+            if profile_rotation is not None and effect_cycler is not None:
+                new_profile = profile_rotation.update(stream_t)
+                if new_profile is not None:
+                    effect_cycler.set_profile(new_profile)
+                    if debug_mood:
+                        print(f"[rotation] switched to profile: {new_profile.name}")
 
             # --- Effect cycling (mood → preset → palette/mode swap) ---
             if auto_cycle and mood_classifier is not None and effect_cycler is not None and last_features is not None:
@@ -731,9 +1292,23 @@ def run_live_to_govee(
                         "effect": effect_cycler.current_effect if effect_cycler else None,
                         "palette": effect_cycler.current_palette if effect_cycler else None,
                         "render_mode": preset.render_mode.value if preset else None,
+                        # Spectral analysis
                         "bass_ratio": round(float(last_features["bass_ratio"]), 4) if last_features else 0.0,
                         "spectral_flux": round(float(last_features["spectral_flux"]), 4) if last_features else 0.0,
+                        "kick_flux": round(float(last_sf.kick_spectral_flux), 4) if last_sf else 0.0,
+                        "whitened_flux": round(float(last_wf), 4),
+                        "percussive_onset": round(float(perc), 4),
+                        "centroid": round(float(last_sf.centroid), 2) if last_sf else 0.0,
+                        # Onset detection internals
                         "onset_strength": round(float(last_features.get("onset_strength", 0)), 4) if last_features else 0.0,
+                        "onset_thresh": round(float(bpm_estimator.last_thresh), 4),
+                        "onset_mean": round(float(bpm_estimator.last_onset_mean), 4),
+                        "onset_std": round(float(bpm_estimator.last_onset_std), 4),
+                        "hybrid_source": bpm_estimator._hybrid_source,
+                        "beat_phase": round(float(bpm_estimator._beat_phase), 4),
+                        # Template matching
+                        "template_similarity": round(bpm_estimator._beat_template._prev_similarity, 4),
+                        "template_ready": bpm_estimator._beat_template.ready,
                     })
 
             if now >= next_telemetry:

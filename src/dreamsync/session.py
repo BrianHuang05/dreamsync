@@ -45,6 +45,12 @@ def run_session(
     probe_rate: float = 5.0,
     director_config: DirectorConfig | None = None,
     telemetry_dir: Path | None = None,
+    hot_reload: bool = True,
+    profile: Any | None = None,
+    profile_path: Path | None = None,
+    health_monitor: bool = False,
+    health_interval: float = 30.0,
+    health_discovery: bool = False,
 ) -> dict[str, Any]:
     """Run an infinite DreamSync session from a YAML config.
 
@@ -69,7 +75,57 @@ def run_session(
         fps=fps,
     )
 
-    # 4. Signal handling
+    # 4. Hot-reload watchers
+    watcher = None
+    if hot_reload:
+        from dreamsync.config_watcher import ConfigWatcher
+
+        watcher = ConfigWatcher(
+            config_path,
+            multi_adapter,
+            probe_packets=min(probe_packets, 10),
+            probe_rate=probe_rate,
+            render_mode=mode,
+            mirror=mirror,
+            brightness=brightness,
+            fps=fps,
+        )
+        watcher.start()
+
+    # 4b. Health monitor
+    health_mon = None
+    if health_monitor:
+        from dreamsync.device_health import DeviceHealthMonitor
+
+        health_mon = DeviceHealthMonitor(
+            multi_adapter,
+            configs,
+            probe_interval=health_interval,
+            enable_discovery=health_discovery,
+        )
+        health_mon.start()
+
+    # 4c. Create EffectCycler upfront so ProfileWatcher can hold a reference
+    effect_cycler = None
+    profile_watcher = None
+    if auto_cycle:
+        from dreamsync.effects import EffectCycler, EffectCyclerConfig
+
+        effect_cycler = EffectCycler(
+            EffectCyclerConfig(cycle_interval=cycle_interval), profile=profile,
+        )
+
+        # Start profile watcher if we have a source file and hot-reload is on
+        if profile_path and hot_reload:
+            from dreamsync.profile import ProfileWatcher
+
+            profile_watcher = ProfileWatcher(
+                profile_path,
+                effect_cycler.set_profile,
+            )
+            profile_watcher.start()
+
+    # 5. Signal handling
     stop_event = threading.Event()
     original_sigint = signal.getsignal(signal.SIGINT)
     original_sigterm = signal.getsignal(signal.SIGTERM)
@@ -81,7 +137,7 @@ def run_session(
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    # 5. Run live loop
+    # 6. Run live loop
     try:
         logs, summary = run_live_to_govee(
             multi_adapter=multi_adapter,
@@ -101,9 +157,17 @@ def run_session(
             debug_mood=debug_mood,
             stop_event=stop_event,
             telemetry_dir=telemetry_dir,
+            profile=profile,
+            effect_cycler_override=effect_cycler,
         )
     finally:
-        # 6. Cleanup
+        # 7. Cleanup
+        if health_mon is not None:
+            health_mon.stop()
+        if profile_watcher is not None:
+            profile_watcher.stop()
+        if watcher is not None:
+            watcher.stop()
         multi_adapter.deactivate()
         signal.signal(signal.SIGINT, original_sigint)
         signal.signal(signal.SIGTERM, original_sigterm)

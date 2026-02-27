@@ -1,0 +1,29 @@
+name: "Warm Sunset"
+description: "Golden oranges, deep reds, and rich ambers — cozy evening vibes"
+author: "dreamsync"
+tags: ["warm", "evening", "ambient"]
+version: 1
+
+palettes:
+  golden:   ["#ff8800", "#ffaa00", "#ffcc00", "#ff9922", "#ffbb33", "#ffe066"]
+  ember:    ["#ff4400", "#ff6600", "#cc3300", "#ff5500", "#dd4400", "#ff7700"]
+  amber:    ["#ffaa00", "#ff8800", "#cc6600", "#ffcc44", "#dd8800", "#ffbb00"]
+
+moods:
+  chill:
+    palettes: ["golden", "amber"]
+    params:
+      wave_rate_mult: 0.3
+  groove:
+    palettes: ["golden", "ember"]
+  hype:
+    palettes: ["ember"]
+  drop:
+    palettes: ["ember"]
+
+transitions:
+  - from: "chill"
+    to: "groove"
+    palette: "golden"
+
+cycle_interval: 20.0

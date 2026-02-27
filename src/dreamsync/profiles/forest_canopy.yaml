@@ -1,0 +1,34 @@
+name: "Forest Canopy"
+description: "Deep greens, earth tones, and golden light filtering through leaves"
+author: "dreamsync"
+tags: ["nature", "green", "ambient"]
+version: 1
+
+palettes:
+  deep_green:  ["#003300", "#004d00", "#006600", "#008000", "#009900", "#00b300"]
+  earth:       ["#664400", "#886600", "#aa8800", "#cc9900", "#ddaa00", "#eebb33"]
+  golden_ray:  ["#ffcc00", "#ffdd33", "#ffee66", "#ffaa00", "#ffbb22", "#ffcc44"]
+
+moods:
+  chill:
+    palettes: ["deep_green", "earth"]
+    effects:
+      - name: "wave_drift"
+        weight: 3.0
+      - name: "gradient_flow"
+        weight: 2.0
+    params:
+      wave_rate_mult: 0.2
+  groove:
+    palettes: ["deep_green", "golden_ray"]
+  hype:
+    palettes: ["golden_ray", "earth"]
+  drop:
+    palettes: ["golden_ray"]
+
+transitions:
+  - from: "chill"
+    to: "groove"
+    palette: "deep_green"
+
+cycle_interval: 22.0

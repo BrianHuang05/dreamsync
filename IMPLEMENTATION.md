@@ -17,15 +17,31 @@
 | BLE CLI (govee-ble-scan, govee-ble-test, --ble-device) | Done | `src/dreamsync/cli.py` |
 | Multi-device orchestration (LAN 30 Hz + BLE 5 Hz) | Done | `src/dreamsync/output/govee_lan.py` |
 | Song boundary detection (silence-gap detector + full state reset) | Done (live validated) | `src/dreamsync/live.py` |
+| Crossfade-aware boundary detection (weighted voting: BPM + centroid + bass + energy + onset) | Done (unit tested, hardware untested) | `src/dreamsync/live.py` |
+| Per-song telemetry (JSONL per song, session summary, `--telemetry-dir`) | Done (unit tested) | `src/dreamsync/telemetry.py` |
 | Auto-detect device roles (latency-based classification) | Done (unit tested, hardware untested) | `src/dreamsync/output/auto_detect.py` |
 | Infinite session runner (YAML config + Ctrl+C shutdown) | Done (unit tested, hardware untested) | `src/dreamsync/session.py` |
 | CLI `session` subcommand | Done (untested) | `src/dreamsync/cli.py` |
+| Hot-reload device config (mtime polling, diff, atomic swap) | Done (unit tested) | `src/dreamsync/config_watcher.py` |
+| Color profiles (YAML loader, validation, 8 built-ins, hot-swap) | Done (unit tested) | `src/dreamsync/profile.py` |
+| Profile-aware EffectCycler (palette/effect/param overrides per mood) | Done (unit tested) | `src/dreamsync/effects.py` |
+| Profile CLI (`--profile`, `--auto-profile`, `profiles`, `profile-validate`) | Done (unit tested) | `src/dreamsync/cli.py` |
+| Profile hot-reload (mtime-polling watcher → `set_profile()`) | Done (unit tested) | `src/dreamsync/profile.py`, `session.py` |
+| Profile rotation (`--profile-rotation`, timed swap through multiple profiles) | Done (unit tested) | `src/dreamsync/profile.py`, `live.py` |
+| Device health monitor (periodic probe, offline/online, role reclass) | Done (unit tested) | `src/dreamsync/device_health.py` |
+| Health monitor CLI (`--health-monitor`, `--health-interval`, `--health-discovery`) | Done (unit tested) | `src/dreamsync/cli.py`, `session.py` |
+| Health telemetry snapshots (`kind: "device_health"` in JSONL) | Done (unit tested) | `src/dreamsync/telemetry.py` |
 
 ### Test Coverage
 
 - `tests/test_song_boundary.py` — 14 tests (boundary detector, reset methods for BPM/Director/Mood/Effects)
+- `tests/test_crossfade_boundary.py` — 13 tests (crossfade detector: signal voting, thresholds, cooldown, confirm frames, reset, false positives)
 - `tests/test_govee_ble.py` — 54 tests (BLE adapter, packet builders, threading, keep-alive)
-- 352 total tests passing on current branch
+- `tests/test_telemetry.py` — 11 tests (JSONL writing, file rotation, song summaries, session summary, no-op when disabled)
+- `tests/test_config_watcher.py` — 21 tests (diff_device_configs, ConfigWatcher mtime detection/reload/add/remove, thread safety)
+- `tests/test_profile.py` — 63 tests (loader/validator happy+error paths, path resolution, EffectCycler integration, ProfileWatcher, ProfileRotation, hot-swap integration, all 8 built-ins load)
+- `tests/test_device_health.py` — 29 tests (DeviceHealth dataclass, classify_role_from_window, adapter paused/last_send_ok, monitor probe loop, offline/online thresholds, anti-flap, role reclassification, thread lifecycle, concurrent safety, discovery)
+- 527 total tests passing on current branch
 
 ---
 
@@ -64,7 +80,19 @@ python -m dreamsync govee-live \
     --device 10.126.166.156:25:primary:razer \
     --ble-device C7:90:80:C6:44:74 \
     --ble-device D0:C9:07:C5:14:45:bulb \
-    --duration 120 --debug-mood
+    --duration 120 --debug-mood --telemetry-dir out/
+
+# Color profiles
+python -m dreamsync profiles                              # list built-in profiles
+python -m dreamsync profiles --verbose                    # with descriptions + tags
+python -m dreamsync profile-validate aurora               # validate a profile
+python -m dreamsync govee-live --profile aurora ...        # use a named profile
+python -m dreamsync govee-live --auto-profile ...          # time-of-day suggestion
+python -m dreamsync govee-live --profile-rotation aurora,neon_city --rotation-interval 300 ...
+
+# Device health monitoring (session only)
+python -m dreamsync session --config devices.yaml --health-monitor --health-interval 30
+python -m dreamsync session --config devices.yaml --health-monitor --health-discovery
 ```
 
 ---
@@ -156,11 +184,28 @@ All recent work (song boundary detection, auto-detect, session runner) has been 
    - No memory growth or degraded performance over time
    - Song boundaries fire and state resets work across multiple songs
 
-### Future Work
+4. **Crossfade boundary detection** — Play a crossfaded playlist with `--crossfade-detect --debug-mood --telemetry-dir out/` and verify:
+   - "Song boundary detected [crossfade]" messages appear at track transitions
+   - No false triggers during within-song dynamics (verse→chorus, breakdowns)
+   - Telemetry song summaries show `"boundary_type": "crossfade"` for crossfade-triggered splits
+   - Threshold tuning may be needed (see `CrossfadeConfig` defaults in `live.py`)
 
-- **Crossfade-aware boundaries**: Some players crossfade tracks (audio never hits silence). Could detect BPM discontinuities or spectral centroid jumps as an alternative trigger.
-- **Per-song telemetry**: Log BPM/mood/energy stats per song (between boundaries) for post-session analysis.
-- **Device config hot-reload**: Watch `devices.yaml` for changes and add/remove devices without restarting the session.
+7. **Color profile system** — Run with `--profile aurora --debug-mood` and verify:
+   - Debug output shows aurora palette names (not default built-ins)
+   - Mood transitions use profile-defined palettes
+   - Effects cycle from profile's effect pools
+   - Hot-swap: edit `aurora.yaml` during live session → colors change within ~2s
+   - Profile rotation: `--profile-rotation aurora,neon_city --rotation-interval 60` → switches every 60s
+
+8. **Device health monitor** — Run with `--health-monitor --health-interval 15` and verify:
+   - Health probes run every 15s without blocking the audio pipeline
+   - Unplugging a device → `WARNING: Device X went offline` after ~45s, adapter paused
+   - Plugging back in → `INFO: Device X back online` after ~30s, adapter resumed
+   - Ctrl+C cleanly stops the health thread
+
+### Next
+
+All core features are implemented and unit tested. See `NEXT_STEPS.md` for the live validation checklist.
 
 ---
 

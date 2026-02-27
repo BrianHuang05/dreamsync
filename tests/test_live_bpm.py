@@ -6,6 +6,8 @@ import numpy as np
 
 from dreamsync.live import (
     LiveBpmEstimator,
+    NoiseFloorEstimator,
+    PercussiveOnsetTracker,
     SpectralFeatures,
     _spectral_features,
     _prepare_bass_window,
@@ -35,11 +37,16 @@ def _run_estimator_with_audio(
     hop_size: int,
     frame_size: int,
     onset_mode: str = "spectral_flux",
+    enable_noise_floor: bool = False,
+    enable_percussive: bool = False,
     **estimator_kwargs,
 ) -> dict:
     """Feed frames through spectral features + LiveBpmEstimator, return results."""
-    window, bass_mask, kick_mask = _prepare_bass_window(frame_size, sr)
+    window, bass_mask, kick_mask, _freqs = _prepare_bass_window(frame_size, sr)
     est = LiveBpmEstimator(sample_rate=sr, hop_size=hop_size, onset_mode=onset_mode, **estimator_kwargs)
+    n_bins = frame_size // 2 + 1
+    noise_estimator = NoiseFloorEstimator(n_bins=n_bins) if enable_noise_floor else None
+    perc_tracker = PercussiveOnsetTracker(n_bins=n_bins, energy_gate=1.0) if enable_percussive else None
     prev_mag = None
     spectral_mean = None
     prev_whitened_mag = None
@@ -49,16 +56,22 @@ def _run_estimator_with_audio(
     bpm_history = []
 
     for frame in frames:
-        sf = _spectral_features(frame, window, bass_mask, prev_mag, kick_mask=kick_mask)
+        nf = noise_estimator.noise_floor if (noise_estimator and noise_estimator.ready) else None
+        sf = _spectral_features(frame, window, bass_mask, prev_mag, kick_mask=kick_mask, noise_floor=nf)
+        raw_mag = sf.raw_mag if sf.raw_mag is not None else sf.mag
+        if noise_estimator is not None:
+            noise_estimator.update(raw_mag)
         prev_mag = sf.mag
         wf, spectral_mean, prev_whitened_mag = _compute_whitened_flux(
-            sf.mag, spectral_mean, prev_whitened_mag,
+            raw_mag, spectral_mean, prev_whitened_mag,
         )
+        perc = perc_tracker.update(raw_mag) if perc_tracker else 0.0
         bpm, beat = est.update(
             sf.bass, stream_t,
             spectral_flux=sf.spectral_flux,
             kick_spectral_flux=sf.kick_spectral_flux,
             whitened_flux=wf,
+            percussive_onset=perc,
         )
         if beat:
             beat_count += 1
@@ -70,6 +83,7 @@ def _run_estimator_with_audio(
         "beat_count": beat_count,
         "bpm_history": bpm_history,
         "duration": stream_t,
+        "hybrid_source": est._hybrid_source,
     }
 
 
@@ -213,7 +227,7 @@ class TestAdaptiveThreshold(unittest.TestCase):
         frames = _make_pulse_audio(sr, 12.0, bpm_target, frame_size, hop_size)
 
         # Run with global threshold
-        window, bass_mask, kick_mask = _prepare_bass_window(frame_size, sr)
+        window, bass_mask, kick_mask, _freqs = _prepare_bass_window(frame_size, sr)
         est_global = LiveBpmEstimator(
             sample_rate=sr, hop_size=hop_size,
             onset_mode="spectral_flux", threshold_mode="global"
@@ -232,17 +246,19 @@ class TestAdaptiveThreshold(unittest.TestCase):
 class TestKickBandIsolation(unittest.TestCase):
     """Phase C: narrow-band kick drum isolation."""
 
-    def test_prepare_bass_window_returns_three_masks(self) -> None:
-        window, bass_mask, kick_mask = _prepare_bass_window(2048, 44100)
+    def test_prepare_bass_window_returns_masks_and_freqs(self) -> None:
+        window, bass_mask, kick_mask, freqs = _prepare_bass_window(2048, 44100)
         self.assertEqual(window.shape[0], 2048)
         # kick band should be narrower than bass band
         self.assertGreater(bass_mask.sum(), kick_mask.sum())
         # kick band should be non-empty
         self.assertGreater(kick_mask.sum(), 0)
+        # freqs should have same length as rfft output
+        self.assertEqual(freqs.shape[0], 2048 // 2 + 1)
 
     def test_spectral_features_has_kick_fields(self) -> None:
         frame_size, sr = 2048, 44100
-        window, bass_mask, kick_mask = _prepare_bass_window(frame_size, sr)
+        window, bass_mask, kick_mask, _freqs = _prepare_bass_window(frame_size, sr)
         frame = np.random.default_rng(0).standard_normal(frame_size).astype(np.float32)
         sf = _spectral_features(frame, window, bass_mask, None, kick_mask=kick_mask)
         self.assertIsInstance(sf.kick_energy, float)
@@ -253,7 +269,7 @@ class TestKickBandIsolation(unittest.TestCase):
 
     def test_kick_spectral_flux_computed_on_second_frame(self) -> None:
         frame_size, sr = 2048, 44100
-        window, bass_mask, kick_mask = _prepare_bass_window(frame_size, sr)
+        window, bass_mask, kick_mask, _freqs = _prepare_bass_window(frame_size, sr)
         t = np.arange(frame_size, dtype=np.float32) / sr
         # Frame 1: silence in kick band
         frame1 = np.zeros(frame_size, dtype=np.float32)
@@ -292,7 +308,7 @@ class TestKickBandIsolation(unittest.TestCase):
     def test_spectral_features_without_kick_mask(self) -> None:
         """When kick_mask is None, kick fields default to 0."""
         frame_size, sr = 2048, 44100
-        window, bass_mask, _ = _prepare_bass_window(frame_size, sr)
+        window, bass_mask, _, _f = _prepare_bass_window(frame_size, sr)
         frame = np.random.default_rng(0).standard_normal(frame_size).astype(np.float32)
         sf = _spectral_features(frame, window, bass_mask, None, kick_mask=None)
         self.assertEqual(sf.kick_energy, 0.0)
@@ -318,16 +334,21 @@ class TestWhitenedFlux(unittest.TestCase):
         wf, sm, wm = _compute_whitened_flux(mag, None, None)
         self.assertEqual(wf, 0.0)
         np.testing.assert_array_equal(sm, mag)  # mean initializes from first frame
-        np.testing.assert_allclose(wm, mag / (mag + 1e-8), atol=1e-5)
+        # First frame returns prev_whitened_mag (None) since it's initialization
+        self.assertIsNone(wm)
 
     def test_compute_whitened_flux_second_frame(self) -> None:
         """Second frame with changed spectrum should produce nonzero whitened flux."""
         mag1 = np.array([1.0, 1.0, 1.0], dtype=np.float32)
         _, sm, wm1 = _compute_whitened_flux(mag1, None, None)
-        # Second frame: spike in bin 0
+        # wm1 is None (first frame is init-only); second frame produces wm but no flux yet
         mag2 = np.array([5.0, 1.0, 1.0], dtype=np.float32)
-        wf, sm2, wm2 = _compute_whitened_flux(mag2, sm, wm1)
-        self.assertGreater(wf, 0.0)
+        wf2, sm2, wm2 = _compute_whitened_flux(mag2, sm, wm1)
+        self.assertIsNotNone(wm2)
+        # Third frame: another change should produce flux (two active frames with prev)
+        mag3 = np.array([1.0, 5.0, 1.0], dtype=np.float32)
+        wf3, sm3, wm3 = _compute_whitened_flux(mag3, sm2, wm2)
+        self.assertGreater(wf3, 0.0)
 
     def test_compute_whitened_flux_learns_spectral_mean(self) -> None:
         """spectral_mean should slowly track toward the current mag (EMA)."""
@@ -346,6 +367,54 @@ class TestWhitenedFlux(unittest.TestCase):
         )
         self.assertGreater(result["final_bpm"], 0.0)
         self.assertAlmostEqual(result["final_bpm"], bpm_target, delta=15.0)
+
+
+    def test_energy_gate_suppresses_silence_frames(self) -> None:
+        """With energy_gate, silent frames don't dilute spectral mean or produce flux."""
+        # Two active frames with different spectra
+        mag_a = np.array([10.0, 1.0, 1.0], dtype=np.float32)
+        mag_b = np.array([1.0, 10.0, 1.0], dtype=np.float32)
+        silence = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+
+        # Without gate: silence dilutes the mean
+        _, sm1, wm1 = _compute_whitened_flux(mag_a, None, None)
+        _, sm2, wm2 = _compute_whitened_flux(silence, sm1, wm1)
+        # sm2 was updated with silence (pulls mean toward 0)
+        self.assertLess(float(sm2.sum()), float(sm1.sum()))
+
+        # With gate: silence does NOT update the mean
+        _, sm1g, wm1g = _compute_whitened_flux(mag_a, None, None, energy_gate=1.0)
+        _, sm2g, wm2g = _compute_whitened_flux(silence, sm1g, wm1g, energy_gate=1.0)
+        np.testing.assert_array_equal(sm2g, sm1g)  # mean unchanged
+
+    def test_energy_gate_no_flux_on_silence_to_active(self) -> None:
+        """Transition from silence to active should not produce flux with energy gate."""
+        active = np.array([10.0, 10.0, 10.0], dtype=np.float32)
+        silence = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+
+        # Init with active frame
+        _, sm, wm = _compute_whitened_flux(active, None, None, energy_gate=1.0)
+        # Silent frame (returns prev active wm unchanged)
+        wf_s, sm, wm = _compute_whitened_flux(silence, sm, wm, energy_gate=1.0)
+        self.assertEqual(wf_s, 0.0)
+        # Active frame after silence: no flux (prev_whitened_mag is None from init)
+        wf_a, sm, wm = _compute_whitened_flux(active, sm, wm, energy_gate=1.0)
+        # Since wm was None (from init), this is first real comparison — no flux yet
+        # After the init frame sets sm, the next active frame gets wm but flux=0
+        # because the init frame returned wm=None
+        self.assertEqual(wf_a, 0.0)
+
+    def test_energy_gate_flux_between_active_frames(self) -> None:
+        """Flux should fire between two consecutive active frames with different spectra."""
+        mag_a = np.array([10.0, 1.0, 1.0], dtype=np.float32)
+        mag_b = np.array([1.0, 10.0, 1.0], dtype=np.float32)
+
+        _, sm, wm = _compute_whitened_flux(mag_a, None, None, energy_gate=1.0)
+        # Second active: gets whitened_mag but no flux (wm is None from init)
+        wf2, sm, wm = _compute_whitened_flux(mag_a, sm, wm, energy_gate=1.0)
+        # Third active with different spectrum: should produce flux
+        wf3, sm, wm = _compute_whitened_flux(mag_b, sm, wm, energy_gate=1.0)
+        self.assertGreater(wf3, 0.0)
 
 
 class TestHybridOnset(unittest.TestCase):
@@ -403,6 +472,438 @@ class TestHybridOnset(unittest.TestCase):
         )
         self.assertGreater(result["final_bpm"], 0.0,
                           "Hybrid should detect BPM even at low amplitude")
+
+
+class TestSpectralTemplateIntegration(unittest.TestCase):
+    """Integration tests for spectral template gating in LiveBpmEstimator."""
+
+    def test_template_onset_gating(self) -> None:
+        """With mag= supplied, onset values are attenuated for non-beat-like frames."""
+        sr, frame_size, hop_size = 44100, 2048, 512
+        window, bass_mask, kick_mask, _freqs = _prepare_bass_window(frame_size, sr)
+        est = LiveBpmEstimator(
+            sample_rate=sr, hop_size=hop_size, onset_mode="spectral_flux",
+        )
+        frames = _make_pulse_audio(sr, 8.0, 120.0, frame_size, hop_size)
+        prev_mag = None
+        spectral_mean = None
+        prev_whitened_mag = None
+        stream_t = 0.0
+
+        # Feed frames with mag to bootstrap the template
+        for frame in frames:
+            sf = _spectral_features(frame, window, bass_mask, prev_mag, kick_mask=kick_mask)
+            prev_mag = sf.mag
+            wf, spectral_mean, prev_whitened_mag = _compute_whitened_flux(
+                sf.mag, spectral_mean, prev_whitened_mag,
+            )
+            est.update(
+                sf.bass, stream_t,
+                spectral_flux=sf.spectral_flux,
+                kick_spectral_flux=sf.kick_spectral_flux,
+                whitened_flux=wf,
+                mag=sf.mag,
+            )
+            stream_t += float(hop_size) / float(sr)
+
+        # Template should be ready after 8+ seconds of 120 BPM
+        self.assertTrue(est._beat_template.ready)
+
+        # Now feed a noise frame and check onset is attenuated
+        rng = np.random.default_rng(77)
+        noise_frame = rng.standard_normal(frame_size).astype(np.float32) * 0.01
+        sf_noise = _spectral_features(noise_frame, window, bass_mask, prev_mag, kick_mask=kick_mask)
+
+        # Get onset without mag (no gating)
+        est_no_gate = LiveBpmEstimator(
+            sample_rate=sr, hop_size=hop_size, onset_mode="spectral_flux",
+        )
+        est_no_gate.update(sf_noise.bass, 0.0, spectral_flux=sf_noise.spectral_flux)
+        raw_onset = est_no_gate.last_onset
+
+        # Get onset with mag (gated) - if template is ready and similarity is low,
+        # the onset should be attenuated (multiplied by gate <= 1.0)
+        est.update(
+            sf_noise.bass, stream_t,
+            spectral_flux=sf_noise.spectral_flux,
+            kick_spectral_flux=sf_noise.kick_spectral_flux,
+            whitened_flux=0.0,
+            mag=sf_noise.mag,
+        )
+        gated_onset = est.last_onset
+
+        # The gated onset should be <= the raw onset (attenuated or equal)
+        if raw_onset > 0:
+            self.assertLessEqual(gated_onset, raw_onset + 1e-6)
+
+    def test_backward_compat_no_mag(self) -> None:
+        """Calling update() without mag= works identically to before."""
+        est = LiveBpmEstimator(sample_rate=44100, hop_size=512, onset_mode="bass_diff")
+        bpm, beat = est.update(1.0, 0.0)
+        self.assertIsInstance(bpm, float)
+        self.assertIsInstance(beat, bool)
+        # Template should not be ready (no mag ever provided)
+        self.assertFalse(est._beat_template.ready)
+
+        # Feed several frames — should work fine without mag
+        for i in range(100):
+            energy = 1.0 + (i % 2) * 0.5
+            bpm, beat = est.update(energy, i * 0.01)
+        self.assertIsInstance(bpm, float)
+
+
+class TestHybridWhitenedFluxFallback(unittest.TestCase):
+    """Phase 1A: whitened flux fallback when bass and kick are dead."""
+
+    def test_hybrid_falls_back_to_whitened_when_bass_and_kick_dead(self) -> None:
+        """When bass_onset=0 and kick_flux=0 but whitened_flux has signal, use whitened."""
+        est = LiveBpmEstimator(sample_rate=44100, hop_size=512, onset_mode="hybrid")
+        # Feed many frames with zero bass/kick but nonzero whitened flux
+        for i in range(200):
+            est.update(energy=1.0, t=i * 0.01, kick_spectral_flux=0.0, whitened_flux=50.0)
+        self.assertEqual(est._hybrid_source, "whitened")
+
+    def test_hybrid_stays_on_bass_when_bass_has_signal(self) -> None:
+        """When bass has activity comparable to whitened flux, stay on bass."""
+        est = LiveBpmEstimator(sample_rate=44100, hop_size=512, onset_mode="hybrid")
+        for i in range(200):
+            energy = 1.0 + (i % 2) * 5.0  # strong alternating bass energy
+            est.update(energy=energy, t=i * 0.01, whitened_flux=10.0)
+        self.assertEqual(est._hybrid_source, "bass")
+
+    def test_hybrid_whitened_fallback_onset_value(self) -> None:
+        """When in whitened mode, last_onset should be log1p(whitened_flux)."""
+        import math
+        est = LiveBpmEstimator(sample_rate=44100, hop_size=512, onset_mode="hybrid")
+        # Force into dead-signal state
+        for i in range(200):
+            est.update(energy=1.0, t=i * 0.01, kick_spectral_flux=0.0, whitened_flux=42.0)
+        self.assertEqual(est._hybrid_source, "whitened")
+        est.update(energy=1.0, t=2.01, kick_spectral_flux=0.0, whitened_flux=99.0)
+        self.assertAlmostEqual(est.last_onset, math.log1p(99.0), places=4)
+
+    def test_hybrid_detects_bpm_noisy_signal_with_whitened_flux(self) -> None:
+        """Simulate noisy environment: bass/kick dead, whitened flux has periodic spikes."""
+        sr, bpm_target = 44100, 120.0
+        frame_size, hop_size = 2048, 512
+        n_samples = int(sr * 12.0)
+        n_frames = (n_samples - frame_size) // hop_size
+        period_frames = int(sr * 60.0 / bpm_target / hop_size)
+
+        window, bass_mask, kick_mask, _freqs = _prepare_bass_window(frame_size, sr)
+        est = LiveBpmEstimator(sample_rate=sr, hop_size=hop_size, onset_mode="hybrid")
+        rng = np.random.default_rng(42)
+        stream_t = 0.0
+        beat_count = 0
+
+        for i in range(n_frames):
+            # Simulate: constant energy (bass_onset = 0), no kick flux
+            # But periodic whitened flux spikes
+            wf = 100.0 if (i % period_frames < 2) else rng.uniform(0, 5)
+            bpm, beat = est.update(
+                energy=1.0, t=stream_t,
+                kick_spectral_flux=0.0,
+                whitened_flux=wf,
+            )
+            if beat:
+                beat_count += 1
+            stream_t += float(hop_size) / float(sr)
+
+        self.assertEqual(est._hybrid_source, "whitened")
+        self.assertGreater(bpm, 0.0, "Should detect BPM from whitened flux spikes")
+        self.assertGreater(beat_count, 3, "Should detect beats from whitened flux")
+
+    def test_wf_activity_tracked_in_reset(self) -> None:
+        est = LiveBpmEstimator(sample_rate=44100, hop_size=512, onset_mode="hybrid")
+        est.update(energy=1.0, t=0.0, whitened_flux=50.0)
+        self.assertGreater(est._wf_activity, 0.0)
+        est.reset()
+        self.assertEqual(est._wf_activity, 0.0)
+
+
+class TestOnsetNormalization(unittest.TestCase):
+    """Phase 1B: onset envelope normalization for amplitude invariance."""
+
+    def test_low_amplitude_pulse_detected_with_normalization(self) -> None:
+        """Very quiet signal should still detect BPM thanks to normalization."""
+        sr, bpm_target = 44100, 120.0
+        frame_size, hop_size = 2048, 512
+        frames = _make_pulse_audio(sr, 12.0, bpm_target, frame_size, hop_size)
+        # Scale to extremely low amplitude
+        frames = [f * 0.005 for f in frames]
+        result = _run_estimator_with_audio(
+            frames, sr, hop_size, frame_size, onset_mode="spectral_flux"
+        )
+        self.assertGreater(result["final_bpm"], 0.0,
+                          "Normalization should enable BPM detection at very low amplitude")
+
+    def test_normal_amplitude_still_works(self) -> None:
+        """Normal amplitude pulse train should still work with normalization."""
+        sr, bpm_target = 44100, 120.0
+        frame_size, hop_size = 2048, 512
+        frames = _make_pulse_audio(sr, 12.0, bpm_target, frame_size, hop_size)
+        result = _run_estimator_with_audio(
+            frames, sr, hop_size, frame_size, onset_mode="spectral_flux"
+        )
+        self.assertGreater(result["final_bpm"], 0.0)
+        self.assertAlmostEqual(result["final_bpm"], bpm_target, delta=15.0)
+
+
+class TestNoiseFloorEstimator(unittest.TestCase):
+    """Phase 2: minimum-statistics noise floor estimation."""
+
+    def test_noise_floor_basic(self) -> None:
+        """Noise floor should be per-bin minimum over the window."""
+        nfe = NoiseFloorEstimator(n_bins=4, window_frames=5)
+        nfe.update(np.array([5.0, 3.0, 7.0, 1.0]))
+        nfe.update(np.array([2.0, 6.0, 1.0, 4.0]))
+        nfe.update(np.array([3.0, 1.0, 5.0, 2.0]))
+        nf = nfe.noise_floor
+        np.testing.assert_array_equal(nf, [2.0, 1.0, 1.0, 1.0])
+
+    def test_noise_floor_sliding_window(self) -> None:
+        """When window overflows, oldest frame drops out of minimum."""
+        nfe = NoiseFloorEstimator(n_bins=2, window_frames=3)
+        nfe.update(np.array([1.0, 10.0]))  # frame 0
+        nfe.update(np.array([5.0, 5.0]))   # frame 1
+        nfe.update(np.array([3.0, 3.0]))   # frame 2
+        # min of [1,5,3] = 1, min of [10,5,3] = 3
+        np.testing.assert_array_equal(nfe.noise_floor, [1.0, 3.0])
+        nfe.update(np.array([4.0, 4.0]))   # frame 3 — frame 0 drops
+        # min of [5,3,4] = 3, min of [5,3,4] = 3
+        np.testing.assert_array_equal(nfe.noise_floor, [3.0, 3.0])
+
+    def test_ready_after_min_frames(self) -> None:
+        nfe = NoiseFloorEstimator(n_bins=4)
+        self.assertFalse(nfe.ready)
+        for i in range(NoiseFloorEstimator._MIN_READY_FRAMES):
+            nfe.update(np.ones(4) * (i + 1))
+        self.assertTrue(nfe.ready)
+
+    def test_reset_clears_state(self) -> None:
+        nfe = NoiseFloorEstimator(n_bins=4)
+        for i in range(100):
+            nfe.update(np.ones(4))
+        self.assertTrue(nfe.ready)
+        nfe.reset()
+        self.assertFalse(nfe.ready)
+        self.assertIsNone(nfe.noise_floor)
+
+
+class TestSpectralSubtraction(unittest.TestCase):
+    """Phase 2: spectral subtraction integration."""
+
+    def test_spectral_features_with_noise_floor(self) -> None:
+        """When noise_floor is provided, features are computed from cleaned mag."""
+        frame_size, sr = 2048, 44100
+        window, bass_mask, kick_mask, _freqs = _prepare_bass_window(frame_size, sr)
+        rng = np.random.default_rng(42)
+        frame = rng.standard_normal(frame_size).astype(np.float32)
+        # No noise floor
+        sf_raw = _spectral_features(frame, window, bass_mask, None, kick_mask=kick_mask)
+        # With noise floor = half of the raw mag
+        nf = sf_raw.mag * 0.5
+        sf_clean = _spectral_features(frame, window, bass_mask, None, kick_mask=kick_mask, noise_floor=nf)
+        # Cleaned bass should be less than raw bass
+        self.assertLess(sf_clean.bass, sf_raw.bass)
+        # raw_mag should be set when noise_floor is used
+        self.assertIsNotNone(sf_clean.raw_mag)
+        np.testing.assert_array_almost_equal(sf_clean.raw_mag, sf_raw.mag)
+        # Without noise floor, raw_mag should be None
+        self.assertIsNone(sf_raw.raw_mag)
+
+    def test_spectral_features_noise_floor_floors_at_zero(self) -> None:
+        """Spectral subtraction should never produce negative magnitudes."""
+        frame_size, sr = 2048, 44100
+        window, bass_mask, kick_mask, _freqs = _prepare_bass_window(frame_size, sr)
+        frame = np.zeros(frame_size, dtype=np.float32)
+        frame[100] = 0.01  # tiny signal
+        nf = np.ones(frame_size // 2 + 1) * 100.0  # huge noise floor
+        sf = _spectral_features(frame, window, bass_mask, None, kick_mask=kick_mask, noise_floor=nf)
+        self.assertGreaterEqual(sf.bass, 0.0)
+        self.assertTrue(np.all(sf.mag >= 0.0))
+
+    def test_noise_floor_integration_detects_bpm(self) -> None:
+        """Full integration: noise floor + feature extraction + BPM estimation."""
+        sr, bpm_target = 44100, 120.0
+        frame_size, hop_size = 2048, 512
+        frames = _make_pulse_audio(sr, 12.0, bpm_target, frame_size, hop_size)
+        result = _run_estimator_with_audio(
+            frames, sr, hop_size, frame_size,
+            onset_mode="spectral_flux",
+            enable_noise_floor=True,
+        )
+        self.assertGreater(result["final_bpm"], 0.0)
+        self.assertAlmostEqual(result["final_bpm"], bpm_target, delta=15.0)
+
+    def test_noise_floor_with_noisy_signal(self) -> None:
+        """Pulse train + additive noise: noise floor should help detection."""
+        sr, bpm_target = 44100, 120.0
+        frame_size, hop_size = 2048, 512
+        frames = _make_pulse_audio(sr, 12.0, bpm_target, frame_size, hop_size)
+        rng = np.random.default_rng(99)
+        # Add constant broadband noise much louder than signal
+        frames_noisy = [f * 0.1 + rng.standard_normal(frame_size).astype(np.float32) * 0.3 for f in frames]
+        result = _run_estimator_with_audio(
+            frames_noisy, sr, hop_size, frame_size,
+            onset_mode="hybrid",
+            enable_noise_floor=True,
+        )
+        # Should detect something (noise floor helps extract the pulse)
+        self.assertGreater(result["final_bpm"], 0.0,
+                          "Noise floor subtraction should help detect BPM in noisy signal")
+
+
+class TestPercussiveOnsetTracker(unittest.TestCase):
+    """Phase 3a: HPSS percussive onset detection."""
+
+    def test_warmup_returns_zero(self) -> None:
+        """Returns 0 until enough active frames are buffered."""
+        kernel = 20
+        pot = PercussiveOnsetTracker(n_bins=4, kernel_size=kernel, energy_gate=0.5)
+        ready_threshold = min(PercussiveOnsetTracker._MIN_READY_FRAMES, kernel)
+        mag = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
+        for _ in range(ready_threshold - 1):
+            self.assertEqual(pot.update(mag), 0.0)
+        self.assertFalse(pot.ready)
+        # One more should make it ready
+        pot.update(mag)
+        self.assertTrue(pot.ready)
+
+    def test_silent_frames_skipped(self) -> None:
+        """Silent frames (below energy_gate) return 0 and don't fill the buffer."""
+        pot = PercussiveOnsetTracker(n_bins=4, kernel_size=10, energy_gate=5.0)
+        silence = np.zeros(4, dtype=np.float32)
+        for _ in range(100):
+            self.assertEqual(pot.update(silence), 0.0)
+        self.assertFalse(pot.ready)  # buffer should still be empty
+
+    def test_constant_signal_low_onset(self) -> None:
+        """Constant spectral shape should produce near-zero percussive onset."""
+        pot = PercussiveOnsetTracker(n_bins=4, kernel_size=20, energy_gate=0.0)
+        mag = np.array([5.0, 3.0, 2.0, 1.0], dtype=np.float32)
+        onsets = []
+        for _ in range(30):
+            val = pot.update(mag)
+            onsets.append(val)
+        # After warmup, constant signal = at median = P ≈ 0
+        post_warmup = [v for v in onsets[PercussiveOnsetTracker._MIN_READY_FRAMES:]]
+        self.assertTrue(all(v == 0.0 for v in post_warmup),
+                        f"Constant signal should give zero percussive onset, got {post_warmup}")
+
+    def test_transient_above_ambient(self) -> None:
+        """A transient (kick) should produce higher onset than steady ambient."""
+        pot = PercussiveOnsetTracker(n_bins=4, kernel_size=20, energy_gate=0.0)
+        ambient = np.array([2.0, 2.0, 2.0, 2.0], dtype=np.float32)
+        # Fill buffer with ambient
+        for _ in range(25):
+            pot.update(ambient)
+        # Ambient frame onset
+        ambient_onset = pot.update(ambient)
+        # Transient frame (much higher in some bands)
+        transient = np.array([10.0, 2.0, 2.0, 2.0], dtype=np.float32)
+        transient_onset = pot.update(transient)
+        self.assertGreater(transient_onset, ambient_onset,
+                           "Transient should produce higher percussive onset than ambient")
+        self.assertGreater(transient_onset, 0.0)
+
+    def test_reset_clears_state(self) -> None:
+        pot = PercussiveOnsetTracker(n_bins=4, kernel_size=10, energy_gate=0.0)
+        mag = np.ones(4, dtype=np.float32)
+        for _ in range(20):
+            pot.update(mag)
+        self.assertTrue(pot.ready)
+        pot.reset()
+        self.assertFalse(pot.ready)
+
+    def test_energy_gate_filters_correctly(self) -> None:
+        """Only frames above energy_gate contribute to the buffer."""
+        pot = PercussiveOnsetTracker(n_bins=4, kernel_size=10, energy_gate=5.0)
+        loud = np.array([3.0, 3.0, 3.0, 3.0], dtype=np.float32)  # sum=12 > 5
+        quiet = np.array([0.5, 0.5, 0.5, 0.5], dtype=np.float32)  # sum=2 < 5
+        # Mix loud and quiet frames
+        for _ in range(20):
+            pot.update(quiet)  # should be ignored
+            pot.update(loud)   # should be counted
+        # After 20 loud frames, should be ready
+        self.assertTrue(pot.ready)
+
+
+class TestHybridPercussiveFallback(unittest.TestCase):
+    """Hybrid onset prefers percussive over whitened in noisy fallback."""
+
+    def test_hybrid_uses_percussive_over_whitened(self) -> None:
+        """When bass+kick dead and percussive available, use percussive."""
+        est = LiveBpmEstimator(sample_rate=44100, hop_size=512, onset_mode="hybrid")
+        # Force into noisy mode with dead bass/kick and active whitened
+        for i in range(200):
+            est.update(energy=1.0, t=i * 0.01,
+                       kick_spectral_flux=0.0,
+                       whitened_flux=50.0,
+                       percussive_onset=5.0)
+        self.assertEqual(est._hybrid_source, "percussive")
+        # The onset value should be the percussive_onset, not log1p(wf)
+        est.update(energy=1.0, t=2.01,
+                   kick_spectral_flux=0.0,
+                   whitened_flux=50.0,
+                   percussive_onset=7.0)
+        self.assertAlmostEqual(est.last_onset, 7.0, places=4)
+
+    def test_hybrid_falls_to_whitened_when_percussive_zero(self) -> None:
+        """When bass+kick dead and percussive=0 (warmup), fall through to whitened."""
+        import math
+        est = LiveBpmEstimator(sample_rate=44100, hop_size=512, onset_mode="hybrid")
+        for i in range(200):
+            est.update(energy=1.0, t=i * 0.01,
+                       kick_spectral_flux=0.0,
+                       whitened_flux=50.0,
+                       percussive_onset=0.0)
+        self.assertEqual(est._hybrid_source, "whitened")
+        est.update(energy=1.0, t=2.01,
+                   kick_spectral_flux=0.0,
+                   whitened_flux=99.0,
+                   percussive_onset=0.0)
+        self.assertAlmostEqual(est.last_onset, math.log1p(99.0), places=4)
+
+    def test_hybrid_stays_bass_when_primary_works(self) -> None:
+        """When bass has signal, percussive is ignored."""
+        est = LiveBpmEstimator(sample_rate=44100, hop_size=512, onset_mode="hybrid")
+        for i in range(200):
+            energy = 1.0 + (i % 2) * 5.0  # strong alternating bass
+            est.update(energy=energy, t=i * 0.01,
+                       whitened_flux=10.0,
+                       percussive_onset=5.0)
+        self.assertEqual(est._hybrid_source, "bass")
+
+    def test_percussive_detects_bpm_noisy_sim(self) -> None:
+        """Simulate noisy environment with HPSS: periodic percussive spikes."""
+        sr, bpm_target = 44100, 120.0
+        frame_size, hop_size = 2048, 512
+        n_samples = int(sr * 12.0)
+        n_frames = (n_samples - frame_size) // hop_size
+        period_frames = int(sr * 60.0 / bpm_target / hop_size)
+
+        est = LiveBpmEstimator(sample_rate=sr, hop_size=hop_size, onset_mode="hybrid")
+        rng = np.random.default_rng(42)
+        stream_t = 0.0
+        beat_count = 0
+
+        for i in range(n_frames):
+            # Dead bass/kick, active whitened flux, periodic percussive spikes
+            perc = 8.0 if (i % period_frames < 2) else rng.uniform(0, 0.5)
+            bpm, beat = est.update(
+                energy=1.0, t=stream_t,
+                kick_spectral_flux=0.0,
+                whitened_flux=50.0,
+                percussive_onset=perc,
+            )
+            if beat:
+                beat_count += 1
+            stream_t += float(hop_size) / float(sr)
+
+        self.assertEqual(est._hybrid_source, "percussive")
+        self.assertGreater(bpm, 0.0, "Should detect BPM from percussive spikes")
+        self.assertGreater(beat_count, 3, "Should detect beats from percussive onset")
 
 
 if __name__ == "__main__":

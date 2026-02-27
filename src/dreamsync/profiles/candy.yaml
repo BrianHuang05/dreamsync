@@ -1,0 +1,26 @@
+name: "Candy"
+description: "Pastels and bright saturated pops — sweet, playful, and fun"
+author: "dreamsync"
+tags: ["pastel", "fun", "bright"]
+version: 1
+
+palettes:
+  pastel_pop: ["#ffaacc", "#aaccff", "#ccffaa", "#ffccaa", "#ccaaff", "#aaffcc"]
+  bubblegum:  ["#ff66aa", "#ff88cc", "#ffaadd", "#ff44aa", "#ff77bb", "#ff99cc"]
+  rainbow:    ["#ff4444", "#ffaa44", "#ffff44", "#44ff44", "#4444ff", "#ff44ff"]
+
+moods:
+  chill:
+    palettes: ["pastel_pop"]
+    params:
+      wave_rate_mult: 0.4
+  groove:
+    palettes: ["pastel_pop", "bubblegum"]
+  hype:
+    palettes: ["bubblegum", "rainbow"]
+  drop:
+    palettes: ["rainbow"]
+    params:
+      pulse_decay: 4.0
+
+cycle_interval: 16.0

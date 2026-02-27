@@ -1,0 +1,34 @@
+name: "Midnight Rave"
+description: "Deep purples, electric blues, and laser greens — late night energy"
+author: "dreamsync"
+tags: ["rave", "night", "high-energy"]
+version: 1
+
+palettes:
+  ultraviolet: ["#220044", "#440088", "#6600cc", "#8800ff", "#aa33ff", "#cc66ff"]
+  electric:    ["#0000ff", "#0044ff", "#0088ff", "#00ccff", "#00ffff", "#44ffff"]
+  laser:       ["#00ff00", "#00ff66", "#00ffcc", "#66ff00", "#00ff33", "#33ff99"]
+
+moods:
+  chill:
+    palettes: ["ultraviolet"]
+    params:
+      wave_rate_mult: 0.4
+  groove:
+    palettes: ["ultraviolet", "electric"]
+  hype:
+    palettes: ["electric", "laser"]
+  drop:
+    palettes: ["laser", "electric"]
+    params:
+      pulse_decay: 3.0
+
+transitions:
+  - from: "groove"
+    to: "hype"
+    palette: "electric"
+  - from: "chill"
+    to: "groove"
+    palette: "ultraviolet"
+
+cycle_interval: 14.0

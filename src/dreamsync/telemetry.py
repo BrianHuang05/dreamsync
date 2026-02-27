@@ -33,12 +33,32 @@ class SongTelemetryWriter:
             self._file.write(json.dumps(row, separators=(",", ":")) + "\n")
         self._accumulate(row)
 
-    def on_boundary(self, boundary_index: int, t: float) -> None:
+    def on_boundary(self, boundary_index: int, t: float, *, boundary_type: str = "silence") -> None:
         """Flush the current song and open the next song file."""
-        self._flush_song_summary(t)
+        self._flush_song_summary(t, boundary_type=boundary_type)
         self._song_index += 1
         self._open_song_file()
         self._reset_accumulators(t)
+
+    def write_health_snapshot(self, t: float, devices: dict) -> None:
+        """Write a device health snapshot row to the current song file.
+
+        *devices* should be a dict of ``{address: DeviceHealth}``.
+        """
+        row: dict[str, Any] = {"kind": "device_health", "t": round(t, 4), "devices": {}}
+        for addr, h in devices.items():
+            entry: dict[str, Any] = {
+                "status": h.status,
+                "role": h.role,
+                "consecutive_failures": h.consecutive_failures,
+            }
+            if h.latency_history:
+                entry["latency_ms"] = round(h.latency_history[-1], 2)
+            if h.offline_since is not None:
+                entry["offline_since_s"] = round(t - h.offline_since, 1)
+            row["devices"][addr] = entry
+        if self._file is not None:
+            self._file.write(json.dumps(row, separators=(",", ":")) + "\n")
 
     def close(self) -> dict[str, Any]:
         """Flush the final song, write session-summary.json, and return it."""
@@ -113,7 +133,7 @@ class SongTelemetryWriter:
         if palette:
             self._palette_counts[palette] = self._palette_counts.get(palette, 0) + 1
 
-    def _flush_song_summary(self, end_t: float) -> None:
+    def _flush_song_summary(self, end_t: float, *, boundary_type: str | None = None) -> None:
         n = self._frame_count
         summary: dict[str, Any] = {
             "kind": "song_summary",
@@ -124,6 +144,9 @@ class SongTelemetryWriter:
             "frames": n,
             "beats": self._beat_count,
         }
+
+        if boundary_type is not None:
+            summary["boundary_type"] = boundary_type
 
         if self._bpm_values:
             summary["bpm_median"] = round(statistics.median(self._bpm_values), 2)

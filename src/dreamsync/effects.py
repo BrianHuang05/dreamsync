@@ -144,20 +144,33 @@ class EffectCycler:
         self,
         config: EffectCyclerConfig | None = None,
         seed: int | None = None,
+        profile: Any | None = None,
     ) -> None:
         self.config = config or EffectCyclerConfig()
         self._rng = random.Random(seed)
+        self._profile = profile  # ProfileConfig | None (lazy import avoidance)
         self._current_effect: str | None = None
         self._current_mood: Mood | None = None
+        self._prev_mood: Mood | None = None
         self._effect_start_t: float = -1e9
         self._palette_name: str | None = None
         self._in_drop: bool = False
         self._drop_start_t: float = -1e9
 
+    def set_profile(self, profile: Any | None) -> None:
+        """Hot-swap the active profile (single reference assignment, GIL-safe).
+
+        Clears the cached mood so the next update() re-picks palette/effect
+        from the new profile (avoids stale palette name references).
+        """
+        self._profile = profile
+        self._current_mood = None
+
     def reset(self) -> None:
         """Clear accumulated state for a new song."""
         self._current_effect = None
         self._current_mood = None
+        self._prev_mood = None
         self._effect_start_t = -1e9
         self._palette_name = None
         self._in_drop = False
@@ -171,8 +184,27 @@ class EffectCycler:
     def current_palette(self) -> str | None:
         return self._palette_name
 
+    @property
+    def _cycle_interval(self) -> float:
+        """Effective cycle interval: profile override → config default."""
+        p = self._profile
+        if p is not None and p.cycle_interval is not None:
+            return p.cycle_interval
+        return self.config.cycle_interval
+
     def _pick_effect(self, mood: Mood, exclude: str | None = None) -> str:
         """Weighted random selection from the mood's effect pool."""
+        p = self._profile
+        if p is not None:
+            mood_cfg = p.moods.get(mood.value)
+            if mood_cfg and mood_cfg.effects:
+                pool = [(e.name, e.weight) for e in mood_cfg.effects]
+                if exclude is not None and len(pool) > 1:
+                    pool = [(n, w) for n, w in pool if n != exclude]
+                names = [n for n, _ in pool]
+                weights = [w for _, w in pool]
+                return self._rng.choices(names, weights=weights, k=1)[0]
+
         pool = MOOD_EFFECTS[mood]
         if exclude is not None and len(pool) > 1:
             pool = [(name, w) for name, w in pool if name != exclude]
@@ -182,18 +214,54 @@ class EffectCycler:
 
     def _pick_palette(self, mood: Mood) -> str:
         """Random palette from the mood's eligible palettes."""
+        p = self._profile
+        if p is not None:
+            mood_cfg = p.moods.get(mood.value)
+            if mood_cfg and mood_cfg.palettes:
+                return self._rng.choice(mood_cfg.palettes)
+
         candidates = MOOD_PALETTES[mood]
         return self._rng.choice(candidates)
 
-    def _apply_palette(self, effect_name: str, palette_name: str) -> EffectPreset:
-        """Return a copy of the named effect with the given palette's colors."""
+    def _resolve_palette_colors(self, palette_name: str) -> tuple[str, ...]:
+        """Resolve a palette name to its color tuple (profile-local first, then built-in)."""
+        p = self._profile
+        if p is not None and palette_name in p.palettes:
+            return p.palettes[palette_name]
+        return PALETTES[palette_name]
+
+    def _check_transition_palette(self, old_mood: Mood, new_mood: Mood) -> str | None:
+        """Check if the profile has a forced palette for this mood transition."""
+        p = self._profile
+        if p is None:
+            return None
+        for tr in p.transitions:
+            if tr.from_mood == old_mood.value and tr.to_mood == new_mood.value:
+                return tr.palette
+        return None
+
+    def _apply_palette(self, effect_name: str, palette_name: str, mood: Mood | None = None) -> EffectPreset:
+        """Return a copy of the named effect with the given palette's colors.
+
+        If a profile is active and defines param overrides for the mood,
+        they are merged on top of the effect's base params.
+        """
         base = EFFECTS[effect_name]
-        colors = PALETTES[palette_name]
+        colors = self._resolve_palette_colors(palette_name)
+        params = dict(base.params)
+
+        # Merge profile mood params
+        p = self._profile
+        if p is not None and mood is not None:
+            mood_cfg = p.moods.get(mood.value)
+            if mood_cfg and mood_cfg.params:
+                params.update(mood_cfg.params)
+
         return EffectPreset(
             name=base.name,
             render_mode=base.render_mode,
             color_palette=colors,
-            params=base.params,
+            params=params,
         )
 
     def update(
@@ -212,32 +280,41 @@ class EffectCycler:
                 self._current_effect = "drop_blast"
                 self._palette_name = self._pick_palette(Mood.DROP)
                 self._effect_start_t = t
+                self._prev_mood = self._current_mood
                 self._current_mood = Mood.DROP
-            return self._apply_palette("drop_blast", self._palette_name)
+            return self._apply_palette("drop_blast", self._palette_name, Mood.DROP)
 
         # --- Leaving DROP ---
         if self._in_drop:
             self._in_drop = False
             self._current_effect = self._pick_effect(mood)
-            self._palette_name = self._pick_palette(mood)
+            # Check transition rule from DROP to new mood
+            tr_pal = self._check_transition_palette(Mood.DROP, mood)
+            self._palette_name = tr_pal if tr_pal else self._pick_palette(mood)
             self._effect_start_t = t
+            self._prev_mood = self._current_mood
             self._current_mood = mood
-            return self._apply_palette(self._current_effect, self._palette_name)
+            return self._apply_palette(self._current_effect, self._palette_name, mood)
 
         # --- First call or mood change ---
         if self._current_mood is None or mood != self._current_mood:
             self._current_effect = self._pick_effect(mood)
-            self._palette_name = self._pick_palette(mood)
+            # Check transition rule
+            tr_pal = None
+            if self._current_mood is not None:
+                tr_pal = self._check_transition_palette(self._current_mood, mood)
+            self._palette_name = tr_pal if tr_pal else self._pick_palette(mood)
             self._effect_start_t = t
+            self._prev_mood = self._current_mood
             self._current_mood = mood
-            return self._apply_palette(self._current_effect, self._palette_name)
+            return self._apply_palette(self._current_effect, self._palette_name, mood)
 
         # --- Time-based cycling within same mood ---
-        if (t - self._effect_start_t) >= self.config.cycle_interval:
+        if (t - self._effect_start_t) >= self._cycle_interval:
             self._current_effect = self._pick_effect(mood, exclude=self._current_effect)
             self._palette_name = self._pick_palette(mood)
             self._effect_start_t = t
-            return self._apply_palette(self._current_effect, self._palette_name)
+            return self._apply_palette(self._current_effect, self._palette_name, mood)
 
         # --- Steady state: return current preset ---
-        return self._apply_palette(self._current_effect, self._palette_name)
+        return self._apply_palette(self._current_effect, self._palette_name, mood)
