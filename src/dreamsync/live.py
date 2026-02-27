@@ -21,6 +21,17 @@ from dreamsync.output.govee_lan import GoveeLanAdapter, MultiGoveeLanAdapter
 from dreamsync.render import RenderMode, SegmentRenderer
 
 
+HARMONIC_RATIOS = {
+    "1x":   1.0,
+    "1/2x": 0.5,
+    "2x":   2.0,
+    "2/3x": 2.0 / 3.0,
+    "3/2x": 3.0 / 2.0,
+    "3/4x": 0.75,
+    "4/3x": 4.0 / 3.0,
+}
+
+
 class LiveBpmEstimator:
     def __init__(
         self,
@@ -37,6 +48,7 @@ class LiveBpmEstimator:
         half_time: bool = False,
         onset_mode: str = "hybrid",
         threshold_mode: str = "adaptive",
+        harmonic_confirm_count: int = 12,
     ) -> None:
         self.sample_rate = sample_rate
         self.hop_size = hop_size
@@ -48,6 +60,7 @@ class LiveBpmEstimator:
         self.max_bpm = max_bpm
         self.max_jump_bpm = max_jump_bpm
         self.confirm_updates = max(1, confirm_updates)
+        self.harmonic_confirm_count = max(1, harmonic_confirm_count)
         self.half_time = half_time
         _valid_onset_modes = ("spectral_flux", "bass_diff", "kick_flux", "whitened_flux", "hybrid")
         if onset_mode not in _valid_onset_modes:
@@ -69,6 +82,8 @@ class LiveBpmEstimator:
         self._beat_phase = 0.0
         self._candidate_bpm = 0.0
         self._candidate_hits = 0
+        self._pending_harmonic_label: str | None = None
+        self._harmonic_confirm = 0
         self._last_onset_beat_t = -1e9
         self._prev_onset = 0.0
         # Hybrid onset mode state: EMA of bass onset activity vs kick flux activity
@@ -97,6 +112,8 @@ class LiveBpmEstimator:
         self._beat_phase = 0.0
         self._candidate_bpm = 0.0
         self._candidate_hits = 0
+        self._pending_harmonic_label = None
+        self._harmonic_confirm = 0
         self._last_onset_beat_t = -1e9
         self._prev_onset = 0.0
         self._bass_activity = 0.0
@@ -220,6 +237,29 @@ class LiveBpmEstimator:
         beat = self._advance_beat_phase()
         return self.last_bpm, beat
 
+    def _classify_harmonic(self, raw_bpm: float) -> tuple[str, float]:
+        """Return (ratio_label, mapped_bpm) for the best-matching harmonic.
+
+        mapped_bpm is raw_bpm divided by the ratio, i.e. what the BPM would be
+        in the locked octave.  For "1x" the mapped value equals raw_bpm.
+        """
+        if self.last_bpm <= 0:
+            return ("1x", raw_bpm)
+
+        best_label = "1x"
+        best_mapped = raw_bpm
+        best_error = abs(raw_bpm - self.last_bpm)
+
+        for label, ratio in HARMONIC_RATIOS.items():
+            mapped = raw_bpm / ratio
+            error = abs(mapped - self.last_bpm)
+            if error < best_error:
+                best_error = error
+                best_label = label
+                best_mapped = mapped
+
+        return (best_label, best_mapped)
+
     def _normalize_bpm(self, bpm: float) -> float:
         if bpm <= 0.0:
             return 0.0
@@ -251,22 +291,52 @@ class LiveBpmEstimator:
         if self.last_bpm <= 0.0:
             self._candidate_bpm = 0.0
             self._candidate_hits = 0
+            self._pending_harmonic_label = None
+            self._harmonic_confirm = 0
             return bpm
-        if abs(bpm - self.last_bpm) <= self.max_jump_bpm:
-            self._candidate_bpm = 0.0
-            self._candidate_hits = 0
-            return bpm
-        # Require a few consistent updates before accepting a big jump.
-        if self._candidate_bpm <= 0.0 or abs(bpm - self._candidate_bpm) > self.max_jump_bpm:
-            self._candidate_bpm = bpm
-            self._candidate_hits = 1
+
+        label, mapped = self._classify_harmonic(bpm)
+
+        if label == "1x":
+            # Non-harmonic path: use existing inertia logic
+            self._pending_harmonic_label = None
+            self._harmonic_confirm = 0
+            if abs(bpm - self.last_bpm) <= self.max_jump_bpm:
+                self._candidate_bpm = 0.0
+                self._candidate_hits = 0
+                return bpm
+            # Require a few consistent updates before accepting a big jump
+            if (
+                self._candidate_bpm <= 0.0
+                or abs(bpm - self._candidate_bpm) > self.max_jump_bpm
+            ):
+                self._candidate_bpm = bpm
+                self._candidate_hits = 1
+                return self.last_bpm
+            self._candidate_hits += 1
+            if self._candidate_hits >= self.confirm_updates:
+                self._candidate_bpm = 0.0
+                self._candidate_hits = 0
+                return bpm
             return self.last_bpm
-        self._candidate_hits += 1
-        if self._candidate_hits >= self.confirm_updates:
+        else:
+            # Harmonic jump: require many confirmations at the SAME ratio
             self._candidate_bpm = 0.0
             self._candidate_hits = 0
-            return bpm
-        return self.last_bpm
+            if label != self._pending_harmonic_label:
+                self._pending_harmonic_label = label
+                self._harmonic_confirm = 0
+
+            self._harmonic_confirm += 1
+
+            if self._harmonic_confirm >= self.harmonic_confirm_count:
+                # Genuine tempo change — accept the raw bpm
+                self._pending_harmonic_label = None
+                self._harmonic_confirm = 0
+                return bpm
+            else:
+                # Reject — return mapped (corrected to locked octave)
+                return self._normalize_bpm(mapped)
 
     def _is_onset_beat(self, onset: float, t: float) -> bool:
         """Detect a beat from an actual energy spike, not a synthetic phase.

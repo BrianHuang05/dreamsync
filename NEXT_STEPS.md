@@ -12,25 +12,33 @@ All Mk I+II features are implemented and unit tested (496 tests). Now running li
 - [x] 4. Auto-detect + role classification (session mode)
 - [x] 5. Profile basic (aurora + neon_city live on device)
 - [x] 6. Profile hot-swap (live YAML edit → reload, error recovery)
-- [ ] 7. Profile rotation (3 profiles, timed swap)
-- [ ] 8. Health monitor (probe lifecycle + telemetry)
-- [ ] 9. Offline/online detection (power cycle during session)
+- [ ] 7. Profile rotation (3 profiles, timed swap) — **requires hardware**
+- [ ] 8. Health monitor (probe lifecycle + telemetry) — **requires hardware**
+- [ ] 9. Offline/online detection (power cycle during session) — **requires hardware**
+- [ ] 10. BPM stability (15 min) — **no hardware needed**
+- [ ] 11. Song boundary detection (30 min) — **no hardware needed**
+- [ ] 12. Mood & effect cycling (shared with 11) — **no hardware needed**
+- [ ] 13. Resource stability (shared with 11) — **no hardware needed**
 
 ### Resume here
 
-Next test is **7. Profile rotation**:
+**Without hardware:** Run tests **10–13** now (long-run stability). These exercise the full audio pipeline with an unreachable device IP — UDP frames silently drop. See `VALIDATION_TESTS.md` Phase 4.
 
 ```bash
-python -m dreamsync govee-live --device 10.126.166.180:7:primary:ptreal --duration 120 --profile-rotation aurora,neon_city,midnight_rave --rotation-interval 30 --debug-mood
+# 10. BPM stability (15 min) — play varied-tempo music
+mkdir -p out/longrun
+python -m dreamsync govee-live --device 10.126.166.180:7:primary:ptreal --duration 900 --debug-mood --telemetry-dir out/longrun/bpm-15m 2>&1 | tee out/longrun/bpm-15m-console.log
+
+# 11+12+13. Boundary + mood + memory (30 min) — play 6-8 song playlist
+python -m dreamsync govee-live --device 10.126.166.180:7:primary:ptreal --duration 1800 --debug-mood --crossfade-detect --telemetry-dir out/longrun/boundary-30m 2>&1 | tee out/longrun/boundary-30m-console.log
 ```
 
-Then **8. Health monitor** and **9. Offline/online** — see `VALIDATION_TESTS.md` Phase 3.
+**With hardware:** Run tests **7–9** (profile rotation, health monitor, offline/online). See `VALIDATION_TESTS.md` Phases 2c and 3.
 
 ### After validation
 
 - Noisy-environment beat detection (bar/coffee shop) — see `plans/noise-robust-onset.md`
 - Crossfade boundary detection tuning
-- Infinite session stability (15-30+ min)
 - Tuning pass (mood thresholds, effect weights)
 
 ---

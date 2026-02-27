@@ -6,6 +6,7 @@ import numpy as np
 
 from dreamsync.dsp.features import _estimate_bpm
 from dreamsync.live import (
+    HARMONIC_RATIOS,
     LiveBpmEstimator,
     NoiseFloorEstimator,
     PercussiveOnsetTracker,
@@ -1050,6 +1051,133 @@ class TestTemplateSelectivityMonitor(unittest.TestCase):
                 tpl.update(nonbeat_mag, is_beat=False, frame_energy=1.0)
         self.assertTrue(tpl.has_selectivity,
                         "Template should maintain selectivity with distinct beat/non-beat spectra")
+
+
+class TestHarmonicClassifier(unittest.TestCase):
+    """Tests for _classify_harmonic() — Layer 2 of harmonic-lock plan."""
+
+    def _make_est(self, last_bpm: float = 0.0) -> LiveBpmEstimator:
+        est = LiveBpmEstimator(sample_rate=44100, hop_size=512)
+        est.last_bpm = last_bpm
+        return est
+
+    def test_no_last_bpm_returns_1x(self):
+        est = self._make_est(0.0)
+        label, mapped = est._classify_harmonic(120.0)
+        self.assertEqual(label, "1x")
+        self.assertAlmostEqual(mapped, 120.0)
+
+    def test_half_time(self):
+        est = self._make_est(160.0)
+        label, mapped = est._classify_harmonic(80.0)
+        self.assertEqual(label, "1/2x")
+        self.assertAlmostEqual(mapped, 160.0)
+
+    def test_double_time(self):
+        est = self._make_est(80.0)
+        label, mapped = est._classify_harmonic(160.0)
+        self.assertEqual(label, "2x")
+        self.assertAlmostEqual(mapped, 80.0)
+
+    def test_three_halves(self):
+        est = self._make_est(160.0)
+        label, mapped = est._classify_harmonic(240.0)
+        self.assertEqual(label, "3/2x")
+        self.assertAlmostEqual(mapped, 160.0)
+
+    def test_two_thirds(self):
+        est = self._make_est(160.0)
+        label, mapped = est._classify_harmonic(107.0)
+        self.assertEqual(label, "2/3x")
+        self.assertAlmostEqual(mapped, 160.5, places=0)
+
+    def test_close_to_1x(self):
+        est = self._make_est(160.0)
+        label, mapped = est._classify_harmonic(158.0)
+        self.assertEqual(label, "1x")
+        self.assertAlmostEqual(mapped, 158.0)
+
+    def test_all_ratios_covered(self):
+        """Every HARMONIC_RATIOS entry should be selectable."""
+        for target_label, ratio in HARMONIC_RATIOS.items():
+            if target_label == "1x":
+                continue
+            est = self._make_est(120.0)
+            raw = 120.0 * ratio  # e.g. 2x → raw=240
+            label, mapped = est._classify_harmonic(raw)
+            self.assertEqual(label, target_label,
+                             f"Expected {target_label} for raw={raw:.1f}, got {label}")
+            self.assertAlmostEqual(mapped, 120.0, delta=1.0,
+                                   msg=f"mapped should ≈120 for {target_label}")
+
+
+class TestHarmonicResistantLock(unittest.TestCase):
+    """Tests for the harmonic-resistant _apply_inertia() — Layer 3."""
+
+    def _make_est(self, last_bpm: float = 140.0, **kw) -> LiveBpmEstimator:
+        est = LiveBpmEstimator(sample_rate=44100, hop_size=512, **kw)
+        est.last_bpm = last_bpm
+        return est
+
+    def test_rejects_short_half_time_burst(self):
+        """5 frames of half-time should be rejected (mapped back)."""
+        est = self._make_est(140.0)
+        for _ in range(5):
+            result = est._apply_inertia(70.0)
+        # Should stay near 140 (mapped = 70 / 0.5 = 140)
+        self.assertAlmostEqual(result, 140.0, delta=2.0)
+
+    def test_accepts_sustained_half_time(self):
+        """15 frames of consistent half-time → accept the genuine change."""
+        est = self._make_est(140.0, harmonic_confirm_count=12)
+        results = []
+        for _ in range(15):
+            r = est._apply_inertia(70.0)
+            est.last_bpm = r  # simulate pipeline updating last_bpm
+            results.append(r)
+        # First 11 should be ~140, the 12th onward should be 70
+        self.assertAlmostEqual(results[0], 140.0, delta=2.0)
+        self.assertAlmostEqual(results[11], 70.0, delta=2.0)
+        self.assertAlmostEqual(results[-1], 70.0, delta=2.0)
+
+    def test_alternating_ratios_stay_locked(self):
+        """Alternating half-time and full-time resets the confirm counter."""
+        est = self._make_est(140.0)
+        for i in range(30):
+            if i % 2 == 0:
+                result = est._apply_inertia(70.0)   # 1/2x
+            else:
+                result = est._apply_inertia(140.0)   # 1x
+        # Should stay near 140 throughout
+        self.assertAlmostEqual(result, 140.0, delta=2.0)
+
+    def test_gradual_drift_follows(self):
+        """Small drift within max_jump_bpm follows normally (1x path)."""
+        est = self._make_est(140.0)
+        for bpm in [141, 142, 143, 144, 145, 146]:
+            result = est._apply_inertia(float(bpm))
+            self.assertAlmostEqual(result, float(bpm), delta=1.0,
+                                   msg=f"Gradual drift to {bpm} should be followed")
+
+    def test_first_bpm_accepted(self):
+        """When last_bpm is 0, any estimate is accepted immediately."""
+        est = self._make_est(0.0)
+        result = est._apply_inertia(128.0)
+        self.assertAlmostEqual(result, 128.0)
+
+    def test_non_harmonic_big_jump_needs_confirmation(self):
+        """A big non-harmonic jump still needs confirm_updates confirmations."""
+        est = self._make_est(140.0, confirm_updates=4)
+        # 155 is not a harmonic of 140 but is > max_jump_bpm away
+        results = []
+        for _ in range(6):
+            r = est._apply_inertia(155.0)
+            est.last_bpm = r  # simulate pipeline updating last_bpm
+            results.append(r)
+        # First 3 should be 140 (held), 4th onward should be 155
+        self.assertAlmostEqual(results[0], 140.0, delta=1.0)
+        self.assertAlmostEqual(results[3], 155.0, delta=1.0)
+        self.assertAlmostEqual(results[-1], 155.0, delta=1.0)
 
 
 if __name__ == "__main__":

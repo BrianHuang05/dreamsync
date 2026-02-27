@@ -293,6 +293,169 @@ python -m dreamsync session --config devices.yaml --health-monitor --health-disc
 
 ---
 
+## Phase 4 — Long-Run Stability (No Hardware Required)
+
+These tests validate the audio pipeline over sustained runs. **No Govee devices need to be connected** — the commands use a device IP from your config but UDP frames silently drop if the device is unreachable. Play music through your system audio (Spotify, local files, etc.) so the loopback capture has real signal.
+
+> **Output sizing:** Telemetry writes ~94 rows/sec × ~500 bytes/row. A 15-min run produces ~43 MB of JSONL; 30 min produces ~88 MB. Console output is <1 MB regardless of duration.
+
+### 4.1 BPM stability (15 min)
+
+**Goal:** Verify BPM estimation remains stable across multiple songs with varied tempos, no drift to nonsense values.
+
+**Setup:** Queue a 15+ minute playlist with at least 3 songs of different tempos (e.g., 90 BPM chill → 128 BPM house → 170 BPM drum & bass).
+
+```bash
+mkdir -p out/longrun
+
+python -m dreamsync govee-live \
+  --device 10.126.166.180:7:primary:ptreal \
+  --duration 900 \
+  --debug-mood \
+  --telemetry-dir out/longrun/bpm-15m \
+  2>&1 | tee out/longrun/bpm-15m-console.log
+```
+
+**Analyze after run:**
+
+```bash
+python -c "
+import json, glob, statistics
+bpms = []
+for f in sorted(glob.glob('out/longrun/bpm-15m/session-*/song-*.jsonl')):
+    for line in open(f):
+        row = json.loads(line)
+        b = row.get('bpm', 0)
+        if b > 0:
+            bpms.append(b)
+if bpms:
+    print(f'Samples: {len(bpms)}')
+    print(f'BPM: mean={statistics.mean(bpms):.1f}, stdev={statistics.stdev(bpms):.1f}')
+    print(f'Range: {min(bpms):.1f} – {max(bpms):.1f}')
+    # Check for nonsense values
+    outliers = [b for b in bpms if b < 40 or b > 220]
+    print(f'Outliers (<40 or >220): {len(outliers)} ({100*len(outliers)/len(bpms):.1f}%)')
+else:
+    print('No BPM data found')
+"
+```
+
+**Pass criteria:**
+- Outliers (<40 or >220 BPM) are < 5% of all samples
+- BPM visibly tracks tempo changes across songs in the console log (grep for `bpm=`)
+- No sustained lock onto a nonsense value (e.g., 30 BPM for >60 seconds)
+- No crash or hang over the full 15 minutes
+
+### 4.2 Song boundary detection (30 min)
+
+**Goal:** Verify song boundaries fire at actual transitions, not mid-song.
+
+**Setup:** Queue a 30+ minute playlist with 6–8 distinct songs. Note the number of transitions (songs − 1). Mix in at least one quiet-intro song and one crossfade transition if possible.
+
+```bash
+python -m dreamsync govee-live \
+  --device 10.126.166.180:7:primary:ptreal \
+  --duration 1800 \
+  --debug-mood \
+  --crossfade-detect \
+  --telemetry-dir out/longrun/boundary-30m \
+  2>&1 | tee out/longrun/boundary-30m-console.log
+```
+
+**Analyze after run:**
+
+```bash
+# Count boundary events
+grep -c "Song boundary" out/longrun/boundary-30m-console.log
+
+# Show timestamps of each boundary
+grep "Song boundary" out/longrun/boundary-30m-console.log
+```
+
+```bash
+# Count telemetry song files (each boundary starts a new file)
+ls out/longrun/boundary-30m/session-*/song-*.jsonl | wc -l
+```
+
+**Pass criteria:**
+- Boundary count matches actual song transitions (±1 for crossfades)
+- No false boundaries mid-song (especially during quiet breakdowns or intros)
+- Each `song-NNN.jsonl` file corresponds to roughly one song duration
+- Crossfade boundaries (if any) logged as `[crossfade]` not `[silence]`
+
+### 4.3 Mood & effect cycling (30 min)
+
+**Goal:** Verify the mood state machine visits multiple states and effects cycle normally over a long session.
+
+This uses the same run as test 4.2 — no need to run separately. Analyze the same output files.
+
+**Analyze after run:**
+
+```bash
+python -c "
+import json, glob
+from collections import Counter
+moods = Counter()
+effects = Counter()
+total = 0
+for f in sorted(glob.glob('out/longrun/boundary-30m/session-*/song-*.jsonl')):
+    for line in open(f):
+        row = json.loads(line)
+        m = row.get('mood')
+        e = row.get('effect')
+        if m:
+            moods[m] += 1
+            total += 1
+        if e:
+            effects[e] += 1
+print(f'Total frames: {total}')
+print()
+print('Mood distribution:')
+for mood, count in moods.most_common():
+    print(f'  {mood}: {count} ({100*count/total:.1f}%)')
+print()
+print(f'Unique effects seen: {len(effects)}')
+for effect, count in effects.most_common(10):
+    print(f'  {effect}: {count}')
+"
+```
+
+**Pass criteria:**
+- At least 2 distinct mood states visited (ideally 3+ with varied music)
+- No single mood > 90% of total frames (indicates stuck state)
+- At least 3 distinct effects cycled through
+- Effect names change over time (not stuck on one effect for the whole run)
+
+### 4.4 Resource stability (30 min)
+
+**Goal:** Verify no memory leaks or resource exhaustion over a sustained run.
+
+Run alongside test 4.2. In a **separate terminal**, sample memory every 30 seconds:
+
+```bash
+# Start this BEFORE launching the 30-min run in test 4.2
+while true; do
+  echo "$(date +%H:%M:%S) $(ps aux | grep 'dreamsync govee-live' | grep -v grep | awk '{print "RSS=" $6 "KB VSZ=" $5 "KB"}')" \
+    >> out/longrun/memory-30m.log
+  sleep 30
+done
+```
+
+After the run completes, Ctrl+C the memory monitor.
+
+**Analyze:**
+
+```bash
+cat out/longrun/memory-30m.log
+```
+
+**Pass criteria:**
+- RSS memory does not grow by more than 100 MB over the 30-minute run
+- No `MemoryError` or `OSError` in the console log
+- Process exits cleanly on completion (no zombie threads)
+
+---
+
 ## Quick Reference — Full Test Sequence
 
 Run these in order for a complete validation pass:
@@ -306,6 +469,10 @@ Run these in order for a complete validation pass:
 - [ ] **7. Profile rotation** (3 profiles, 30s intervals)
 - [ ] **8. Health monitor** (probe lifecycle + telemetry)
 - [ ] **9. Offline/online** (power cycle a device during test 8)
+- [ ] **10. BPM stability** (15 min, no hardware)
+- [ ] **11. Song boundary detection** (30 min, no hardware)
+- [ ] **12. Mood & effect cycling** (shared with test 11)
+- [ ] **13. Resource stability** (shared with test 11)
 
 ```bash
 # 1. Unit tests (all systems) ✅
@@ -335,6 +502,16 @@ python -m dreamsync govee-live --device 10.126.166.180:7:primary:ptreal --durati
 python -m dreamsync session --config devices.yaml --health-monitor --health-interval 15 --debug-mood --telemetry-dir out/health-test
 
 # 9. Offline/online (power cycle a device during test 8)
+
+# 10. BPM stability (15 min, no hardware needed)
+mkdir -p out/longrun
+python -m dreamsync govee-live --device 10.126.166.180:7:primary:ptreal --duration 900 --debug-mood --telemetry-dir out/longrun/bpm-15m 2>&1 | tee out/longrun/bpm-15m-console.log
+
+# 11+12+13. Boundary detection + mood cycling + resource stability (30 min, no hardware needed)
+# Terminal 1 — memory monitor:
+# while true; do echo "$(date +%H:%M:%S) $(ps aux | grep 'dreamsync govee-live' | grep -v grep | awk '{print "RSS=" $6 "KB"}')" >> out/longrun/memory-30m.log; sleep 30; done
+# Terminal 2 — the actual run:
+python -m dreamsync govee-live --device 10.126.166.180:7:primary:ptreal --duration 1800 --debug-mood --crossfade-detect --telemetry-dir out/longrun/boundary-30m 2>&1 | tee out/longrun/boundary-30m-console.log
 ```
 
 ---
@@ -349,3 +526,5 @@ python -m dreamsync session --config devices.yaml --health-monitor --health-inte
 | Profile not loading | Check spelling matches a built-in name. Run `python -m dreamsync profiles` to see available names. |
 | Hot-swap not triggering | `ProfileWatcher` polls every 2s. Ensure you're editing the correct file (the one under `src/dreamsync/profiles/`). Ensure session was started with `--profile` (not `--profile-rotation`). |
 | Health monitor offline detection too slow | Reduce `--health-interval` (e.g., `10`). Default offline threshold is 3 probes. |
+| Long-run test shows 0 BPM / no boundaries | No audio playing — start music before (or shortly after) launching the command. The pipeline captures system audio via loopback. |
+| Long-run memory log is empty | The `ps aux | grep` pattern may not match on Windows. Use Task Manager or `Get-Process` in PowerShell instead. |
