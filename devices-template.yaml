@@ -1,0 +1,49 @@
+# DreamSync Device Configuration Template
+#
+# Copy this file to devices.yaml and edit to match your device fleet.
+# Used by: python -m dreamsync session --config devices.yaml
+#
+# Field reference:
+#   name        - Human-readable label (any string)
+#   address     - IP address (LAN) or BLE MAC address (AA:BB:CC:DD:EE:FF)
+#   type        - "lan", "ble", or "auto" (auto-detect from address format)
+#   segments    - Number of addressable LED segments (LAN only, default 15)
+#   transport   - LAN protocol: "ptreal" (per-segment), "razer" (DreamView), "colorwc" (whole-strip fallback)
+#   protocol    - BLE protocol: "segment" (strips/panels) or "bulb" (H6006 family)
+#   role        - "primary" (full-FPS reactive) or "accent" (mood-follower)
+#   max_fps     - Max frame rate for this device (default 5.0 for BLE, 30 for LAN)
+
+devices:
+  # --- LAN devices -----------------------------------------------------------
+  # LAN devices use UDP on your local network. Fastest option (~1-5ms latency).
+  # Find IPs with: python -m dreamsync govee-scan
+
+  - name: "My LED Strip"
+    address: "10.0.0.100"
+    type: lan
+    segments: 15
+    transport: ptreal           # ptreal for most strips, razer for DreamView
+    role: primary
+
+  # - name: "My DreamView"
+  #   address: "10.0.0.101"
+  #   type: lan
+  #   segments: 25
+  #   transport: razer
+  #   role: primary
+
+  # --- BLE devices ------------------------------------------------------------
+  # BLE devices connect via Bluetooth. Higher latency (~4-20ms) but no LAN needed.
+  # Find addresses with: python -m dreamsync govee-ble-scan
+
+  # - name: "My BLE Strip"
+  #   address: "AA:BB:CC:DD:EE:FF"
+  #   type: ble
+  #   protocol: segment         # "segment" for strips, "bulb" for H6006 smart bulbs
+  #   role: accent
+
+  # - name: "My Smart Bulb"
+  #   address: "AA:BB:CC:DD:EE:00"
+  #   type: ble
+  #   protocol: bulb
+  #   role: accent

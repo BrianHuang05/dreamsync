@@ -41,8 +41,9 @@ def run_session(
     auto_cycle: bool = True,
     cycle_interval: float = 16.0,
     debug_mood: bool = False,
-    probe_packets: int = 100,
+    probe_packets: int | None = None,
     probe_rate: float = 5.0,
+    parallel_probe: bool = True,
     director_config: DirectorConfig | None = None,
     telemetry_dir: Path | None = None,
     hot_reload: bool = True,
@@ -62,7 +63,11 @@ def run_session(
 
     # 2. Probe devices
     print("Probing devices...")
-    detected = detect_all_devices(configs, num_packets=probe_packets, rate_hz=probe_rate)
+    detect_kwargs: dict[str, Any] = {"parallel": parallel_probe}
+    if probe_packets is not None:
+        detect_kwargs["num_packets"] = probe_packets
+        detect_kwargs["rate_hz"] = probe_rate
+    detected = detect_all_devices(configs, **detect_kwargs)
     print_detection_report(detected)
 
     # 3. Build adapter
@@ -83,7 +88,7 @@ def run_session(
         watcher = ConfigWatcher(
             config_path,
             multi_adapter,
-            probe_packets=min(probe_packets, 10),
+            probe_packets=min(probe_packets or 5, 10),
             probe_rate=probe_rate,
             render_mode=mode,
             mirror=mirror,

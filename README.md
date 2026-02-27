@@ -116,6 +116,33 @@ For production use with a device config file. Runs until Ctrl+C, auto-detects de
 python -m dreamsync session --config devices.yaml --debug-mood
 ```
 
+### Color profiles
+
+8 built-in color profiles control palette selection and effect pools per mood. Use `--profile` to load one, or `--profile-rotation` to cycle through several:
+
+```bash
+# List available profiles
+python -m dreamsync profiles --verbose
+
+# Run with a specific profile
+python -m dreamsync govee-live --device 10.0.0.1:7:primary:ptreal --duration 120 --profile aurora --debug-mood
+
+# Rotate through profiles every 60 seconds
+python -m dreamsync govee-live --device 10.0.0.1:7:primary:ptreal --duration 300 \
+    --profile-rotation aurora,neon_city,midnight_rave --rotation-interval 60 --debug-mood
+
+# Validate a profile's YAML structure
+python -m dreamsync profile-validate aurora
+```
+
+Editing a profile YAML under `src/dreamsync/profiles/` during a live session triggers a hot-reload within ~2 seconds.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--profile` | none | Load a named color profile |
+| `--profile-rotation` | none | Comma-separated profile names to rotate through |
+| `--rotation-interval` | 60 | Seconds between profile rotations |
+
 ### Device health monitoring
 
 Enable periodic probing to detect offline/online transitions and auto-pause/resume devices:

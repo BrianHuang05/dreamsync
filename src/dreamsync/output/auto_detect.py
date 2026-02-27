@@ -12,6 +12,7 @@ import re
 import socket
 import statistics
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -129,6 +130,75 @@ def _is_ip_address(address: str) -> bool:
 # ---------------------------------------------------------------------------
 # Latency probing
 # ---------------------------------------------------------------------------
+
+
+def _probe_lan_batch(
+    ips: list[str],
+    num_packets: int = 5,
+    rate_hz: float = 20.0,
+) -> dict[str, LatencyStats]:
+    """Probe multiple LAN devices concurrently using a single shared listener.
+
+    Sends *num_packets* rounds at *rate_hz*.  Each round sends one scan
+    packet to every IP and collects responses, so N devices take roughly
+    the same time as 1 device.
+    """
+    from dreamsync.output.discovery import _SCAN_MSG, LISTEN_PORT, MCAST_PORT
+
+    if not ips:
+        return {}
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        listener.bind(("", LISTEN_PORT))
+    except OSError:
+        _logger.warning("Could not bind to port %d for LAN batch probe", LISTEN_PORT)
+        return {ip: LatencyStats(samples=[]) for ip in ips}
+    listener.settimeout(0.5)
+
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+
+    samples: dict[str, list[float]] = {ip: [] for ip in ips}
+    ip_set = set(ips)
+    interval = 1.0 / max(0.1, rate_hz)
+
+    try:
+        for _ in range(num_packets):
+            # Send to all devices in rapid succession
+            send_times: dict[str, float] = {}
+            for ip in ips:
+                send_times[ip] = time.monotonic()
+                sender.sendto(_SCAN_MSG, (ip, MCAST_PORT))
+
+            # Collect responses (wait up to timeout for all)
+            deadline = time.monotonic() + 0.5
+            received: set[str] = set()
+            while len(received) < len(ips) and time.monotonic() < deadline:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                listener.settimeout(remaining)
+                try:
+                    _data, addr = listener.recvfrom(4096)
+                    resp_ip = addr[0]
+                    if resp_ip in ip_set and resp_ip not in received:
+                        rtt = (time.monotonic() - send_times[resp_ip]) * 1000.0
+                        samples[resp_ip].append(rtt)
+                        received.add(resp_ip)
+                except socket.timeout:
+                    break
+
+            # Rate limit between rounds
+            elapsed = time.monotonic() - min(send_times.values())
+            sleep_time = interval - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+    finally:
+        sender.close()
+        listener.close()
+
+    return {ip: LatencyStats(samples=s) for ip, s in samples.items()}
 
 
 def probe_lan_device(
@@ -299,8 +369,93 @@ def detect_all_devices(
     configs: list[DeviceConfig],
     num_packets: int = 100,
     rate_hz: float = 5.0,
+    *,
+    lan_packets: int = 5,
+    ble_packets: int = 10,
+    lan_rate_hz: float = 20.0,
+    ble_rate_hz: float = 10.0,
+    parallel: bool = True,
 ) -> list[DetectedDevice]:
-    """Probe all configured devices and classify their roles."""
+    """Probe all configured devices and classify their roles.
+
+    When *parallel* is True (default), LAN devices are probed with a
+    shared-socket batch and BLE devices are probed via a thread pool.
+    The per-type packet counts default to fast values (5 LAN / 10 BLE).
+
+    If *num_packets* is explicitly changed from the default of 100 (i.e.
+    the caller passed ``--probe-packets``), it overrides both
+    *lan_packets* and *ble_packets* for backward compatibility.
+    """
+    # Legacy override: if caller explicitly set num_packets, use it everywhere
+    _lan_pkt = lan_packets
+    _ble_pkt = ble_packets
+    _lan_hz = lan_rate_hz
+    _ble_hz = ble_rate_hz
+    if num_packets != 100:
+        _lan_pkt = num_packets
+        _ble_pkt = num_packets
+        _lan_hz = rate_hz
+        _ble_hz = rate_hz
+
+    if parallel and len(configs) > 1:
+        return _detect_parallel(configs, _lan_pkt, _ble_pkt, _lan_hz, _ble_hz)
+    return _detect_sequential(configs, _lan_pkt, _ble_pkt, _lan_hz, _ble_hz)
+
+
+def _classify_lan(cfg: DeviceConfig, stats: LatencyStats) -> DetectedDevice:
+    """Build a DetectedDevice for a LAN device from its probe stats."""
+    if stats.count > 0:
+        transport = TransportMode(cfg.transport) if cfg.transport else TransportMode.PTREAL
+        return DetectedDevice(
+            name=cfg.name,
+            address=cfg.address,
+            connection_type="lan",
+            latency=stats,
+            role="realtime",
+            config=cfg,
+            transport=transport,
+        )
+    return DetectedDevice(
+        name=cfg.name,
+        address=cfg.address,
+        connection_type="unreachable",
+        latency=stats,
+        role="unreachable",
+        config=cfg,
+    )
+
+
+def _classify_ble(cfg: DeviceConfig, stats: LatencyStats) -> DetectedDevice:
+    """Build a DetectedDevice for a BLE device from its probe stats."""
+    if stats.count > 0:
+        role = classify_role(stats)
+        return DetectedDevice(
+            name=cfg.name,
+            address=cfg.address,
+            connection_type="ble",
+            latency=stats,
+            role=role,
+            config=cfg,
+            ble_protocol=cfg.protocol or "segment",
+        )
+    return DetectedDevice(
+        name=cfg.name,
+        address=cfg.address,
+        connection_type="unreachable",
+        latency=LatencyStats(samples=[]),
+        role="unreachable",
+        config=cfg,
+    )
+
+
+def _detect_sequential(
+    configs: list[DeviceConfig],
+    lan_packets: int,
+    ble_packets: int,
+    lan_rate_hz: float,
+    ble_rate_hz: float,
+) -> list[DetectedDevice]:
+    """Probe devices one at a time (legacy path)."""
     detected: list[DetectedDevice] = []
 
     for cfg in configs:
@@ -309,31 +464,13 @@ def detect_all_devices(
 
         # Determine connection type
         if device_type == "lan" or (device_type == "auto" and is_ip):
-            stats = probe_lan_device(cfg.address, num_packets=num_packets, rate_hz=rate_hz)
+            stats = probe_lan_device(cfg.address, num_packets=lan_packets, rate_hz=lan_rate_hz)
             if stats.count > 0:
-                # LAN devices are always realtime — no latency classification needed
-                role: Literal["realtime", "follower", "slow", "unreachable"] = "realtime"
-                transport = TransportMode(cfg.transport) if cfg.transport else TransportMode.PTREAL
-                detected.append(DetectedDevice(
-                    name=cfg.name,
-                    address=cfg.address,
-                    connection_type="lan",
-                    latency=stats,
-                    role=role,
-                    config=cfg,
-                    transport=transport,
-                ))
+                detected.append(_classify_lan(cfg, stats))
                 continue
             # Fall through to BLE if LAN probe failed and type is auto
             if device_type == "lan":
-                detected.append(DetectedDevice(
-                    name=cfg.name,
-                    address=cfg.address,
-                    connection_type="unreachable",
-                    latency=stats,
-                    role="unreachable",
-                    config=cfg,
-                ))
+                detected.append(_classify_lan(cfg, stats))
                 continue
 
         # Try BLE
@@ -341,19 +478,10 @@ def detect_all_devices(
             try:
                 stats = probe_ble_device(
                     cfg.address, protocol=cfg.protocol,
-                    num_packets=num_packets, rate_hz=rate_hz,
+                    num_packets=ble_packets, rate_hz=ble_rate_hz,
                 )
                 if stats.count > 0:
-                    role = classify_role(stats)
-                    detected.append(DetectedDevice(
-                        name=cfg.name,
-                        address=cfg.address,
-                        connection_type="ble",
-                        latency=stats,
-                        role=role,
-                        config=cfg,
-                        ble_protocol=cfg.protocol or "segment",
-                    ))
+                    detected.append(_classify_ble(cfg, stats))
                     continue
             except ImportError:
                 _logger.warning("BLE support not available; skipping %s", cfg.address)
@@ -369,6 +497,75 @@ def detect_all_devices(
             role="unreachable",
             config=cfg,
         ))
+
+    return detected
+
+
+def _detect_parallel(
+    configs: list[DeviceConfig],
+    lan_packets: int,
+    ble_packets: int,
+    lan_rate_hz: float,
+    ble_rate_hz: float,
+) -> list[DetectedDevice]:
+    """Probe devices concurrently: batch UDP for LAN, thread pool for BLE."""
+    lan_configs = [
+        c for c in configs
+        if c.type == "lan" or (c.type == "auto" and _is_ip_address(c.address))
+    ]
+    ble_configs = [
+        c for c in configs
+        if c.type == "ble" or (c.type == "auto" and not _is_ip_address(c.address))
+    ]
+
+    # Phase 1: LAN batch (single-socket, fast)
+    lan_results: dict[str, LatencyStats] = {}
+    if lan_configs:
+        lan_ips = [c.address for c in lan_configs]
+        lan_results = _probe_lan_batch(lan_ips, lan_packets, lan_rate_hz)
+
+    # Phase 2: BLE parallel (thread pool, ~4s limited by slowest connection)
+    ble_results: dict[str, LatencyStats] = {}
+    if ble_configs:
+        with ThreadPoolExecutor(max_workers=min(len(ble_configs), 4)) as pool:
+            futures = {
+                pool.submit(
+                    probe_ble_device, c.address, c.protocol, ble_packets, ble_rate_hz
+                ): c
+                for c in ble_configs
+            }
+            for future in as_completed(futures):
+                cfg = futures[future]
+                try:
+                    ble_results[cfg.address] = future.result()
+                except ImportError:
+                    _logger.warning("BLE support not available; skipping %s", cfg.address)
+                    ble_results[cfg.address] = LatencyStats(samples=[])
+                except Exception as exc:
+                    _logger.warning("BLE probe failed for %s: %s", cfg.address, exc)
+                    ble_results[cfg.address] = LatencyStats(samples=[])
+
+    # Phase 3: Classify and build DetectedDevice list (preserves config order)
+    detected: list[DetectedDevice] = []
+    for cfg in configs:
+        if cfg.address in lan_results:
+            stats = lan_results[cfg.address]
+            dev = _classify_lan(cfg, stats)
+            # If LAN failed and type is auto, try BLE result or mark unreachable
+            if dev.role == "unreachable" and cfg.type == "auto" and cfg.address in ble_results:
+                dev = _classify_ble(cfg, ble_results[cfg.address])
+            detected.append(dev)
+        elif cfg.address in ble_results:
+            detected.append(_classify_ble(cfg, ble_results[cfg.address]))
+        else:
+            detected.append(DetectedDevice(
+                name=cfg.name,
+                address=cfg.address,
+                connection_type="unreachable",
+                latency=LatencyStats(samples=[]),
+                role="unreachable",
+                config=cfg,
+            ))
 
     return detected
 

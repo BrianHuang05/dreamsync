@@ -317,8 +317,15 @@ def build_parser() -> argparse.ArgumentParser:
     session.add_argument("--frame-size", type=int, default=2048, help="Frame size in samples.")
     session.add_argument("--hop-size", type=int, default=512, help="Hop size in samples.")
     session.add_argument("--blocksize", type=int, default=1024, help="PortAudio callback blocksize.")
-    session.add_argument("--probe-packets", type=int, default=100, help="Number of latency probe packets per device.")
+    session.add_argument(
+        "--probe-packets", type=int, default=None,
+        help="Override probe packet count (default: 5 LAN, 10 BLE). Set to 100 for deep probe.",
+    )
     session.add_argument("--probe-rate", type=float, default=5.0, help="Probe packet rate in Hz.")
+    session.add_argument(
+        "--no-parallel-probe", action="store_true", default=False,
+        help="Disable parallel device probing (probe sequentially).",
+    )
     session.add_argument(
         "--telemetry-dir",
         type=Path,
@@ -824,6 +831,7 @@ def main(argv: list[str] | None = None) -> int:
             debug_mood=args.debug_mood,
             probe_packets=args.probe_packets,
             probe_rate=args.probe_rate,
+            parallel_probe=not args.no_parallel_probe,
             director_config=director_config,
             telemetry_dir=args.telemetry_dir,
             hot_reload=args.hot_reload,

@@ -1128,6 +1128,7 @@ def run_live_to_govee(
             last_features: dict[str, float | bool] | None = None
             last_sf: SpectralFeatures | None = None
             last_wf: float = 0.0
+            perc: float = 0.0
             while buffer.shape[0] >= frame_size:
                 frame = buffer[:frame_size]
                 buffer = buffer[hop_size:]

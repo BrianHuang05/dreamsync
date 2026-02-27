@@ -1,80 +1,37 @@
 # Next Steps
 
-## Mk I+II — Final Validation (2/27)
+## Active — Hardware Validation Tests (2/27)
 
-All core features including color profiles are implemented and unit tested (496 tests). What remains is live validation.
+All Mk I+II features are implemented and unit tested (496 tests). Now running live hardware validation. See `VALIDATION_TESTS.md` for full test plan.
 
-### Noisy-environment beat detection (coffee shop / bar)
+### Progress
 
-1. **HPSS percussive onset (Phase 3a)** — Primary validation target:
-   ```bash
-   python -m dreamsync govee-live --device 10.126.166.180:7:primary:ptreal \
-       --duration 600 --debug-mood --telemetry-dir out/bar-noise-v4
-   ```
-   Inspect:
-   ```bash
-   python scripts/inspect_telemetry.py out/bar-noise-v4
-   python scripts/analyze_noise_onset.py out/bar-noise-v4/session-*/song-*.jsonl
-   ```
-   **Pass criteria:**
-   - `hybrid_source` = `"percussive"` (not `"whitened"` or `"bass"`)
-   - `percussive_onset` distribution is bimodal (p75/p25 ratio >> 2)
-   - BPM std < 10 (was ~21 in v3)
-   - Beat rate ≈ BPM/60
+- [x] 1. Unit tests (all systems)
+- [x] 2. Network scan (`govee-scan`)
+- [x] 3. Device connectivity (`govee-test`)
+- [x] 4. Auto-detect + role classification (session mode)
+- [x] 5. Profile basic (aurora + neon_city live on device)
+- [x] 6. Profile hot-swap (live YAML edit → reload, error recovery)
+- [ ] 7. Profile rotation (3 profiles, timed swap)
+- [ ] 8. Health monitor (probe lifecycle + telemetry)
+- [ ] 9. Offline/online detection (power cycle during session)
 
-   **If it fails** — see `plans/noise-robust-onset.md` "If it doesn't work" section for decision tree (kernel tuning, fill-forward, Phase 3b band fusion).
+### Resume here
 
-2. **Crossfade boundary detection** — Play a crossfaded playlist (Spotify crossfade 5-12s):
-   ```bash
-   python -m dreamsync govee-live --device 10.126.166.180:7:primary:ptreal \
-       --duration 600 --crossfade-detect --debug-mood --telemetry-dir out/crossfade-test
-   ```
-   - "Song boundary detected [crossfade]" at track transitions
-   - No false triggers during verse→chorus or breakdowns
-   - Telemetry shows `"boundary_type": "crossfade"` in song summaries
-   - May need to tune `CrossfadeConfig` thresholds
+Next test is **7. Profile rotation**:
 
-### With lights (home)
+```bash
+python -m dreamsync govee-live --device 10.126.166.180:7:primary:ptreal --duration 120 --profile-rotation aurora,neon_city,midnight_rave --rotation-interval 30 --debug-mood
+```
 
-3. **Auto-detect + session** — First end-to-end YAML config test:
-   ```bash
-   python -m dreamsync session --config devices.yaml --debug-mood --telemetry-dir out/
-   ```
-   - LAN devices → `realtime`, BLE → classified by latency
-   - Unreachable devices logged and skipped
-   - All reachable devices respond to music
+Then **8. Health monitor** and **9. Offline/online** — see `VALIDATION_TESTS.md` Phase 3.
 
-4. **Infinite session stability** — 15-30+ minutes:
-   - Ctrl+C cleanly shuts down all devices
-   - No memory growth or degraded performance
-   - Song boundaries fire across multiple songs
-   - Mood/effect transitions feel right
+### After validation
 
-5. **Tuning pass** — Review telemetry, adjust mood thresholds and effect weights if needed.
-
-### Color profiles (live validation)
-
-7. **Profile basic** — Run with a built-in profile and verify palette selection:
-   ```bash
-   python -m dreamsync govee-live --device 10.126.166.180:7:primary:ptreal \
-       --duration 120 --profile aurora --debug-mood
-   ```
-   - Debug output shows aurora palette names
-   - Mood transitions pick from profile-defined palettes/effects
-   - Effects cycle from profile's effect pools
-
-8. **Profile hot-swap** — Edit profile YAML during a live session:
-   - Change a palette color → observe change within ~2s
-   - Introduce a YAML syntax error → watcher logs warning, old profile stays active
-   - Fix syntax error → watcher picks up the fixed version
-
-9. **Profile rotation** — Verify timed rotation through multiple profiles:
-   ```bash
-   python -m dreamsync govee-live --device 10.126.166.180:7:primary:ptreal \
-       --duration 300 --profile-rotation aurora,neon_city,midnight_rave --rotation-interval 60 --debug-mood
-   ```
-   - Profile switches every 60s
-   - Debug output shows new palette names after each switch
+- Noisy-environment beat detection (bar/coffee shop) — see `plans/noise-robust-onset.md`
+- Crossfade boundary detection tuning
+- Infinite session stability (15-30+ min)
+- Tuning pass (mood thresholds, effect weights)
 
 ---
 
@@ -89,7 +46,7 @@ All core features including color profiles are implemented and unit tested (496 
 | Noise-robust onset detection (Phase 1+2) | 2/26 | 15 |
 | HPSS percussive onset (Phase 3a) | 2/26 | 10 |
 
-## Mk II — In Progress
+## Mk II — Completed Features
 
 | Feature | Date | Tests |
 |---|---|---|
@@ -101,43 +58,6 @@ All core features including color profiles are implemented and unit tested (496 
 | Device health monitor (probe loop, offline/online, role reclass, discovery) | 2/26 | 31 |
 
 See `plans/color-profiles.md` and `plans/device-health-monitor.md` for architecture details.
-
-### Device health monitor (live validation)
-
-10. **Health monitor cold test** — No music, just verify probe lifecycle:
-    ```bash
-    python -m dreamsync session --config devices.yaml --health-monitor --health-interval 15 --debug-mood
-    ```
-    - Health monitor logs appear every ~15s (device status + latency)
-    - Ctrl+C cleanly shuts down health thread + all devices
-    - No errors or thread leaks
-
-11. **Offline detection** — Start session with health monitor, then unplug/power off a device:
-    ```bash
-    python -m dreamsync session --config devices.yaml --health-monitor --health-interval 15 --debug-mood
-    ```
-    - After 3 failed probes (~45s): `WARNING: Device X went offline`
-    - Adapter is paused (no UDP errors spamming logs)
-    - Other devices continue receiving frames normally
-
-12. **Online recovery** — Power the offline device back on:
-    - After 2 successful probes (~30s): `INFO: Device X back online`
-    - Device resumes receiving frames immediately
-    - No manual intervention required
-
-13. **Health + telemetry** — Verify health snapshots in JSONL:
-    ```bash
-    python -m dreamsync session --config devices.yaml --health-monitor --health-interval 15 \
-        --telemetry-dir out/health-test
-    ```
-    - Check `out/health-test/session-*/song-*.jsonl` for `"kind":"device_health"` rows
-    - Rows contain per-device status, role, latency, failure counts
-
-14. **Discovery scan** — Verify new device detection (optional):
-    ```bash
-    python -m dreamsync session --config devices.yaml --health-monitor --health-discovery
-    ```
-    - `INFO: New device discovered: X.X.X.X (HXXXX)` if a new Govee device is on the network
 
 ---
 
