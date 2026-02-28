@@ -1,43 +1,161 @@
 # Next Steps
 
-## Active — Validation Tests (2/27)
+## Active — Validation Tests 11–13 (no hardware needed)
 
-### BPM stability — PASSED (test 10)
+### What to do
 
-Harmonic-lock layers + pipeline fixes validated on 15-min live test with 8 songs:
+Run a single 30-minute live test with music playing through system audio. This covers three validation tests simultaneously:
 
-- **Layer 1: Pipeline fixes** — Closeness threshold (15%), last_bpm on rejection, EMA smoothing (alpha=0.3)
-- **Layer 2: Harmonic Classifier** — `_classify_harmonic()` with 15% closeness gate
-- **Layer 3: Harmonic-Resistant Lock** — `_apply_inertia()` requires 12 confirmations, returns last_bpm on rejection
+- **Test 11: Song boundary detection** — boundaries fire at actual song transitions, not mid-song
+- **Test 12: Mood & effect cycling** — mood state machine visits multiple states, effects cycle
+- **Test 13: Resource stability** — no memory leaks or hangs over 30 minutes
 
-**Live test results (histogram run, 8 songs, ~86K samples):**
+No Govee hardware needed — UDP frames silently drop on unreachable IPs. The full audio pipeline runs normally.
 
-| Metric | Baseline (Layers 2+3 only) | With pipeline fixes | Improvement |
-|---|---|---|---|
-| Stdev | 27.8 | **18.0** | -35% |
-| Range | 80.0–199.7 | **85.4–168.1** | Tightened 37% |
-| 1x ratio | 44.5% | **69.0%** | +24.5pp |
-| 2/3x ratio | 18.3% | **6.1%** | -12.2pp |
-| Unstable songs | 6/7 | **0/8** | All stable |
-| HIGH-VARIANCE windows | 27/30 | **3/30** | At transitions only |
-| Outliers (<40 or >220) | 0% | 0% | — |
+### How to run
 
-One song (song-003) flagged at 21% off-center — confirmed as a song transition zone, not a detector issue. All 3 HIGH-VARIANCE windows occur at song boundaries where tempo re-acquisition is expected.
+**Step 1:** Queue a 30+ minute playlist with 6–8 distinct songs. Mix tempos (90 BPM chill → 128 house → 170 DnB). Include at least one quiet-intro song and one crossfade if possible. Note the number of song transitions (songs − 1).
 
-See `plans/harmonic-lock.md` for the full plan and `out/longrun/bpm-analysis-histogram.txt` for raw data.
+**Step 2:** Start the 30-min run:
 
-### Resume here
+```bash
+mkdir -p out/longrun
+python -m dreamsync govee-live \
+  --device 10.126.166.180:7:primary:ptreal \
+  --duration 1800 \
+  --debug-mood \
+  --crossfade-detect \
+  --telemetry-dir out/longrun/boundary-30m \
+  2>&1 | tee out/longrun/boundary-30m-console.log
+```
 
-- [ ] 7–9. Profile rotation, health monitor, offline/online — **requires hardware**
-- [ ] 11–13. Song boundaries, mood cycling, resource stability — **no hardware needed, 30-min run**
-- Tuning pass (mood thresholds, effect weights)
+**Step 3 (optional, separate terminal):** Monitor memory:
 
-### Validation progress
+```bash
+while true; do
+  echo "$(date +%H:%M:%S) $(ps aux | grep 'dreamsync govee-live' | grep -v grep | awk '{print "RSS=" $6 "KB"}')" \
+    >> out/longrun/memory-30m.log
+  sleep 30
+done
+```
+
+### How to analyze
+
+After the run completes (or Ctrl+C), run these analysis commands:
+
+**Song boundaries (test 11):**
+
+```bash
+# Count boundary events
+grep -c "Song boundary" out/longrun/boundary-30m-console.log
+
+# Show timestamps
+grep "Song boundary" out/longrun/boundary-30m-console.log
+
+# Count telemetry song files (each boundary starts a new file)
+ls out/longrun/boundary-30m/session-*/song-*.jsonl | wc -l
+```
+
+**Mood & effects (test 12):**
+
+```bash
+python -c "
+import json, glob
+from collections import Counter
+moods = Counter()
+effects = Counter()
+total = 0
+for f in sorted(glob.glob('out/longrun/boundary-30m/session-*/song-*.jsonl')):
+    for line in open(f):
+        row = json.loads(line)
+        m = row.get('mood')
+        e = row.get('effect')
+        if m:
+            moods[m] += 1
+            total += 1
+        if e:
+            effects[e] += 1
+print(f'Total frames: {total}')
+print()
+print('Mood distribution:')
+for mood, count in moods.most_common():
+    print(f'  {mood}: {count} ({100*count/total:.1f}%)')
+print()
+print(f'Unique effects seen: {len(effects)}')
+for effect, count in effects.most_common(10):
+    print(f'  {effect}: {count}')
+"
+```
+
+**Resource stability (test 13):**
+
+```bash
+cat out/longrun/memory-30m.log
+```
+
+(On Windows the `ps aux` pattern may not work — use Task Manager or `Get-Process` in PowerShell instead.)
+
+### Pass criteria
+
+**Test 11 — Song boundaries:**
+- Boundary count matches actual song transitions (±1 for crossfades)
+- No false boundaries mid-song (especially during quiet breakdowns)
+- Each `song-NNN.jsonl` file corresponds to roughly one song duration
+- Crossfade boundaries (if any) logged as `[crossfade]` not `[silence]`
+
+**Test 12 — Mood & effects:**
+- At least 2 distinct mood states visited (ideally 3+ with varied music)
+- No single mood > 90% of total frames (would indicate stuck state)
+- At least 3 distinct effects cycled through
+- Effect names change over time (not stuck on one effect)
+
+**Test 13 — Resource stability:**
+- RSS memory does not grow by more than 100 MB over the 30-minute run
+- No `MemoryError` or `OSError` in the console log
+- Process exits cleanly (no zombie threads)
+
+### If something fails
+
+| Problem | Where to look | What to change |
+|---|---|---|
+| Too many false boundaries | `SongBoundaryDetector` in `src/dreamsync/live.py:666–721` — raise `silence_threshold_rms` (default 0.015) or `min_song_frames` (default ~120s) | |
+| No boundaries detected | Same class — lower `silence_threshold_rms`, check that music is actually playing through system audio loopback | |
+| Crossfade boundaries missing | `CrossfadeBoundaryDetector` in `src/dreamsync/live.py:752–846` — lower vote `threshold` (default 0.50) or adjust signal weights in `CrossfadeConfig` (line 723) | |
+| Mood stuck on CHILL | `MoodClassifier` in `src/dreamsync/mood.py:41–161` — lower `chill_energy_ceiling` (default 0.20). Check `--debug-mood` output for energy values | |
+| Effects not cycling | `EffectCycler` in `src/dreamsync/effects.py:140–321` — check `cycle_interval` (default 16s). Mood pools defined at line 106 | |
+| Memory leak | Check `deque` buffers in `LiveBpmEstimator` (`src/dreamsync/live.py`) — all should have `maxlen`. Check telemetry writer flushes per-song | |
+
+### Key file reference
+
+| Component | File | Key classes/lines |
+|---|---|---|
+| Song boundary (silence) | `src/dreamsync/live.py` | `SongBoundaryDetector` (line 666), `.update(rms)` returns bool |
+| Song boundary (crossfade) | `src/dreamsync/live.py` | `CrossfadeBoundaryDetector` (line 752), `CrossfadeConfig` (line 723) |
+| Mood state machine | `src/dreamsync/mood.py` | `MoodClassifier` (line 41), `MoodConfig` (line 14), `Mood` enum (line 7) |
+| Effect cycling | `src/dreamsync/effects.py` | `EffectCycler` (line 140), `MOOD_EFFECTS` (line 106), `MOOD_PALETTES` (line 34) |
+| Telemetry | `src/dreamsync/telemetry.py` | `SongTelemetryWriter` (line 12), `.write_frame()`, `.on_boundary()`, `.close()` |
+| Main loop | `src/dreamsync/live.py` | `run_live_to_govee()` (line 1320), boundary check (line 1459), mood update (line 1555) |
+| CLI flags | `src/dreamsync/cli.py` | `--crossfade-detect` (line 225), `--debug-mood`, `--telemetry-dir` |
+| BPM analysis script | `scripts/analyze_bpm.py` | Per-song breakdown, 30s windowed view, harmonic ratios |
+| Unit tests (boundaries) | `tests/test_song_boundary.py` | 14 tests for silence detector |
+| Unit tests (crossfade) | `tests/test_crossfade_boundary.py` | 13 tests for crossfade detector |
+| Unit tests (mood) | `tests/test_mood.py` | Mood transitions, DROP detection, hysteresis |
+| Unit tests (effects) | `tests/test_effects.py` | Preset selection, timing, mood changes |
+| Unit tests (telemetry) | `tests/test_telemetry.py` | JSONL writing, file rotation, summaries |
+
+### Full validation progress
 
 - [x] 1–6. Unit tests, scan, connectivity, auto-detect, profiles, hot-swap
 - [ ] 7–9. Profile rotation, health monitor, offline/online — **requires hardware**
 - [x] 10. BPM stability — **PASSED** (stdev 18.0, 0 unstable songs, 0% outliers)
-- [ ] 11–13. Song boundaries, mood cycling, resource stability — **no hardware needed**
+- [ ] 11. Song boundary detection — **ready to run** (30 min, no hardware)
+- [ ] 12. Mood & effect cycling — **shared with test 11**
+- [ ] 13. Resource stability — **shared with test 11**
+
+### After tests 11–13
+
+- Hardware tests 7–9 when devices available
+- Tuning pass (mood thresholds, effect weights)
 
 ---
 
