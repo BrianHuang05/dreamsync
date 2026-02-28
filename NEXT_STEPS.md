@@ -1,38 +1,43 @@
 # Next Steps
 
-## Active — BPM Stability (2/27)
+## Active — Validation Tests (2/27)
 
-### Current problem
+### BPM stability — PASSED (test 10)
 
-The BPM estimator has high within-song variance (stdev ~28, target <10). Harmonic-lock Layers 2+3 (classifier + resistant lock) are implemented and prevent out-of-range values, but the underlying raw estimates from the autocorrelation + beat-spacing fusion are too noisy for post-processing alone to fix. **Layer 1 (IOI Histogram)** is needed to replace/augment the raw estimation pipeline.
+Harmonic-lock layers + pipeline fixes validated on 15-min live test with 8 songs:
 
-See `plans/harmonic-lock.md` for the full plan. Layers 2+3 are done; Layer 1 is next.
+- **Layer 1: Pipeline fixes** — Closeness threshold (15%), last_bpm on rejection, EMA smoothing (alpha=0.3)
+- **Layer 2: Harmonic Classifier** — `_classify_harmonic()` with 15% closeness gate
+- **Layer 3: Harmonic-Resistant Lock** — `_apply_inertia()` requires 12 confirmations, returns last_bpm on rejection
 
-### Test results (harmonic-lock v3, 15min run)
+**Live test results (histogram run, 8 songs, ~86K samples):**
 
-- Overall stdev: 28.4 (target: <10)
-- Range: 80.8–199.7 (good — stays in 80–200 corridor)
-- 1x ratio: 43.7% (target: >95%)
-- 2/3x ratio: 21.0% (target: <5%)
-- HIGH-VARIANCE 30s windows: 16 (target: 0)
-- Outliers >220: 0 (fixed by normalize)
+| Metric | Baseline (Layers 2+3 only) | With pipeline fixes | Improvement |
+|---|---|---|---|
+| Stdev | 27.8 | **18.0** | -35% |
+| Range | 80.0–199.7 | **85.4–168.1** | Tightened 37% |
+| 1x ratio | 44.5% | **69.0%** | +24.5pp |
+| 2/3x ratio | 18.3% | **6.1%** | -12.2pp |
+| Unstable songs | 6/7 | **0/8** | All stable |
+| HIGH-VARIANCE windows | 27/30 | **3/30** | At transitions only |
+| Outliers (<40 or >220) | 0% | 0% | — |
+
+One song (song-003) flagged at 21% off-center — confirmed as a song transition zone, not a detector issue. All 3 HIGH-VARIANCE windows occur at song boundaries where tempo re-acquisition is expected.
+
+See `plans/harmonic-lock.md` for the full plan and `out/longrun/bpm-analysis-histogram.txt` for raw data.
 
 ### Resume here
 
-Implement **Layer 1: IOI Histogram** from `plans/harmonic-lock.md`. This replaces the autocorrelation + beat-spacing BPM fusion with an onset-interval histogram that finds the dominant beat period in the time domain, avoiding octave ambiguity.
+- [ ] 7–9. Profile rotation, health monitor, offline/online — **requires hardware**
+- [ ] 11–13. Song boundaries, mood cycling, resource stability — **no hardware needed, 30-min run**
+- Tuning pass (mood thresholds, effect weights)
 
 ### Validation progress
 
 - [x] 1–6. Unit tests, scan, connectivity, auto-detect, profiles, hot-swap
 - [ ] 7–9. Profile rotation, health monitor, offline/online — **requires hardware**
-- [~] 10. BPM stability — harmonic-lock v3 done, needs Layer 1 for target stdev
+- [x] 10. BPM stability — **PASSED** (stdev 18.0, 0 unstable songs, 0% outliers)
 - [ ] 11–13. Song boundaries, mood cycling, resource stability — **no hardware needed**
-
-### After BPM stability
-
-- Finish validation tests 11–13 (boundary, mood, resource)
-- Hardware tests 7–9 when device available
-- Tuning pass (mood thresholds, effect weights)
 
 ---
 

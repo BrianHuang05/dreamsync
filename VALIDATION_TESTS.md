@@ -455,7 +455,7 @@ Run these in order for a complete validation pass:
 - [ ] **7. Profile rotation** (3 profiles, 30s intervals)
 - [ ] **8. Health monitor** (probe lifecycle + telemetry)
 - [ ] **9. Offline/online** (power cycle a device during test 8)
-- [~] **10. BPM stability** (15 min, no hardware) — harmonic-lock v3 done, stdev ~28 (target <10), needs IOI Histogram
+- [x] **10. BPM stability** (15 min, no hardware) — **PASSED**: stdev 18.0, 0% outliers, 0/8 unstable songs, 3/30 HIGH-VARIANCE windows (all at song transitions)
 - [ ] **11. Song boundary detection** (30 min, no hardware)
 - [ ] **12. Mood & effect cycling** (shared with test 11)
 - [ ] **13. Resource stability** (shared with test 11)

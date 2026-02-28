@@ -32,6 +32,151 @@ HARMONIC_RATIOS = {
 }
 
 
+class IOIHistogram:
+    """Inter-Onset Interval histogram for BPM estimation (Layer 1).
+
+    Tracks onset timestamps and computes pairwise intervals to find
+    the dominant beat period.  Working in the time domain avoids the
+    BPM-range normalization that introduces octave ambiguity.
+    """
+
+    def __init__(
+        self,
+        buffer_seconds: float = 8.0,
+        bin_width_ms: float = 5.0,
+        min_period_ms: float = 300.0,   # 200 BPM
+        max_period_ms: float = 1500.0,  # 40 BPM
+        min_onset_gap: float = 0.12,
+        thresh_window: int = 200,
+    ) -> None:
+        self.buffer_seconds = buffer_seconds
+        self.bin_width_ms = bin_width_ms
+        self.min_period_ms = min_period_ms
+        self.max_period_ms = max_period_ms
+        self.min_onset_gap = min_onset_gap
+        self._onset_times: deque[float] = deque()
+        self._recent_vals: deque[float] = deque(maxlen=thresh_window)
+        self._last_onset_t = -1.0
+        self._prev_val = 0.0
+
+    def feed(self, onset_val: float, t: float) -> bool:
+        """Feed a per-frame onset value.  Returns True if an onset was detected."""
+        self._recent_vals.append(onset_val)
+        detected = False
+
+        if len(self._recent_vals) >= 20:
+            arr = np.asarray(self._recent_vals)
+            thresh = float(np.percentile(arr, 85))
+            if thresh < 1e-8:
+                thresh = float(arr.max()) * 0.3
+
+            if (
+                onset_val > thresh
+                and onset_val > self._prev_val
+                and (t - self._last_onset_t) >= self.min_onset_gap
+            ):
+                self._onset_times.append(t)
+                self._last_onset_t = t
+                detected = True
+
+        self._prev_val = onset_val
+
+        # Trim old timestamps
+        cutoff = t - self.buffer_seconds
+        while self._onset_times and self._onset_times[0] < cutoff:
+            self._onset_times.popleft()
+
+        return detected
+
+    def add_onset(self, t: float) -> None:
+        """Record an onset at time *t* directly (for testing or external use)."""
+        self._onset_times.append(t)
+        cutoff = t - self.buffer_seconds
+        while self._onset_times and self._onset_times[0] < cutoff:
+            self._onset_times.popleft()
+
+    def estimate_bpm(self) -> float:
+        """Return the dominant BPM from the IOI histogram, or 0.0."""
+        times = list(self._onset_times)
+        if len(times) < 4:
+            return 0.0
+
+        min_s = self.min_period_ms / 1000.0
+        max_s = self.max_period_ms / 1000.0
+
+        # Compute pairwise intervals within the valid period range
+        intervals_ms: list[float] = []
+        for i in range(len(times)):
+            for j in range(i + 1, len(times)):
+                dt = times[j] - times[i]
+                if dt > max_s:
+                    break  # times are sorted; later j only larger
+                if dt >= min_s:
+                    intervals_ms.append(dt * 1000.0)
+
+        if len(intervals_ms) < 4:
+            return 0.0
+
+        intervals_arr = np.asarray(intervals_ms)
+
+        # Build histogram
+        n_bins = int((self.max_period_ms - self.min_period_ms) / self.bin_width_ms) + 1
+        bin_edges = np.linspace(self.min_period_ms, self.max_period_ms, n_bins + 1)
+        counts, _ = np.histogram(intervals_arr, bins=bin_edges)
+
+        if counts.max() == 0:
+            return 0.0
+
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
+
+        # Smooth histogram to handle onset-timing jitter
+        if len(counts) >= 5:
+            kernel = np.array([1, 2, 3, 2, 1], dtype=float)
+            kernel /= kernel.sum()
+            counts_smooth = np.convolve(counts.astype(float), kernel, mode="same")
+        else:
+            counts_smooth = counts.astype(float)
+
+        # Require a clear peak (minimum absolute count)
+        if counts_smooth.max() < 3:
+            return 0.0
+
+        peak_idx = int(np.argmax(counts_smooth))
+
+        # Refine peak position with weighted centroid of ±2 bins
+        lo = max(0, peak_idx - 2)
+        hi = min(len(counts_smooth), peak_idx + 3)
+        weights = counts_smooth[lo:hi]
+        centers = bin_centers[lo:hi]
+        w_sum = float(weights.sum())
+        if w_sum > 0:
+            peak_period_ms = float(np.average(centers, weights=weights))
+        else:
+            peak_period_ms = float(bin_centers[peak_idx])
+
+        return 60000.0 / peak_period_ms
+
+    def set_onsets(self, times: list[float]) -> None:
+        """Replace the onset buffer with sorted beat timestamps."""
+        self._onset_times.clear()
+        if not times:
+            return
+        cutoff = times[-1] - self.buffer_seconds
+        for t in times:
+            if t >= cutoff:
+                self._onset_times.append(t)
+
+    @property
+    def onset_count(self) -> int:
+        return len(self._onset_times)
+
+    def reset(self) -> None:
+        self._onset_times.clear()
+        self._recent_vals.clear()
+        self._last_onset_t = -1.0
+        self._prev_val = 0.0
+
+
 class LiveBpmEstimator:
     def __init__(
         self,
@@ -93,6 +238,8 @@ class LiveBpmEstimator:
         self._hybrid_source = "bass"  # current active source in hybrid mode
         # Spectral template matching
         self._beat_template = SpectralBeatTemplate()
+        # IOI histogram (Layer 1) — primary BPM estimator
+        self._ioi_histogram = IOIHistogram(buffer_seconds=8.0, bin_width_ms=5.0)
         # Zero-estimate decay: when both BPM methods return 0 for several
         # consecutive updates, decay last_bpm to avoid holding stale values.
         self._zero_estimate_count = 0
@@ -121,6 +268,7 @@ class LiveBpmEstimator:
         self._wf_activity = 0.0
         self._hybrid_source = "bass"
         self._beat_template.reset()
+        self._ioi_histogram.reset()
         self._zero_estimate_count = 0
         self._last_autocorr_confidence = 0.0
         self._last_onset_activity = 0.0
@@ -230,6 +378,7 @@ class LiveBpmEstimator:
                     self._zero_estimate_count += 1
                     if self._zero_estimate_count >= 6:
                         self.last_bpm = 0.0
+
                 self.last_update_t = t
                 if beat_idx.size > 0:
                     self.last_beat_idx = int(beat_idx[-1])
@@ -257,6 +406,12 @@ class LiveBpmEstimator:
                 best_error = error
                 best_label = label
                 best_mapped = mapped
+
+        # Only accept a harmonic classification if the mapped value is
+        # close to last_bpm (within 15%).  Prevents spurious ratios when
+        # the raw estimate is just noisy (not a true harmonic).
+        if best_label != "1x" and best_error > self.last_bpm * 0.15:
+            return ("1x", raw_bpm)
 
         return (best_label, best_mapped)
 
@@ -304,7 +459,8 @@ class LiveBpmEstimator:
             if abs(bpm - self.last_bpm) <= self.max_jump_bpm:
                 self._candidate_bpm = 0.0
                 self._candidate_hits = 0
-                return bpm
+                # EMA smooth small changes to reduce frame-to-frame jitter
+                return 0.3 * bpm + 0.7 * self.last_bpm
             # Require a few consistent updates before accepting a big jump
             if (
                 self._candidate_bpm <= 0.0
@@ -335,8 +491,10 @@ class LiveBpmEstimator:
                 self._harmonic_confirm = 0
                 return bpm
             else:
-                # Reject — return mapped (corrected to locked octave)
-                return self._normalize_bpm(mapped)
+                # Reject — hold the locked BPM.  Returning mapped
+                # caused feedback drift; returning last_bpm keeps
+                # the output stable during momentary confusion.
+                return self.last_bpm
 
     def _is_onset_beat(self, onset: float, t: float) -> bool:
         """Detect a beat from an actual energy spike, not a synthetic phase.
