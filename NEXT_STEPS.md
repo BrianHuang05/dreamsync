@@ -29,14 +29,16 @@ python -m dreamsync govee-live \
   2>&1 | tee out/longrun/boundary-30m-console.log
 ```
 
-**Step 3 (optional, separate terminal):** Monitor memory:
+**Step 3 (optional, separate terminal):** Monitor memory. On Windows/MINGW, `ps aux` doesn't work — use PowerShell instead:
 
-```bash
-while true; do
-  echo "$(date +%H:%M:%S) $(ps aux | grep 'dreamsync govee-live' | grep -v grep | awk '{print "RSS=" $6 "KB"}')" \
-    >> out/longrun/memory-30m.log
-  sleep 30
-done
+```powershell
+# Run in a PowerShell window (not MINGW bash)
+while ($true) {
+  $p = Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match 'dreamsync' }
+  if ($p) { "$(Get-Date -Format HH:mm:ss) RSS=$([math]::Round($p.WorkingSet64/1KB))KB" | Out-File -Append out\longrun\memory-30m.log }
+  else { "$(Get-Date -Format HH:mm:ss) (not running)" | Out-File -Append out\longrun\memory-30m.log }
+  Start-Sleep 30
+}
 ```
 
 ### How to analyze
@@ -46,11 +48,11 @@ After the run completes (or Ctrl+C), run these analysis commands:
 **Song boundaries (test 11):**
 
 ```bash
-# Count boundary events
-grep -c "Song boundary" out/longrun/boundary-30m-console.log
+# Count boundary events (-a needed on MINGW — log has Unicode em-dash)
+grep -ac "Song boundary" out/longrun/boundary-30m-console.log
 
-# Show timestamps
-grep "Song boundary" out/longrun/boundary-30m-console.log
+# Show each boundary with type ([silence] or [crossfade])
+grep -a "Song boundary" out/longrun/boundary-30m-console.log
 
 # Count telemetry song files (each boundary starts a new file)
 ls out/longrun/boundary-30m/session-*/song-*.jsonl | wc -l
@@ -148,9 +150,9 @@ cat out/longrun/memory-30m.log
 - [x] 1–6. Unit tests, scan, connectivity, auto-detect, profiles, hot-swap
 - [ ] 7–9. Profile rotation, health monitor, offline/online — **requires hardware**
 - [x] 10. BPM stability — **PASSED** (stdev 18.0, 0 unstable songs, 0% outliers)
-- [ ] 11. Song boundary detection — **ready to run** (30 min, no hardware)
-- [ ] 12. Mood & effect cycling — **shared with test 11**
-- [ ] 13. Resource stability — **shared with test 11**
+- [x] 11. Song boundary detection — **PASSED** (13 boundaries for ~14 songs, all `[silence]`, 0 false positives)
+- [x] 12. Mood & effect cycling — **PASSED** (4 moods: CHILL 50.6%, DROP 19.9%, GROOVE 15.6%, HYPE 13.9%; 9 distinct effects)
+- [x] 13. Resource stability — **PASSED** (0 errors, 0 dropped blocks, clean exit; memory monitor N/A — `ps aux` doesn't work on Windows, use PowerShell next time)
 
 ### After tests 11–13
 

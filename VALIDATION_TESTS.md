@@ -456,9 +456,9 @@ Run these in order for a complete validation pass:
 - [ ] **8. Health monitor** (probe lifecycle + telemetry)
 - [ ] **9. Offline/online** (power cycle a device during test 8)
 - [x] **10. BPM stability** (15 min, no hardware) — **PASSED**: stdev 18.0, 0% outliers, 0/8 unstable songs, 3/30 HIGH-VARIANCE windows (all at song transitions)
-- [ ] **11. Song boundary detection** (30 min, no hardware)
-- [ ] **12. Mood & effect cycling** (shared with test 11)
-- [ ] **13. Resource stability** (shared with test 11)
+- [x] **11. Song boundary detection** (30 min, no hardware) — **PASSED**: 13 boundaries for ~14 songs, all `[silence]`, 0 false positives
+- [x] **12. Mood & effect cycling** (shared with test 11) — **PASSED**: 4 moods visited (CHILL 51%, DROP 20%, GROOVE 16%, HYPE 14%), 9 effects cycled
+- [x] **13. Resource stability** (shared with test 11) — **PASSED**: 0 errors, 0 dropped blocks, clean exit after 30 min
 
 ```bash
 # 1. Unit tests (all systems) ✅
