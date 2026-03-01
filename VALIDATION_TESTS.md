@@ -452,9 +452,9 @@ Run these in order for a complete validation pass:
 - [x] **4. Auto-detect + role classification**
 - [x] **5. Profile basic** (aurora + neon_city comparison)
 - [x] **6. Profile hot-swap** (edit aurora.yaml while running)
-- [ ] **7. Profile rotation** (3 profiles, 30s intervals)
-- [ ] **8. Health monitor** (probe lifecycle + telemetry)
-- [ ] **9. Offline/online** (power cycle a device during test 8)
+- [x] **7. Profile rotation** (3 profiles, 30s intervals) — **PASSED**
+- [x] **8. Health monitor** (probe lifecycle + telemetry) — **PASSED**
+- [ ] **9. Offline/online** (power cycle a device during test 8) — LAN reconnects reliably; BLE sometimes fails to reconnect even after >1 min
 - [x] **10. BPM stability** (15 min, no hardware) — **PASSED**: stdev 18.0, 0% outliers, 0/8 unstable songs, 3/30 HIGH-VARIANCE windows (all at song transitions)
 - [x] **11. Song boundary detection** (30 min, no hardware) — **PASSED**: 13 boundaries for ~14 songs, all `[silence]`, 0 false positives
 - [x] **12. Mood & effect cycling** (shared with test 11) — **PASSED**: 4 moods visited (CHILL 51%, DROP 20%, GROOVE 16%, HYPE 14%), 9 effects cycled

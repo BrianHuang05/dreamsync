@@ -160,11 +160,14 @@ class EffectCycler:
     def set_profile(self, profile: Any | None) -> None:
         """Hot-swap the active profile (single reference assignment, GIL-safe).
 
-        Clears the cached mood so the next update() re-picks palette/effect
-        from the new profile (avoids stale palette name references).
+        Clears cached mood, palette, and drop state so the next update()
+        re-picks everything from the new profile (avoids stale palette name
+        references that would crash _resolve_palette_colors).
         """
         self._profile = profile
         self._current_mood = None
+        self._palette_name = None
+        self._in_drop = False
 
     def reset(self) -> None:
         """Clear accumulated state for a new song."""
