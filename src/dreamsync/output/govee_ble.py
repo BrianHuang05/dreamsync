@@ -238,6 +238,7 @@ class GoveeBleAdapter:
         self._lock = threading.Lock()
         # Track last color to avoid redundant writes
         self._last_color: tuple[int, int, int, int] | None = None
+        self.paused: bool = False
 
     @property
     def connected(self) -> bool:
@@ -282,6 +283,8 @@ class GoveeBleAdapter:
         *brightness* is 0-100.  Drops oldest update if queue is full (we only
         care about the latest color).
         """
+        if self.paused:
+            return
         key = (r, g, b, brightness)
         if key == self._last_color:
             return  # skip identical update
@@ -337,8 +340,38 @@ class GoveeBleAdapter:
         min_interval = 1.0 / max(0.1, self.config.max_fps)
 
         while self._started:
+            # Wait while paused — don't attempt connections
+            while self.paused and self._started:
+                await asyncio.sleep(1.0)
+            if not self._started:
+                return
+
+            # Re-scan to get fresh advertisement data before connecting
+            target_addr = self.config.address
+            if self._state.reconnect_attempts > 0:
+                try:
+                    _logger.info(
+                        "Running BLE scan before reconnecting to %s ...",
+                        target_addr,
+                    )
+                    scanner = bleak.BleakScanner()
+                    discovered = await scanner.discover(timeout=5.0)
+                    found = any(
+                        d.address.upper() == target_addr.upper()
+                        for d in discovered
+                    )
+                    if not found:
+                        _logger.warning(
+                            "BLE device %s not found in scan, will retry",
+                            target_addr,
+                        )
+                        await asyncio.sleep(self.config.reconnect_delay)
+                        continue
+                except Exception as exc:
+                    _logger.debug("BLE pre-connect scan failed: %s", exc)
+
             client = bleak.BleakClient(
-                self.config.address,
+                target_addr,
                 timeout=self.config.connect_timeout,
             )
             try:

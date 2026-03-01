@@ -1,39 +1,21 @@
 # Next Steps
 
-## Remaining — Hardware Validation Tests 7–9
-
-These require Govee LAN devices powered on and connected. See `VALIDATION_TESTS.md` for full details.
-
-- [ ] **7. Profile rotation** — 3 profiles rotating every 30s, verify visible color changes
-- [ ] **8. Health monitor** — probe lifecycle, telemetry snapshots, clean shutdown
-- [ ] **9. Offline/online** — power-cycle a device during test 8, verify auto-pause/resume
-
-### Commands
-
-```bash
-# 7. Profile rotation (2 min)
-python -m dreamsync govee-live --device 10.126.166.180:7:primary:ptreal --duration 120 --profile-rotation aurora,neon_city,midnight_rave --rotation-interval 30 --debug-mood
-
-# 8. Health monitor (run until satisfied, Ctrl+C)
-python -m dreamsync session --config devices.yaml --health-monitor --health-interval 15 --debug-mood --telemetry-dir out/health-test
-
-# 9. Offline/online — power-cycle a device while test 8 is running
-```
-
-### After hardware tests
-
-- Tuning pass (mood thresholds, effect weights) — see README.md "Tuning reference" section
-
----
-
 ## Validation Progress
 
+All 13 validation tests passed.
+
 - [x] 1–6. Unit tests, scan, connectivity, auto-detect, profiles, hot-swap
-- [ ] 7–9. Profile rotation, health monitor, offline/online — **requires hardware**
+- [x] 7. Profile rotation — **PASSED**
+- [x] 8. Health monitor — **PASSED**
+- [x] 9. Offline/online — **PASSED** (LAN + BLE reconnect reliably after BLE health monitor fixes)
 - [x] 10. BPM stability — **PASSED** (stdev 18.0, 0 unstable songs, 0% outliers)
 - [x] 11. Song boundary detection — **PASSED** (13 boundaries / ~14 songs, all `[silence]`, 0 false positives)
 - [x] 12. Mood & effect cycling — **PASSED** (4 moods: CHILL 51%, DROP 20%, GROOVE 16%, HYPE 14%; 9 effects)
 - [x] 13. Resource stability — **PASSED** (0 errors, 0 dropped blocks, clean exit after 30 min)
+
+### Remaining
+
+- Tuning pass (mood thresholds, effect weights) — see README.md "Tuning reference" section
 
 ---
 

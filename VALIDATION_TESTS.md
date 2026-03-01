@@ -454,7 +454,7 @@ Run these in order for a complete validation pass:
 - [x] **6. Profile hot-swap** (edit aurora.yaml while running)
 - [x] **7. Profile rotation** (3 profiles, 30s intervals) — **PASSED**
 - [x] **8. Health monitor** (probe lifecycle + telemetry) — **PASSED**
-- [ ] **9. Offline/online** (power cycle a device during test 8) — LAN reconnects reliably; BLE sometimes fails to reconnect even after >1 min
+- [x] **9. Offline/online** (power cycle a device during test 8) — **PASSED**: LAN and BLE both reconnect reliably after BLE health monitor fixes
 - [x] **10. BPM stability** (15 min, no hardware) — **PASSED**: stdev 18.0, 0% outliers, 0/8 unstable songs, 3/30 HIGH-VARIANCE windows (all at song transitions)
 - [x] **11. Song boundary detection** (30 min, no hardware) — **PASSED**: 13 boundaries for ~14 songs, all `[silence]`, 0 false positives
 - [x] **12. Mood & effect cycling** (shared with test 11) — **PASSED**: 4 moods visited (CHILL 51%, DROP 20%, GROOVE 16%, HYPE 14%), 9 effects cycled
@@ -481,7 +481,7 @@ python -m dreamsync govee-live --device 10.126.166.180:7:primary:ptreal --durati
 # 6. Profile hot-swap (edit aurora.yaml while running) ✅
 python -m dreamsync session --config devices.yaml --profile aurora --debug-mood
 
-# 7. Profile rotation
+# 7. Profile rotation ✅
 python -m dreamsync govee-live --device 10.126.166.180:7:primary:ptreal --duration 120 --profile-rotation aurora,neon_city,midnight_rave --rotation-interval 30 --debug-mood
 
 # 8. Health monitor

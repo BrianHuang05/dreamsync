@@ -20,6 +20,7 @@ from dreamsync.output.auto_detect import (
     classify_role,
     probe_lan_device,
 )
+from dreamsync.output.govee_ble import GoveeBleAdapter
 from dreamsync.output.govee_lan import GoveeLanAdapter, MultiGoveeLanAdapter
 
 _logger = logging.getLogger(__name__)
@@ -47,6 +48,7 @@ class DeviceHealth:
 
     address: str
     role: str
+    device_type: str = "lan"                  # "lan" | "ble"
     status: str = "online"                    # "online" | "offline" | "degraded"
     consecutive_failures: int = 0
     consecutive_successes: int = 0
@@ -127,7 +129,18 @@ class DeviceHealthMonitor:
             self._health[addr] = DeviceHealth(
                 address=addr,
                 role=role.value if hasattr(role, 'value') else str(role),
+                device_type="lan",
                 last_seen_at=now,
+                last_probe_at=now,
+            )
+        # Include BLE followers keyed by MAC address
+        for ble_adapter in multi_adapter._ble_followers:
+            addr = ble_adapter.config.address
+            self._health[addr] = DeviceHealth(
+                address=addr,
+                role="follower",
+                device_type="ble",
+                last_seen_at=now if ble_adapter.connected else 0.0,
                 last_probe_at=now,
             )
 
@@ -167,7 +180,7 @@ class DeviceHealthMonitor:
             if self._stop_event.is_set():
                 break
 
-            # Sync health dict with current adapter list
+            # Sync health dict with current adapter list (LAN + BLE)
             current_addrs = set()
             for adapter, _renderer, role in self._multi.devices:
                 addr = adapter.config.device_ip
@@ -176,7 +189,18 @@ class DeviceHealthMonitor:
                     self._health[addr] = DeviceHealth(
                         address=addr,
                         role=role.value if hasattr(role, 'value') else str(role),
+                        device_type="lan",
                         last_seen_at=time.monotonic(),
+                    )
+            for ble_adapter in self._multi._ble_followers:
+                addr = ble_adapter.config.address
+                current_addrs.add(addr)
+                if addr not in self._health:
+                    self._health[addr] = DeviceHealth(
+                        address=addr,
+                        role="follower",
+                        device_type="ble",
+                        last_seen_at=time.monotonic() if ble_adapter.connected else 0.0,
                     )
             # Remove stale entries
             for addr in list(self._health.keys()):
@@ -198,6 +222,54 @@ class DeviceHealthMonitor:
 
     def _probe_device(self, addr: str, health: DeviceHealth) -> None:
         """Probe a single device and update its health state."""
+        if health.device_type == "ble":
+            self._probe_ble_device(addr, health)
+        else:
+            self._probe_lan_device(addr, health)
+
+    def _probe_ble_device(self, addr: str, health: DeviceHealth) -> None:
+        """Probe a BLE device by checking the adapter's connection status."""
+        now = time.monotonic()
+        health.last_probe_at = now
+
+        # Find the BLE adapter for this address
+        ble_adapter = self._find_ble_adapter(addr)
+        is_connected = ble_adapter is not None and ble_adapter.connected
+
+        if not is_connected:
+            health.consecutive_failures += 1
+            health.consecutive_successes = 0
+
+            if (health.consecutive_failures >= OFFLINE_THRESHOLD
+                    and health.status != "offline"):
+                health.status = "offline"
+                health.offline_since = now
+                _logger.warning("BLE device %s went offline", addr)
+                self._set_adapter_paused(addr, True)
+                if self._on_device_offline:
+                    try:
+                        self._on_device_offline(addr)
+                    except Exception as exc:
+                        _logger.warning("on_device_offline callback error: %s", exc)
+        else:
+            health.consecutive_successes += 1
+            health.consecutive_failures = 0
+            health.last_seen_at = now
+
+            if (health.status == "offline"
+                    and health.consecutive_successes >= ONLINE_THRESHOLD):
+                health.status = "online"
+                health.offline_since = None
+                _logger.info("BLE device %s back online", addr)
+                self._set_adapter_paused(addr, False)
+                if self._on_device_online:
+                    try:
+                        self._on_device_online(addr, LatencyStats(samples=[]))
+                    except Exception as exc:
+                        _logger.warning("on_device_online callback error: %s", exc)
+
+    def _probe_lan_device(self, addr: str, health: DeviceHealth) -> None:
+        """Probe a LAN device via UDP and update its health state."""
         now = time.monotonic()
         try:
             stats = probe_lan_device(
@@ -272,12 +344,24 @@ class DeviceHealthMonitor:
                             except Exception as exc:
                                 _logger.warning("on_role_changed callback error: %s", exc)
 
+    def _find_ble_adapter(self, addr: str) -> GoveeBleAdapter | None:
+        """Find the BLE adapter matching a MAC address."""
+        for ble_adapter in self._multi._ble_followers:
+            if ble_adapter.config.address.upper() == addr.upper():
+                return ble_adapter
+        return None
+
     def _set_adapter_paused(self, addr: str, paused: bool) -> None:
         """Set the paused flag on the adapter matching the given address."""
+        # Check LAN adapters
         for adapter, _renderer, _role in self._multi.devices:
             if adapter.config.device_ip == addr:
                 adapter.paused = paused
-                break
+                return
+        # Check BLE followers
+        ble = self._find_ble_adapter(addr)
+        if ble is not None:
+            ble.paused = paused
 
     def _run_discovery(self, known_addrs: set[str]) -> None:
         """Scan for new devices on the network."""
