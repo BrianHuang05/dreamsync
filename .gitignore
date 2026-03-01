@@ -6,4 +6,6 @@ __pycache__/
 .obsidian/
 .claude/
 out/
+dev/out/
 telemetry-test/
+dev/telemetry-test/
