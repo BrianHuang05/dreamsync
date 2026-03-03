@@ -52,6 +52,9 @@ def run_session(
     health_monitor: bool = False,
     health_interval: float = 30.0,
     health_discovery: bool = False,
+    spotify: bool = False,
+    spotify_client_id: str = "",
+    spotify_poll_interval: float = 2.0,
 ) -> dict[str, Any]:
     """Run an infinite DreamSync session from a YAML config.
 
@@ -130,6 +133,31 @@ def run_session(
             )
             profile_watcher.start()
 
+    # 4d. Spotify queue watcher
+    spotify_watcher = None
+    if spotify:
+        from dreamsync.spotify.auth import TokenStore, refresh_if_needed
+        from dreamsync.spotify.client import SpotifyClient
+        from dreamsync.spotify.queue_watcher import SpotifyQueueWatcher
+
+        token_store = TokenStore()
+        if not token_store.has_valid_token() and not refresh_if_needed(token_store):
+            print("Spotify: no valid token found. Run 'dreamsync spotify-auth' first.")
+            print("Continuing in v2 reactive mode.")
+        else:
+            client = SpotifyClient(token_store)
+            spotify_watcher = SpotifyQueueWatcher(
+                client,
+                poll_interval=spotify_poll_interval,
+                on_track_changed=lambda new, old: print(
+                    f"Spotify: now playing '{new.name}' by {new.artist}"
+                ),
+                on_queue_updated=lambda q: print(
+                    f"Spotify: queue updated ({len(q.queue)} upcoming tracks)"
+                ),
+            )
+            spotify_watcher.start()
+
     # 5. Signal handling
     stop_event = threading.Event()
     original_sigint = signal.getsignal(signal.SIGINT)
@@ -167,6 +195,8 @@ def run_session(
         )
     finally:
         # 7. Cleanup
+        if spotify_watcher is not None:
+            spotify_watcher.stop()
         if health_mon is not None:
             health_mon.stop()
         if profile_watcher is not None:

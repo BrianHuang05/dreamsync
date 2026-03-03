@@ -388,6 +388,42 @@ def build_parser() -> argparse.ArgumentParser:
         default=300.0,
         help="Seconds between profile rotations when using --profile-rotation (default: 300).",
     )
+    session.add_argument(
+        "--spotify",
+        action="store_true",
+        default=False,
+        help="Enable Spotify queue watcher (requires prior auth via spotify-auth).",
+    )
+    session.add_argument(
+        "--spotify-client-id",
+        type=str,
+        default=None,
+        help="Spotify app client ID (or set DREAMSYNC_SPOTIFY_CLIENT_ID env var).",
+    )
+    session.add_argument(
+        "--spotify-poll-interval",
+        type=float,
+        default=2.0,
+        help="Spotify playback poll interval in seconds (default: 2.0).",
+    )
+
+    # -- Spotify auth command ------------------------------------------------
+    spotify_auth = sub.add_parser(
+        "spotify-auth",
+        help="Authorize DreamSync with your Spotify account (OAuth PKCE).",
+    )
+    spotify_auth.add_argument(
+        "--client-id",
+        type=str,
+        required=True,
+        help="Spotify Developer App client ID.",
+    )
+    spotify_auth.add_argument(
+        "--port",
+        type=int,
+        default=8888,
+        help="Local redirect port for OAuth callback (default: 8888).",
+    )
 
     # -- Profile management commands -----------------------------------------
     profiles_cmd = sub.add_parser(
@@ -786,6 +822,17 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(summary, separators=(",", ":")))
         return 0
 
+    if args.command == "spotify-auth":
+        from .spotify.auth import start_auth_flow
+
+        try:
+            start_auth_flow(args.client_id, redirect_port=args.port)
+            print("Spotify authorization complete.")
+        except Exception as exc:
+            print(f"Spotify authorization failed: {exc}")
+            return 1
+        return 0
+
     if args.command == "session":
         from .session import run_session
 
@@ -811,6 +858,13 @@ def main(argv: list[str] | None = None) -> int:
         profile_path = None
         if profile is not None:
             profile_path = profile.source_path
+
+        import os
+
+        spotify_client_id = (
+            getattr(args, "spotify_client_id", None)
+            or os.environ.get("DREAMSYNC_SPOTIFY_CLIENT_ID", "")
+        )
 
         summary = run_session(
             config_path=args.config,
@@ -840,6 +894,9 @@ def main(argv: list[str] | None = None) -> int:
             health_monitor=getattr(args, "health_monitor", False),
             health_interval=getattr(args, "health_interval", 30.0),
             health_discovery=getattr(args, "health_discovery", False),
+            spotify=getattr(args, "spotify", False),
+            spotify_client_id=spotify_client_id,
+            spotify_poll_interval=getattr(args, "spotify_poll_interval", 2.0),
         )
         print(json.dumps(summary, separators=(",", ":")))
         return 0

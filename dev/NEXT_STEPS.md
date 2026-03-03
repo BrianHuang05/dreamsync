@@ -1,90 +1,112 @@
-# Next Steps
+# DreamSync — Next Steps
 
-## Validation Progress
+## Quick Reference
 
-All 13 validation tests passed.
-
-- [x] 1–6. Unit tests, scan, connectivity, auto-detect, profiles, hot-swap
-- [x] 7. Profile rotation — **PASSED**
-- [x] 8. Health monitor — **PASSED**
-- [x] 9. Offline/online — **PASSED** (LAN + BLE reconnect reliably after BLE health monitor fixes)
-- [x] 10. BPM stability — **PASSED** (stdev 18.0, 0 unstable songs, 0% outliers)
-- [x] 11. Song boundary detection — **PASSED** (13 boundaries / ~14 songs, all `[silence]`, 0 false positives)
-- [x] 12. Mood & effect cycling — **PASSED** (4 moods: CHILL 51%, DROP 20%, GROOVE 16%, HYPE 14%; 9 effects)
-- [x] 13. Resource stability — **PASSED** (0 errors, 0 dropped blocks, clean exit after 30 min)
-
-### Remaining
-
-- Tuning pass (mood thresholds, effect weights) — see README.md "Tuning reference" section
+- **Project**: Local audio-reactive Govee LED controller (LAN UDP / BLE). v2 complete, building v3.
+- **v3 vision**: Pre-sequenced show engine. See `dev/plans/v3-show-sequencer.md`.
+- **Platform**: Windows 11, bash/Unix shell syntax, Python 3.11+
+- **Install**: `pip install -e ".[session]"`
+- **Tests**: `pytest dev/tests/`
+- **Lint**: `ruff check src/`
+- **Branch**: `govee-lan-direct` (primary)
 
 ---
 
-## Completed Features
+## v3 Feature Checklist
 
-### Mk I
-
-| Feature | Date | Tests |
-|---|---|---|
-| Song boundary detection (silence-gap) | 2/25 | 14 |
-| Per-song telemetry | 2/25 | 11 |
-| Crossfade-aware boundaries | 2/25 | 13 |
-| Config file watcher (YAML edit → re-probe) | 2/26 | 21 |
-| Noise-robust onset detection (Phase 1+2) | 2/26 | 15 |
-| HPSS percussive onset (Phase 3a) | 2/26 | 10 |
-
-### Mk II
-
-| Feature | Date | Tests |
-|---|---|---|
-| Color profile system (YAML loader, validator, 8 built-ins) | 2/26 | 63 |
-| Profile-aware EffectCycler (palette/effect/param overrides) | 2/26 | 8 |
-| Profile CLI (`--profile`, `--auto-profile`, `profiles`, `profile-validate`) | 2/26 | — |
-| Profile hot-reload (ProfileWatcher → `set_profile()`) | 2/26 | 7 |
-| Profile rotation (`--profile-rotation`, timed swap) | 2/26 | 4 |
-| Device health monitor (probe loop, offline/online, role reclass, discovery) | 2/26 | 31 |
-| BPM harmonic-lock stabilization (classifier + resistant lock + pipeline fixes) | 2/27 | 95 |
-
-### Plans (retained)
-
-- `plans/harmonic-lock.md` — BPM stabilization design + live test results
-- `plans/color-profiles.md` — Color profile system architecture
-- `plans/device-health-monitor.md` — Health monitor design
-- `plans/smart-profile-swap.md` — Future: auto-swap profiles at song boundaries
+| # | Feature | Status | Plan |
+|---|---------|--------|------|
+| 1 | Spotify Queue Watcher | Code complete, needs manual validation | `dev/plans/feature-1-spotify-queue-watcher.md` |
+| 2 | Song Structure Analyzer | Not started | — |
+| 3 | Show Compiler | Not started | — |
+| 4 | Show Cache | Not started | — |
+| 5 | Playback Runtime | Not started | — |
+| 6 | v2 Fallback Switch | Not started | — |
 
 ---
 
-## Future — Pre-programmed Light Shows (separate project)
+## Current: Validate Feature 1 (Spotify Queue Watcher)
 
-A different project entirely: instead of reacting to live audio, **compile** a deterministic light show from a known playlist ahead of time.
+Code is written (`src/dreamsync/spotify/`), 30 unit tests pass, 599 total tests pass with no regressions. Manual validation steps remain.
 
-### How it differs from DreamSync
+### 1. Set up Spotify Developer App
 
-| | DreamSync (Mk I/II) | Show Compiler |
-|---|---|---|
-| Input | Live audio stream | Spotify playlist + offline audio files |
-| Analysis | Real-time (~5ms budget) | Offline (unlimited time, full song context) |
-| Decisions | Director makes mood/effect choices at runtime | All decisions made at compile time, optionally hand-tweaked |
-| Output | Direct device control | Timeline file (JSON/binary) → player runtime |
-| Runtime | Detection + rendering + output | Playback only (seek to timestamp, send frame) |
+- [x] Go to https://developer.spotify.com/dashboard and create an app (or use an existing one)
+- [x] Set the redirect URI to `http://127.0.0.1:8888/callback`
+- [x] Copy the **Client ID** from the app dashboard
 
-### Rough architecture
+### 2. Authorize DreamSync
 
-1. **Playlist import** — Spotify API to get track list, BPM, sections, audio features; or local audio analysis via librosa
-2. **Offline analysis** — Run beat detection, mood classification, section segmentation on full tracks with lookahead (knows what's coming)
-3. **Show compiler** — Map sections → effects + palettes (using Mk II profiles), generate a frame-by-frame timeline
-4. **Editor** — Optional manual tweaking: move boundaries, override colors, add cues
-5. **Player runtime** — Sync to Spotify playback position (or local audio), read timeline, send frames to devices
+- [x] Run: `dreamsync spotify-auth --client-id <YOUR_CLIENT_ID>`
+- [x] Browser opens, log in and approve the scopes
+- [x] Confirm the token was saved: `cat ~/.dreamsync/spotify_token.json`
+- [x] Verify the file contains `access_token`, `refresh_token`, `expires_at`, and `client_id`
 
-### What it reuses from DreamSync
+### 3. Test track change detection (headless — no lights needed)
 
-- Effect renderers (`render.py`) — same SCROLL, PULSE, BREATHE, etc.
-- Device output layer (`govee_lan.py`, `govee_ble.py`, `MultiGoveeLanAdapter`)
-- Device config and auto-detect (`auto_detect.py`, `config_watcher.py`)
-- Mood color profiles (Mk II)
+Start playing music in Spotify on any device, then run the watcher:
 
-### What it does NOT reuse
+```bash
+python dev/tests/manual_spotify_watcher.py
+```
 
-- Real-time audio capture and feature extraction
-- Live BPM estimator (would use offline analysis instead)
-- Director's runtime decision-making (replaced by the compiled timeline)
-- Song boundary detection (known from playlist metadata)
+- [x] Verify `TRACK CHANGED: "<song>" by <artist>` prints within 4 seconds of a song starting
+- [x] Skip to a different song — verify the new track prints within 4 seconds
+- [x] Verify `QUEUE UPDATED: N upcoming tracks` prints within 15 seconds
+
+### 4. Test one-shot playback & queue fetch (headless)
+
+Quick sanity check that the client can talk to the API at all:
+
+```bash
+python dev/tests/manual_spotify_oneshot.py
+```
+
+- [x] Verify it prints current track info (or "Nothing playing" if paused)
+- [x] Verify queue lists upcoming tracks
+
+### 5. Test graceful degradation (headless)
+
+```bash
+# Temporarily move the token file aside, then verify graceful failure:
+mv ~/.dreamsync/spotify_token.json ~/.dreamsync/spotify_token.json.bak
+
+python -c "
+from dreamsync.spotify.auth import TokenStore, refresh_if_needed
+store = TokenStore()
+print(f'has_valid_token: {store.has_valid_token()}')
+print(f'refresh result: {refresh_if_needed(store)}')
+if not store.has_valid_token():
+    print('PASS: no valid token found (expected)')
+else:
+    print('FAIL: token should not be valid')
+"
+
+# Restore the token file:
+mv ~/.dreamsync/spotify_token.json.bak ~/.dreamsync/spotify_token.json
+```
+
+- [ ] Verify output shows `has_valid_token: False` and `PASS: no valid token found`
+- [ ] Verify no crash / traceback
+
+### 6. Verify no regressions
+
+- [x] Run: `pytest dev/tests/` — all 599 tests should pass
+- [ ] Run: `ruff check src/` — no lint errors
+
+### 7. Commit when validated
+
+- [ ] Commit the Feature 1 implementation once manual validation passes
+
+---
+
+## Next Up: Feature 2 — Song Structure Analyzer
+
+No plan file exists yet. Create `dev/plans/feature-2-song-structure-analyzer.md` before starting implementation. Key decisions to make:
+
+- [ ] Decide data source: Spotify Audio Analysis API (`/v1/audio-analysis/{id}`) vs. local librosa analysis vs. both
+- [ ] Define the `SongStructure` data model (sections, bars, beats, time signatures)
+- [ ] Define how `on_track_changed` / `on_queue_updated` callbacks trigger analysis
+- [ ] Write the plan, then implement
+
+Features 3-6 follow in order. See `dev/plans/v3-show-sequencer.md` for the full vision.
