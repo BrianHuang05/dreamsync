@@ -33,14 +33,15 @@ Spotify queue integration means songs can be analyzed while the _previous_ track
 
 ## Feature Overview
 
-### 1. Spotify Queue Watcher
+### 1. Spotify Queue Watcher — **DONE** (`7c3372b`)
 
-- Polls the Spotify Web API (`/me/player/queue`) on a short interval.
-- When a new track ID appears in the queue, triggers the analysis/compile pipeline for that track.
-- Tracks queue additions in real time — if a user adds a song mid-session, the watcher picks it up and compiles its show before it starts playing.
+- Polls the Spotify Web API (`/me/player` and `/me/player/queue`) on configurable intervals.
+- Fires `on_track_changed` and `on_queue_updated` callbacks for downstream features (Feature 2+) to hook into.
+- Tracks queue additions in real time — if a user adds a song mid-session, the watcher picks it up within ~15s.
 - Monitors current playback position (`/me/player`) to synchronize show playback with the actual track timestamp.
+- OAuth PKCE auth flow via `dreamsync spotify-auth`, token auto-refresh, graceful v2 fallback if Spotify is unavailable.
 
-### 2. Song Structure Analyzer
+### 2. Song Structure Analyzer — **DONE** (213 tests across C3+C4+C5)
 
 The core new capability. Given a track, produce a structural map:
 

@@ -1339,6 +1339,7 @@ def run_live_to_govee(
     profile: Any | None = None,
     effect_cycler_override: "EffectCycler | None" = None,
     profile_rotation: Any | None = None,
+    capture_pipeline: Any | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Audio capture → beat detection → renderer → Govee UDP streaming.
 
@@ -1537,6 +1538,11 @@ def run_live_to_govee(
                     centroid=sf.centroid,
                 )
                 last_intent = director.update(last_features)
+
+                # Feed capture pipeline (if enabled)
+                if capture_pipeline is not None:
+                    capture_pipeline.feed(frame, last_features, stream_t)
+
                 if beat:
                     beat_count += 1
                     beat_this_tick = True

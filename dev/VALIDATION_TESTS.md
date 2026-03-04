@@ -442,6 +442,268 @@ cat out/longrun/memory-30m.log
 
 ---
 
+## Phase 5 — Song Capture Pipeline (Component 3)
+
+These tests validate the `--capture` pipeline: continuous audio → per-song mp3 files on disk. **Requires ffmpeg installed and on PATH.** Play music through system audio so the loopback capture has real signal.
+
+### 5.1 Unit tests
+
+```bash
+python -m pytest dev/tests/test_capture_buffer.py dev/tests/test_capture_boundary.py dev/tests/test_capture_writer.py dev/tests/test_capture_pipeline.py -v
+```
+
+**Pass:** All 68 tests pass.
+
+### 5.2 ffmpeg availability
+
+```bash
+ffmpeg -version
+```
+
+**Pass:** ffmpeg version string printed. If missing, install ffmpeg and add to PATH before proceeding.
+
+### 5.3 Basic capture (5 min, no hardware required)
+
+**Setup:** Start playing music through Spotify (or any audio source) before launching the command.
+
+```bash
+mkdir -p out/capture-test
+
+python -m dreamsync session \
+  --config devices.yaml \
+  --capture \
+  --capture-dir out/capture-test \
+  --capture-naming timestamp \
+  --debug-mood \
+  --duration 300 \
+  2>&1 | tee out/capture-test/console.log
+```
+
+If no `devices.yaml` is available, use `govee-live` with a dummy device (UDP frames silently drop):
+
+```bash
+python -m dreamsync govee-live \
+  --device 10.126.166.180:7:primary:ptreal \
+  --duration 300 \
+  --capture \
+  --capture-dir out/capture-test \
+  --capture-naming timestamp \
+  --debug-mood \
+  2>&1 | tee out/capture-test/console.log
+```
+
+**Pass criteria:**
+- Console shows `Capture: enabled → out/capture-test/ (naming=timestamp)`
+- At song boundaries: `Capture: saved YYYYMMDD_HHMMSS.mp3 (silence)` messages appear
+- After Ctrl+C: `Capture: flushed final song → YYYYMMDD_HHMMSS.mp3` (if buffer had data)
+- No crashes or ffmpeg errors in the log
+
+### 5.4 Verify captured files
+
+```bash
+ls -la out/capture-test/*.mp3
+```
+
+**Pass criteria:**
+- At least 1 mp3 file exists (more if multiple songs played)
+- File sizes are reasonable (a 3-min song at 192k ≈ 4.3 MB)
+- Files are playable — open each in any mp3 player and verify audio is correct
+
+### 5.5 Capture with metadata naming (requires --spotify)
+
+**Setup:** Authenticate with Spotify first (`dreamsync spotify-auth`), then play music from Spotify.
+
+```bash
+python -m dreamsync session \
+  --config devices.yaml \
+  --spotify \
+  --capture \
+  --capture-dir out/capture-meta \
+  --capture-naming metadata \
+  --debug-mood
+```
+
+Let at least 2 songs play through, then Ctrl+C.
+
+**Pass criteria:**
+- Console shows `Capture: saved Artist - Title.mp3 (spotify)` messages
+- Files in `out/capture-meta/` have `Artist - Title.mp3` filenames
+- Filenames are sanitised (no illegal path characters)
+- If duplicate names occur, suffixed with `_2`, `_3`, etc.
+
+### 5.6 Song boundary accuracy (5+ songs)
+
+**Setup:** Queue a playlist of 5+ distinct songs. Play through from start. Note the actual number of song transitions.
+
+```bash
+python -m dreamsync session \
+  --config devices.yaml \
+  --capture \
+  --capture-dir out/capture-boundary \
+  --capture-naming timestamp \
+  --debug-mood \
+  2>&1 | tee out/capture-boundary/console.log
+```
+
+After the playlist finishes (or after 5+ songs), Ctrl+C.
+
+**Verify:**
+
+```bash
+# Count captured files
+ls out/capture-boundary/*.mp3 | wc -l
+
+# Check boundary events in log
+grep "Capture: saved" out/capture-boundary/console.log
+```
+
+**Pass criteria:**
+- Number of mp3 files matches number of songs played (±1 for the flush on exit)
+- Each file contains approximately one song (verify by listening to start/end of each file)
+- No files shorter than 15 seconds (fragments are discarded by min_duration_seconds)
+- Boundary detection latency < 2 seconds (song transitions in captured files align with actual transitions)
+
+### 5.7 Edge cases
+
+**Short track (<30s):** Play a very short track (jingle, interlude). Verify it is either captured (if >15s) or discarded with a log message.
+
+**Long track (>10 min):** Play a long track. Verify the full track is captured in one file without truncation (buffer cap is 15 min).
+
+**Gapless/crossfade playback:** Play a playlist with crossfade enabled. Verify boundaries are detected (may use crossfade or Spotify signals rather than silence).
+
+---
+
+## Phase 6 — Song Structure Analyzer (Component 4)
+
+These tests validate the offline analyzer pipeline. **Requires ffmpeg installed and on PATH.** No Govee hardware needed.
+
+### 6.1 Analyzer unit tests
+
+```bash
+python -m pytest dev/tests/test_analyzer_decode.py dev/tests/test_analyzer_features.py dev/tests/test_analyzer_bpm.py dev/tests/test_analyzer_sections.py dev/tests/test_analyzer_models.py -v
+```
+
+**Pass:** All 80 tests pass.
+
+### 6.2 Single file analysis (requires an mp3 file)
+
+Analyze a single mp3 and verify the output is reasonable:
+
+```bash
+python -m dreamsync analyze path/to/song.mp3 --summary
+```
+
+**Pass criteria:**
+- BPM is within ±5 BPM of the known tempo
+- At least 2 sections detected
+- Section labels are reasonable (intro/verse/chorus/outro)
+- Analysis completes in < 30 seconds
+
+### 6.3 JSON output round-trip
+
+```bash
+python -m dreamsync analyze path/to/song.mp3 --output out/analysis/test.json
+python -c "
+from dreamsync.analyzer.models import SongStructure
+s = SongStructure.from_json('out/analysis/test.json')
+print(f'BPM: {s.bpm}, Sections: {len(s.sections)}, Duration: {s.duration:.1f}s')
+for sec in s.sections:
+    print(f'  {sec.start_t:6.1f}s – {sec.end_t:6.1f}s  {sec.label:<12s} [{sec.section_id}]  energy={sec.energy_mean:.2f}  mood={sec.mood}')
+"
+```
+
+**Pass:** JSON round-trips correctly. All fields populated.
+
+### 6.4 Batch analysis (5+ songs)
+
+```bash
+mkdir -p out/analysis
+python -m dreamsync analyze-dir path/to/captured_songs/ --output-dir out/analysis/
+```
+
+**Pass criteria:**
+- One `.analysis.json` file per input audio file
+- BPM values are reasonable across all songs
+- Analysis completes without errors
+
+### 6.5 Genre variety (10 songs across genres)
+
+Analyze 10+ songs spanning genres (pop, EDM, hip-hop, rock, chill, DnB). For each:
+
+```bash
+python -m dreamsync analyze song.mp3 --summary
+```
+
+**Pass criteria:**
+- BPM within ±5 of ground truth on 8/10 songs
+- Section labels are reasonable on 7/10 songs
+- EDM songs detect drop/breakdown patterns
+- Slow songs (<90 BPM) not reported at double tempo
+- Fast songs (>170 BPM) not reported at half tempo
+
+---
+
+## Phase 7 — Show Playback Runtime (Component 5)
+
+These tests validate the pre-sequenced show player. **Requires ffmpeg installed and on PATH.** Requires a show timeline JSON file (either hand-crafted or generated by the Show Compiler once it's built).
+
+### 7.1 Show Player unit tests
+
+```bash
+python -m pytest dev/tests/test_show_models.py dev/tests/test_show_player.py dev/tests/test_show_runtime.py dev/tests/test_show_cli.py -v
+```
+
+**Pass:** All 65 tests pass.
+
+### 7.2 Audio playback test (no devices)
+
+Create a test show file manually or generate one, then play audio through speakers:
+
+```bash
+python -m dreamsync play path/to/song.mp3 --show path/to/show.json --config devices.yaml --debug
+```
+
+**Pass criteria:**
+- Audio plays through system default speakers without glitches
+- Console shows `[show] Playing: ...` and cue transitions with timestamps
+- Ctrl+C cleanly stops playback
+- Summary JSON printed on exit
+
+### 7.3 Synchronized playback (with devices)
+
+Run with real Govee devices connected:
+
+```bash
+python -m dreamsync play path/to/song.mp3 --show path/to/show.json --config devices.yaml --debug
+```
+
+**Pass criteria:**
+- Audio and lights start simultaneously
+- Cue transitions are visible on devices (color/mode changes match debug output)
+- Beat-driven color cycling is perceptible and aligned with the audio beat
+- Fade transitions produce smooth intensity changes over the configured beat count
+- At song end: devices deactivate cleanly, summary includes frames_sent, cues_played, beats_hit
+
+### 7.4 Show file round-trip
+
+```bash
+python -c "
+from dreamsync.show.models import ShowTimeline
+tl = ShowTimeline.from_json('path/to/show.json')
+print(f'BPM: {tl.bpm}, Cues: {len(tl.cues)}, Beats: {len(tl.beat_times)}')
+for c in tl.cues:
+    print(f'  {c.t:6.1f}s  {c.render_mode:<10s}  intensity={c.intensity:.2f}  {c.transition}')
+tl.to_json('/tmp/show_copy.json')
+tl2 = ShowTimeline.from_json('/tmp/show_copy.json')
+assert len(tl2.cues) == len(tl.cues)
+print('Round-trip OK')
+"
+```
+
+**Pass:** All fields round-trip correctly.
+
+---
+
 ## Quick Reference — Full Test Sequence
 
 Run these in order for a complete validation pass:
@@ -459,6 +721,21 @@ Run these in order for a complete validation pass:
 - [x] **11. Song boundary detection** (30 min, no hardware) — **PASSED**: 13 boundaries for ~14 songs, all `[silence]`, 0 false positives
 - [x] **12. Mood & effect cycling** (shared with test 11) — **PASSED**: 4 moods visited (CHILL 51%, DROP 20%, GROOVE 16%, HYPE 14%), 9 effects cycled
 - [x] **13. Resource stability** (shared with test 11) — **PASSED**: 0 errors, 0 dropped blocks, clean exit after 30 min
+- [ ] **14. Capture unit tests** (68 tests)
+- [ ] **15. Basic capture** (5 min, timestamp naming)
+- [ ] **16. Captured file verification** (playable mp3s with correct content)
+- [ ] **17. Metadata capture** (with --spotify, artist-title naming)
+- [ ] **18. Boundary accuracy** (5+ songs, file count matches song count)
+- [ ] **19. Edge cases** (short track, long track, gapless/crossfade)
+- [ ] **20. Analyzer unit tests** (80 tests)
+- [ ] **21. Single file analysis** (summary output + BPM check)
+- [ ] **22. JSON round-trip** (serialize/deserialize)
+- [ ] **23. Batch analysis** (5+ songs in directory)
+- [ ] **24. Genre variety** (10 songs across genres, BPM + section accuracy)
+- [ ] **25. Show Player unit tests** (65 tests)
+- [ ] **26. Audio playback test** (play mp3 through speakers, no devices)
+- [ ] **27. Synchronized playback** (mp3 + show file + real Govee devices)
+- [ ] **28. Show file round-trip** (serialize/deserialize ShowTimeline)
 
 ```bash
 # 1. Unit tests (all systems) ✅
@@ -498,6 +775,50 @@ python -m dreamsync govee-live --device 10.126.166.180:7:primary:ptreal --durati
 # while true; do echo "$(date +%H:%M:%S) $(ps aux | grep 'dreamsync govee-live' | grep -v grep | awk '{print "RSS=" $6 "KB"}')" >> out/longrun/memory-30m.log; sleep 30; done
 # Terminal 2 — the actual run:
 python -m dreamsync govee-live --device 10.126.166.180:7:primary:ptreal --duration 1800 --debug-mood --crossfade-detect --telemetry-dir out/longrun/boundary-30m 2>&1 | tee out/longrun/boundary-30m-console.log
+
+# 14. Capture unit tests
+python -m pytest dev/tests/test_capture_buffer.py dev/tests/test_capture_boundary.py dev/tests/test_capture_writer.py dev/tests/test_capture_pipeline.py -v
+
+# 15+16. Basic capture (5 min, play music through system audio)
+mkdir -p out/capture-test
+python -m dreamsync session --config devices.yaml --capture --capture-dir out/capture-test --capture-naming timestamp --debug-mood 2>&1 | tee out/capture-test/console.log
+ls -la out/capture-test/*.mp3
+
+# 17. Metadata capture (requires spotify auth)
+python -m dreamsync session --config devices.yaml --spotify --capture --capture-dir out/capture-meta --capture-naming metadata --debug-mood
+
+# 18. Boundary accuracy (5+ songs)
+python -m dreamsync session --config devices.yaml --capture --capture-dir out/capture-boundary --capture-naming timestamp --debug-mood 2>&1 | tee out/capture-boundary/console.log
+ls out/capture-boundary/*.mp3 | wc -l
+grep "Capture: saved" out/capture-boundary/console.log
+
+# 20. Analyzer unit tests (80 tests)
+python -m pytest dev/tests/test_analyzer_decode.py dev/tests/test_analyzer_features.py dev/tests/test_analyzer_bpm.py dev/tests/test_analyzer_sections.py dev/tests/test_analyzer_models.py -v
+
+# 21. Single file analysis
+python -m dreamsync analyze path/to/song.mp3 --summary
+
+# 22. JSON round-trip
+python -m dreamsync analyze path/to/song.mp3 --output out/analysis/test.json
+
+# 23. Batch analysis
+mkdir -p out/analysis
+python -m dreamsync analyze-dir path/to/captured_songs/ --output-dir out/analysis/
+
+# 24. Genre variety (repeat for 10 songs)
+python -m dreamsync analyze song.mp3 --summary
+
+# 25. Show Player unit tests (65 tests)
+python -m pytest dev/tests/test_show_models.py dev/tests/test_show_player.py dev/tests/test_show_runtime.py dev/tests/test_show_cli.py -v
+
+# 26. Audio playback test (no devices required)
+python -m dreamsync play path/to/song.mp3 --show path/to/show.json --config devices.yaml --debug
+
+# 27. Synchronized playback (with real devices)
+python -m dreamsync play path/to/song.mp3 --show path/to/show.json --config devices.yaml --debug
+
+# 28. Show file round-trip
+python -c "from dreamsync.show.models import ShowTimeline; tl = ShowTimeline.from_json('path/to/show.json'); tl.to_json('/tmp/copy.json'); print('OK')"
 ```
 
 ---
@@ -514,3 +835,11 @@ python -m dreamsync govee-live --device 10.126.166.180:7:primary:ptreal --durati
 | Health monitor offline detection too slow | Reduce `--health-interval` (e.g., `10`). Default offline threshold is 3 probes. |
 | Long-run test shows 0 BPM / no boundaries | No audio playing — start music before (or shortly after) launching the command. The pipeline captures system audio via loopback. |
 | Long-run memory log is empty | The `ps aux | grep` pattern may not match on Windows. Use Task Manager or `Get-Process` in PowerShell instead. |
+| `Capture: ffmpeg not found on PATH` | Install ffmpeg and ensure it's on PATH. Run `ffmpeg -version` to verify. |
+| Capture produces 0 mp3 files | No song boundaries detected — ensure music is playing and songs actually transition. Also check `min_duration_seconds` (15s default) isn't filtering short fragments. |
+| Capture files have no audio | Check that system audio loopback is working. The capture pipeline records what the audio callback receives — if the callback gets silence, so does the capture. |
+| Metadata naming shows timestamps instead of artist-title | Spotify watcher must be active (`--spotify`) and authenticated. Without Spotify, metadata naming falls back to timestamp. |
+| `dreamsync analyze` fails with DecodeError | Ensure ffmpeg is installed and on PATH. Run `ffmpeg -version` to verify. Check the audio file is a valid format. |
+| Analyzer BPM is wrong by exactly 2x | Harmonic aliasing — the analyzer should auto-resolve this for BPMs outside 80-160 range. If persistent, file an issue. |
+| Analyzer produces only 1 section | Song may lack clear structural changes. Try a song with distinct verse/chorus dynamics. |
+| Analysis takes > 30 seconds | Expected for songs > 5 minutes or on slow hardware. Feature pipeline processes ~1000 frames/second. |

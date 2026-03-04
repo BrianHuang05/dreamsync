@@ -1,0 +1,237 @@
+"""Show Playback Runtime — synchronise lighting cues with audio playback."""
+
+from __future__ import annotations
+
+import threading
+import time
+from pathlib import Path
+from typing import Any
+
+from dreamsync.director import EffectMode, LightingIntent
+from dreamsync.render import RenderMode
+from dreamsync.show.models import ShowCue, ShowTimeline
+
+# Mapping from ShowCue.render_mode → (EffectMode, RenderMode)
+_MODE_MAP: dict[str, tuple[EffectMode, RenderMode]] = {
+    "solid": (EffectMode.AMBIENT, RenderMode.SOLID),
+    "breathe": (EffectMode.AMBIENT, RenderMode.BREATHE),
+    "scroll": (EffectMode.MOTION, RenderMode.SCROLL),
+    "pulse": (EffectMode.PULSE, RenderMode.PULSE),
+    "wave": (EffectMode.MOTION, RenderMode.WAVE),
+    "gradient": (EffectMode.AMBIENT, RenderMode.GRADIENT),
+}
+
+
+class ShowPlaybackRuntime:
+    """Advance a show timeline tick-by-tick, mapping cues → lighting output."""
+
+    def __init__(
+        self,
+        timeline: ShowTimeline,
+        multi_adapter,  # MultiGoveeLanAdapter (duck-typed for testability)
+    ) -> None:
+        self._timeline = timeline
+        self._multi_adapter = multi_adapter
+
+        self._current_cue: ShowCue | None = None
+        self._color_index: int = 0
+        self._beat_fired: bool = False
+
+        # Fade state
+        self._fade_start_t: float = 0.0
+        self._fade_end_t: float = 0.0
+        self._fade_from_cue: ShowCue | None = None
+
+        # Beat tolerance: half a beat-interval's worth, capped at 25ms
+        beat_interval = 60.0 / timeline.bpm
+        self._beat_tolerance = min(0.025, beat_interval * 0.25)
+
+        # Stats
+        self._frames_sent: int = 0
+        self._cues_played: int = 0
+        self._beats_hit: int = 0
+
+    def tick(self, t: float) -> bool:
+        """Advance the show to time *t*.
+
+        Returns True if a frame was sent, False otherwise.
+        """
+        cue = self._timeline.cue_at(t)
+        if cue is None:
+            return False
+
+        # Handle cue change
+        if cue is not self._current_cue:
+            self._on_cue_change(cue, t)
+
+        # Build LightingIntent
+        intent = self._build_intent(cue, t)
+
+        # Check beat grid
+        beat = self._timeline.is_beat(t, tolerance=self._beat_tolerance)
+
+        # Advance color on beat (debounced)
+        if beat and not self._beat_fired:
+            self._color_index = (self._color_index + 1) % len(cue.color_palette)
+            self._beat_fired = True
+            self._beats_hit += 1
+        elif not beat:
+            self._beat_fired = False
+
+        # Render + send
+        sent = self._multi_adapter.send_frame(t, intent, beat=beat, params=cue.params)
+        if sent:
+            self._frames_sent += 1
+        return sent
+
+    @property
+    def current_cue(self) -> ShowCue | None:
+        return self._current_cue
+
+    @property
+    def stats(self) -> dict[str, int]:
+        return {
+            "frames_sent": self._frames_sent,
+            "cues_played": self._cues_played,
+            "beats_hit": self._beats_hit,
+        }
+
+    # -- Internal ------------------------------------------------------------
+
+    def _on_cue_change(self, cue: ShowCue, t: float) -> None:
+        """Handle a transition from the current cue to *cue*."""
+        old_cue = self._current_cue
+
+        # Set up fade if requested
+        if cue.transition == "fade" and cue.transition_beats > 0 and old_cue is not None:
+            fade_duration = cue.transition_beats * 60.0 / self._timeline.bpm
+            # Cap at 16 beats
+            max_fade = 16 * 60.0 / self._timeline.bpm
+            fade_duration = min(fade_duration, max_fade)
+            self._fade_from_cue = old_cue
+            self._fade_start_t = t
+            self._fade_end_t = t + fade_duration
+        else:
+            self._fade_from_cue = None
+
+        # Switch render mode on all device renderers
+        _, render_mode = _MODE_MAP.get(cue.render_mode, (EffectMode.AMBIENT, RenderMode.SOLID))
+        if hasattr(self._multi_adapter, "devices"):
+            for _adapter, renderer, _role in self._multi_adapter.devices:
+                renderer.mode = render_mode
+
+        self._current_cue = cue
+        self._cues_played += 1
+
+    def _build_intent(self, cue: ShowCue, t: float) -> LightingIntent:
+        """Construct a LightingIntent from the active cue and current time."""
+        intensity = cue.intensity
+        speed = cue.speed
+
+        # Interpolate during fade window
+        if (
+            self._fade_from_cue is not None
+            and self._fade_start_t <= t < self._fade_end_t
+        ):
+            fade_len = self._fade_end_t - self._fade_start_t
+            if fade_len > 0:
+                progress = (t - self._fade_start_t) / fade_len
+                intensity = _lerp(self._fade_from_cue.intensity, cue.intensity, progress)
+                speed = _lerp(self._fade_from_cue.speed, cue.speed, progress)
+        elif t >= self._fade_end_t:
+            # Fade finished — clear state
+            self._fade_from_cue = None
+
+        effect_mode, _ = _MODE_MAP.get(cue.render_mode, (EffectMode.AMBIENT, RenderMode.SOLID))
+        color = cue.color_palette[self._color_index % len(cue.color_palette)]
+
+        return LightingIntent(
+            mode=effect_mode,
+            intensity=intensity,
+            speed=speed,
+            bpm=self._timeline.bpm,
+            color=color,
+        )
+
+
+def _lerp(a: float, b: float, t: float) -> float:
+    """Linear interpolation from *a* to *b* at fraction *t* ∈ [0, 1]."""
+    return a + (b - a) * t
+
+
+# ---------------------------------------------------------------------------
+# Top-level orchestrator
+# ---------------------------------------------------------------------------
+
+def run_show_playback(
+    mp3_path: Path,
+    show_path: Path,
+    multi_adapter,
+    *,
+    sample_rate: int = 44100,
+    audio_device: int | None = None,
+    stop_event: threading.Event | None = None,
+    debug: bool = False,
+) -> dict[str, Any]:
+    """Play a show: mp3 audio + lighting timeline → speakers + Govee devices.
+
+    Returns a summary dict when playback finishes or is interrupted.
+    """
+    from dreamsync.show.player import AudioPlayer
+
+    # 1. Load show timeline
+    timeline = ShowTimeline.from_json(show_path)
+
+    # 2. Create audio player
+    player = AudioPlayer(mp3_path, sample_rate=sample_rate, device=audio_device)
+
+    # 3. Create runtime
+    runtime = ShowPlaybackRuntime(timeline, multi_adapter)
+
+    # 4. Activate devices
+    multi_adapter.activate(brightness=100)
+
+    if debug:
+        print(f"[show] Playing: {timeline.song_path}")
+        print(f"[show] BPM={timeline.bpm:.1f}, {len(timeline.cues)} cues, "
+              f"{len(timeline.beat_times)} beats")
+
+    # 5. Start audio playback
+    player.play()
+    start_wall = time.monotonic()
+
+    # 6. Main loop
+    last_cue = None
+    try:
+        while not player.finished:
+            if stop_event is not None and stop_event.is_set():
+                break
+            t = player.position_seconds
+            runtime.tick(t)
+
+            if debug and runtime.current_cue is not last_cue:
+                cue = runtime.current_cue
+                if cue is not None:
+                    print(f"[show] t={t:.1f}s  cue: {cue.render_mode} "
+                          f"intensity={cue.intensity:.2f} speed={cue.speed:.2f}")
+                last_cue = runtime.current_cue
+
+            time.sleep(0.005)  # ~200 Hz tick
+    except KeyboardInterrupt:
+        pass
+
+    # 7. Cleanup
+    player.stop()
+    multi_adapter.deactivate()
+
+    elapsed = time.monotonic() - start_wall
+    summary = {
+        "duration": round(player.duration, 2),
+        "elapsed": round(elapsed, 2),
+        **runtime.stats,
+    }
+
+    if debug:
+        print(f"[show] Done. {summary}")
+
+    return summary

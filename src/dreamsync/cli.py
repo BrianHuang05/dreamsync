@@ -406,6 +406,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=2.0,
         help="Spotify playback poll interval in seconds (default: 2.0).",
     )
+    session.add_argument(
+        "--capture",
+        action="store_true",
+        default=False,
+        help="Enable per-song mp3 capture to disk.",
+    )
+    session.add_argument(
+        "--capture-dir",
+        type=str,
+        default="captured_songs",
+        help="Output directory for captured mp3 files (default: captured_songs).",
+    )
+    session.add_argument(
+        "--capture-naming",
+        choices=["timestamp", "metadata"],
+        default="timestamp",
+        help="Filename scheme for captured songs (default: timestamp).",
+    )
 
     # -- Spotify auth command ------------------------------------------------
     spotify_auth = sub.add_parser(
@@ -440,6 +458,59 @@ def build_parser() -> argparse.ArgumentParser:
         help="Validate a color profile YAML and check color harmony.",
     )
     validate_cmd.add_argument("path", type=str, help="Profile name or path to validate.")
+
+    # -- Analyze command --------------------------------------------------------
+    analyze_cmd = sub.add_parser(
+        "analyze",
+        help="Analyze an mp3 file and produce a SongStructure (BPM, sections, beat grid).",
+    )
+    analyze_cmd.add_argument("path", type=Path, help="Path to an mp3 (or any audio) file.")
+    analyze_cmd.add_argument(
+        "--output", "-o", type=Path, default=None,
+        help="Write analysis JSON to this path (defaults to stdout).",
+    )
+    analyze_cmd.add_argument(
+        "--summary", action="store_true",
+        help="Print a human-readable summary instead of JSON.",
+    )
+    analyze_cmd.add_argument("--sample-rate", type=int, default=44100, help="Target sample rate.")
+    analyze_cmd.add_argument("--frame-size", type=int, default=2048, help="Frame size in samples.")
+    analyze_cmd.add_argument("--hop-size", type=int, default=512, help="Hop size in samples.")
+
+    analyze_dir_cmd = sub.add_parser(
+        "analyze-dir",
+        help="Batch-analyze all audio files in a directory.",
+    )
+    analyze_dir_cmd.add_argument("input_dir", type=Path, help="Directory containing audio files.")
+    analyze_dir_cmd.add_argument(
+        "--output-dir", type=Path, default=None,
+        help="Directory for analysis JSON files (default: alongside input files).",
+    )
+    analyze_dir_cmd.add_argument("--sample-rate", type=int, default=44100, help="Target sample rate.")
+    analyze_dir_cmd.add_argument("--frame-size", type=int, default=2048, help="Frame size in samples.")
+    analyze_dir_cmd.add_argument("--hop-size", type=int, default=512, help="Hop size in samples.")
+
+    # -- Play command (show playback) ------------------------------------------
+    play_cmd = sub.add_parser(
+        "play",
+        help="Play a pre-sequenced show: mp3 audio + lighting timeline.",
+    )
+    play_cmd.add_argument("mp3_path", type=Path, help="Path to the mp3 audio file.")
+    play_cmd.add_argument("--show", type=Path, required=True, help="Path to the show timeline JSON file.")
+    play_cmd.add_argument("--config", type=Path, required=True, help="Path to YAML device config file.")
+    play_cmd.add_argument("--sample-rate", type=int, default=44100, help="Audio sample rate.")
+    play_cmd.add_argument("--audio-device", type=int, default=None, dest="audio_device", help="Output audio device ID (None = system default).")
+    play_cmd.add_argument("--fps", type=int, default=30, help="Device frame rate.")
+    play_cmd.add_argument("--brightness", type=float, default=1.0, help="Global brightness (0-1).")
+    play_cmd.add_argument(
+        "--mirror", dest="mirror", action="store_true", default=True,
+        help="Scroll from center outward (default).",
+    )
+    play_cmd.add_argument(
+        "--no-mirror", dest="mirror", action="store_false",
+        help="Scroll left-to-right instead of center-outward.",
+    )
+    play_cmd.add_argument("--debug", action="store_true", help="Print cue changes, beat counts, position.")
 
     return parser
 
@@ -897,6 +968,9 @@ def main(argv: list[str] | None = None) -> int:
             spotify=getattr(args, "spotify", False),
             spotify_client_id=spotify_client_id,
             spotify_poll_interval=getattr(args, "spotify_poll_interval", 2.0),
+            capture=getattr(args, "capture", False),
+            capture_dir=getattr(args, "capture_dir", "captured_songs"),
+            capture_naming=getattr(args, "capture_naming", "timestamp"),
         )
         print(json.dumps(summary, separators=(",", ":")))
         return 0
@@ -942,6 +1016,144 @@ def main(argv: list[str] | None = None) -> int:
             print("  No harmony warnings.")
         else:
             print(f"  {warnings_total} warning(s) found.")
+        return 0
+
+    if args.command == "analyze":
+        from .analyzer.analyze import analyze_song
+
+        try:
+            structure = analyze_song(
+                args.path,
+                sample_rate=args.sample_rate,
+                frame_size=args.frame_size,
+                hop_size=args.hop_size,
+            )
+        except Exception as exc:
+            print(f"Analysis failed: {exc}")
+            return 1
+
+        if args.summary:
+            print(f"File: {structure.path}")
+            print(f"Duration: {structure.duration:.1f}s")
+            print(f"BPM: {structure.bpm:.1f}")
+            print(f"Time signature: {structure.time_signature}/4")
+            print(f"Sections ({len(structure.sections)}):")
+            for s in structure.sections:
+                print(
+                    f"  {s.start_t:6.1f}s – {s.end_t:6.1f}s  "
+                    f"{s.label:<12s} [{s.section_id}]  "
+                    f"energy={s.energy_mean:.2f}  mood={s.mood}  bpm={s.bpm:.0f}"
+                )
+            return 0
+
+        data = structure.to_dict()
+        if args.output:
+            structure.to_json(args.output)
+            print(f"Analysis written to {args.output}")
+        else:
+            print(json.dumps(data, indent=2))
+        return 0
+
+    if args.command == "analyze-dir":
+        from .analyzer.analyze import analyze_song
+
+        input_dir = args.input_dir
+        if not input_dir.is_dir():
+            print(f"Not a directory: {input_dir}")
+            return 1
+
+        output_dir = args.output_dir or input_dir
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        audio_extensions = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac"}
+        files = sorted(f for f in input_dir.iterdir() if f.suffix.lower() in audio_extensions)
+        if not files:
+            print(f"No audio files found in {input_dir}")
+            return 0
+
+        print(f"Analyzing {len(files)} files...")
+        for i, f in enumerate(files, 1):
+            out_path = output_dir / f"{f.stem}.analysis.json"
+            try:
+                structure = analyze_song(
+                    f,
+                    sample_rate=args.sample_rate,
+                    frame_size=args.frame_size,
+                    hop_size=args.hop_size,
+                )
+                structure.to_json(out_path)
+                print(f"  [{i}/{len(files)}] {f.name} → {out_path.name} (BPM={structure.bpm:.0f}, {len(structure.sections)} sections)")
+            except Exception as exc:
+                print(f"  [{i}/{len(files)}] {f.name} — FAILED: {exc}")
+        return 0
+
+    if args.command == "play":
+        import signal
+        import threading
+
+        from .output.auto_detect import build_multi_adapter, detect_all_devices, load_device_config
+        from .show.runtime import run_show_playback
+
+        mp3_path = args.mp3_path
+        show_path = args.show
+        config_path = args.config
+
+        if not mp3_path.exists():
+            print(f"Error: mp3 file not found: {mp3_path}")
+            return 1
+        if not show_path.exists():
+            print(f"Error: show file not found: {show_path}")
+            return 1
+        if not config_path.exists():
+            print(f"Error: config file not found: {config_path}")
+            return 1
+
+        brightness = max(0.0, min(1.0, float(args.brightness)))
+
+        try:
+            configs = load_device_config(config_path)
+            detected = detect_all_devices(configs)
+            multi_adapter = build_multi_adapter(
+                detected,
+                fps=args.fps,
+                brightness=brightness,
+                mirror=args.mirror,
+            )
+        except Exception as exc:
+            print(f"Device setup failed: {exc}")
+            return 1
+
+        stop_event = threading.Event()
+
+        def _signal_handler(signum, frame):
+            stop_event.set()
+
+        signal.signal(signal.SIGINT, _signal_handler)
+        signal.signal(signal.SIGTERM, _signal_handler)
+
+        print(json.dumps({
+            "command": "play",
+            "mp3": str(mp3_path),
+            "show": str(show_path),
+            "config": str(config_path),
+        }, separators=(",", ":")))
+
+        try:
+            summary = run_show_playback(
+                mp3_path,
+                show_path,
+                multi_adapter,
+                sample_rate=args.sample_rate,
+                audio_device=args.audio_device,
+                stop_event=stop_event,
+                debug=args.debug,
+            )
+        except Exception as exc:
+            print(f"Playback failed: {exc}")
+            return 1
+
+        print(json.dumps(summary, separators=(",", ":")))
         return 0
 
     parser.print_help()

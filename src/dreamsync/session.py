@@ -55,6 +55,9 @@ def run_session(
     spotify: bool = False,
     spotify_client_id: str = "",
     spotify_poll_interval: float = 2.0,
+    capture: bool = False,
+    capture_dir: str = "captured_songs",
+    capture_naming: str = "timestamp",
 ) -> dict[str, Any]:
     """Run an infinite DreamSync session from a YAML config.
 
@@ -158,6 +161,47 @@ def run_session(
             )
             spotify_watcher.start()
 
+    # 4e. Capture pipeline
+    capture_pipeline = None
+    if capture:
+        from dreamsync.capture.pipeline import CaptureConfig, StreamCapturePipeline
+        from dreamsync.capture.buffer import BufferConfig
+        from dreamsync.capture.writer import WriterConfig, check_ffmpeg
+
+        if not check_ffmpeg():
+            print("Capture: ffmpeg not found on PATH. Install ffmpeg to enable song capture.")
+            print("Continuing without capture.")
+        else:
+            cap_cfg = CaptureConfig(
+                buffer=BufferConfig(sample_rate=sample_rate, channels=channels),
+                writer=WriterConfig(
+                    output_dir=capture_dir,
+                    sample_rate=sample_rate,
+                    channels=channels,
+                    naming=capture_naming,
+                ),
+                hop_size=hop_size,
+                sample_rate=sample_rate,
+            )
+            capture_pipeline = StreamCapturePipeline(
+                config=cap_cfg,
+                on_song_saved=lambda path, meta: print(
+                    f"Capture: saved {path.name} ({meta.get('source', '?')})"
+                ),
+            )
+            # Connect Spotify track changes to capture boundary detector
+            if spotify_watcher is not None:
+                _orig_on_track = spotify_watcher._on_track_changed
+
+                def _capture_track_changed(new, old, _orig=_orig_on_track):
+                    if _orig:
+                        _orig(new, old)
+                    capture_pipeline.notify_track_changed(new, old)
+
+                spotify_watcher._on_track_changed = _capture_track_changed
+
+            print(f"Capture: enabled → {capture_dir}/ (naming={capture_naming})")
+
     # 5. Signal handling
     stop_event = threading.Event()
     original_sigint = signal.getsignal(signal.SIGINT)
@@ -192,9 +236,14 @@ def run_session(
             telemetry_dir=telemetry_dir,
             profile=profile,
             effect_cycler_override=effect_cycler,
+            capture_pipeline=capture_pipeline,
         )
     finally:
         # 7. Cleanup
+        if capture_pipeline is not None:
+            flushed = capture_pipeline.flush()
+            if flushed:
+                print(f"Capture: flushed final song → {flushed.name}")
         if spotify_watcher is not None:
             spotify_watcher.stop()
         if health_mon is not None:
