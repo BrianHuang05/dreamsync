@@ -58,8 +58,9 @@ The analysis and compilation pipeline is _already_ service-agnostic: `decode_mp3
 | `PositionInterpolator` | **Yes** | No | No | **DONE** (Spotify only) |
 | `SpotifyShowSession` | **Yes** | No | No | **DONE** (Spotify only) |
 | `SpotifyQueueWatcher` | **Yes** | No | No | **DONE** (Spotify only) |
-| `LocalShowSession` | No | Yes | Yes | **TODO** (Feature 7) |
-| `PlaylistManager` | No | Yes | Yes | **TODO** (Feature 8) |
+| `LocalShowSession` | No | Yes | Yes | **DONE** (Feature 7) |
+| `LocalPlaylistSession` | No | Yes | Yes | **DONE** (Feature 8) |
+| `PlaylistManager` | No | Yes | Yes | **DONE** (Feature 8) |
 
 ---
 
@@ -114,29 +115,31 @@ Takes the structural map and produces a **show timeline** — a list of timed cu
 - CLI: `--v3` flag on the `session` subcommand. `run_v3_session()` entry point.
 - Falls back to v2 Director if Spotify is unavailable or analysis fails.
 
-### 7. Local Show Session — **TODO**
+### 7. Local Show Session — **DONE** (16 tests across D7.1–D7.3)
 
-The core new feature. A standalone session that drives shows from local audio files without Spotify:
+A standalone session that drives shows from local audio files without Spotify:
 
-- **`LocalShowSession`** — New session class that replaces `SpotifyShowSession` for local playback. Same lifecycle (analyze → compile → cache → play), but uses `AudioPlayer` for both audio output and position tracking.
+- **`LocalShowSession`** (`src/dreamsync/local_session.py`) — Session class for local playback. Same lifecycle (analyze → compile → cache → play), using `AudioPlayer` for both audio output and position tracking.
 - **Position source** — `AudioPlayer.position_seconds` feeds directly into `ShowPlaybackRuntime.tick(t)`. No `PositionInterpolator` needed — `AudioPlayer` tracks position natively via sounddevice frame counting.
 - **Track lifecycle** — On session start: decode → analyze → compile → cache → play. On track end: advance to next track from playlist (Feature 8) or stop.
-- **Analyze-while-playing** — While the current track plays, precompile the _next_ track in the playlist on a background thread (mirrors Spotify mode's queue precompilation).
-- **CLI entry point** — `dreamsync play <file_or_directory>` for single-file or directory mode. `dreamsync session --local <playlist>` for playlist mode. Reuses `--cache-dir` and profile flags.
+- **`run_local_session()`** — Top-level entry point, wired into `session.py` with `local` > `v3` > `v2` dispatch priority.
+- **CLI entry points** — `dreamsync play song.mp3 --config devices.yaml` (on-the-fly compilation when `--show` omitted). `dreamsync session --config devices.yaml --local song.mp3` for session mode. `--show` is now optional; `--profile` and `--cache-dir` available on `play`.
 - **Same output path** — `tick(t) → LightingIntent → SegmentRenderer → Govee LAN/BLE`. Zero changes to the device layer.
 
-### 8. Local Playlist Manager — **TODO**
+### 8. Local Playlist Manager — **DONE** (28 tests across D8.1–D8.3)
 
 Track sequencing and queue management without Spotify:
 
+- **`PlaylistManager`** (`src/dreamsync/playlist.py`) — Ordered list of audio files with `from_file()`, `from_directory()`, `from_m3u()`, `from_path()` (auto-detect). Supports `next()`, `prev()`, `peek_next()`, shuffle, and repeat.
+- **`LocalPlaylistSession`** (`src/dreamsync/local_session.py`) — Multi-track session wrapping `LocalShowSession` with track advancement, background precompilation of upcoming tracks, and thread-safe `signal_next()`/`signal_prev()` controls.
+- **`content_hash_track_id()`** — SHA256 of first 64KB + file size for rename-stable cache keys.
 - **Playlist sources:**
-  - Single file: `dreamsync play song.mp3`
-  - Directory: `dreamsync play ./music/` — scans for audio files, plays in order (alphabetical or shuffled)
-  - Playlist file: `dreamsync play playlist.m3u` — reads `.m3u` / `.m3u8` / plain text file list
-- **Track advancement** — End-of-track detection via `AudioPlayer` (sounddevice stream completes). Fires `on_track_ended` callback to trigger next-track loading.
-- **CLI controls** — `next`, `prev`, `stop` commands (or keyboard shortcuts) during a running session.
-- **Shuffle and repeat** — `--shuffle` flag randomizes playlist order. `--repeat` loops the playlist.
-- **Cache key scheme** — Use content hash (SHA256 of first 64KB + file size) as track ID for cache lookups. Stable across renames, unique across different files.
+  - Single file: `dreamsync play song.mp3 --config devices.yaml`
+  - Directory: `dreamsync play ./music/ --config devices.yaml` — scans for audio files, plays alphabetically (or `--shuffle`)
+  - M3U file: `dreamsync play playlist.m3u --config devices.yaml`
+- **Track advancement** — End-of-track detection via `AudioPlayer.finished`. Automatic advance to next track.
+- **CLI controls** — `--shuffle` randomizes order. `--repeat` loops. Keyboard listener (n=next, p=prev, q=quit) during multi-track playback.
+- **Background precompilation** — While current track plays, next 1-2 tracks compiled on a background thread via `ThreadPoolExecutor`.
 
 ---
 

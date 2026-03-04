@@ -60,6 +60,8 @@ def run_session(
     capture_naming: str = "timestamp",
     v3: bool = False,
     cache_dir: str = "~/.dreamsync/cache",
+    local: bool = False,
+    local_audio: str | None = None,
 ) -> dict[str, Any]:
     """Run an infinite DreamSync session from a YAML config.
 
@@ -216,9 +218,46 @@ def run_session(
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    # 6. Run live loop (or v3 session)
+    # 6. Run live loop (local, v3, or v2 session)
     try:
-        if v3 and spotify_watcher is not None:
+        if local and local_audio is not None:
+            from dreamsync.local_session import run_local_session
+
+            summary = run_local_session(
+                multi_adapter,
+                local_audio,
+                cache_dir=cache_dir,
+                profile=profile,
+                sample_rate=sample_rate,
+                audio_device=audio_device,
+                stop_event=stop_event,
+                debug=debug_mood,
+            )
+        elif local and local_audio is None:
+            print("Warning: --local requires an audio file path. Falling back to v2.")
+            logs, summary = run_live_to_govee(
+                multi_adapter=multi_adapter,
+                duration_seconds=None,
+                sample_rate=sample_rate,
+                channels=channels,
+                device=audio_device,
+                frame_size=frame_size,
+                hop_size=hop_size,
+                telemetry_interval_seconds=1.0,
+                blocksize=blocksize,
+                director_config=director_config,
+                half_time=half_time,
+                max_brightness=max_brightness,
+                auto_cycle=auto_cycle,
+                cycle_interval=cycle_interval,
+                debug_mood=debug_mood,
+                stop_event=stop_event,
+                telemetry_dir=telemetry_dir,
+                profile=profile,
+                effect_cycler_override=effect_cycler,
+                capture_pipeline=capture_pipeline,
+            )
+        elif v3 and spotify_watcher is not None:
             from dreamsync.v3_session import run_v3_session
 
             summary = run_v3_session(

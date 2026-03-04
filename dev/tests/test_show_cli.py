@@ -42,10 +42,11 @@ def _make_show_file(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 class TestPlayArgParsing:
-    def test_play_requires_show(self):
+    def test_play_show_is_optional(self):
         parser = build_parser()
-        with pytest.raises(SystemExit):
-            parser.parse_args(["play", "song.mp3", "--config", "dev.yaml"])
+        # --show is now optional (D7.3); should NOT raise
+        args = parser.parse_args(["play", "song.mp3", "--config", "dev.yaml"])
+        assert args.show is None
 
     def test_play_requires_config(self):
         parser = build_parser()
@@ -66,7 +67,7 @@ class TestPlayArgParsing:
             "--debug",
         ])
         assert args.command == "play"
-        assert args.mp3_path == Path("song.mp3")
+        assert args.audio_path == Path("song.mp3")
         assert args.show == Path("show.json")
         assert args.config == Path("devices.yaml")
         assert args.sample_rate == 48000

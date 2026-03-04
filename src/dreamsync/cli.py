@@ -436,6 +436,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="~/.dreamsync/cache",
         help="Show cache directory (default: ~/.dreamsync/cache).",
     )
+    session.add_argument(
+        "--local",
+        type=str,
+        default=None,
+        metavar="AUDIO_PATH",
+        help="Play a local audio file with synchronized lighting (no Spotify needed).",
+    )
 
     # -- Spotify auth command ------------------------------------------------
     spotify_auth = sub.add_parser(
@@ -505,11 +512,13 @@ def build_parser() -> argparse.ArgumentParser:
     # -- Play command (show playback) ------------------------------------------
     play_cmd = sub.add_parser(
         "play",
-        help="Play a pre-sequenced show: mp3 audio + lighting timeline.",
+        help="Play audio with synchronized lighting. Accepts a file, directory, or M3U playlist.",
     )
-    play_cmd.add_argument("mp3_path", type=Path, help="Path to the mp3 audio file.")
-    play_cmd.add_argument("--show", type=Path, required=True, help="Path to the show timeline JSON file.")
+    play_cmd.add_argument("audio_path", type=Path, help="Path to audio file, directory of audio files, or M3U playlist.")
+    play_cmd.add_argument("--show", type=Path, default=None, help="Path to compiled show JSON. If omitted, compiles on-the-fly.")
     play_cmd.add_argument("--config", type=Path, required=True, help="Path to YAML device config file.")
+    play_cmd.add_argument("--profile", type=str, default=None, help="Profile name or path for on-the-fly compilation.")
+    play_cmd.add_argument("--cache-dir", type=str, default="~/.dreamsync/cache", help="Show cache directory (default: ~/.dreamsync/cache).")
     play_cmd.add_argument("--sample-rate", type=int, default=44100, help="Audio sample rate.")
     play_cmd.add_argument("--audio-device", type=int, default=None, dest="audio_device", help="Output audio device ID (None = system default).")
     play_cmd.add_argument("--fps", type=int, default=30, help="Device frame rate.")
@@ -523,6 +532,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Scroll left-to-right instead of center-outward.",
     )
     play_cmd.add_argument("--debug", action="store_true", help="Print cue changes, beat counts, position.")
+    play_cmd.add_argument("--shuffle", action="store_true", default=False, help="Randomize playlist order (for directories and M3U files).")
+    play_cmd.add_argument("--repeat", action="store_true", default=False, help="Loop playlist after last track.")
 
     # -- Compile command -------------------------------------------------------
     compile_cmd = sub.add_parser(
@@ -610,6 +621,58 @@ def _resolve_profile_from_args(args: argparse.Namespace):
         print(f"Loaded profile: {profile.name}")
         return profile
     return None
+
+
+def _start_keyboard_listener(session_ref, stop_event, *, debug=False):
+    """Start a daemon thread that listens for keyboard input.
+
+    Controls:
+    - 'n' or right arrow -> next track
+    - 'p' or left arrow -> previous track
+    - 'q' -> quit session
+    """
+    import sys
+    import time
+    import threading
+
+    def _handle_key(ch, sess_ref, stop_ev):
+        session = sess_ref[0] if sess_ref else None
+        if ch == "n" and session is not None:
+            session.signal_next()
+        elif ch == "p" and session is not None:
+            session.signal_prev()
+        elif ch == "q":
+            stop_ev.set()
+
+    def _listener():
+        if debug:
+            print("[controls] n=next, p=prev, q=quit")
+
+        while not stop_event.is_set():
+            try:
+                if sys.platform == "win32":
+                    import msvcrt
+                    if msvcrt.kbhit():
+                        ch = msvcrt.getch().decode("utf-8", errors="ignore").lower()
+                        _handle_key(ch, session_ref, stop_event)
+                else:
+                    import select
+                    if select.select([sys.stdin], [], [], 0.1)[0]:
+                        ch = sys.stdin.read(1).lower()
+                        _handle_key(ch, session_ref, stop_event)
+            except Exception:
+                pass
+            time.sleep(0.05)
+
+    # Wrap session_ref for mutability if needed
+    if session_ref is None:
+        session_ref = [None]
+    elif not isinstance(session_ref, list):
+        session_ref = [session_ref]
+
+    thread = threading.Thread(target=_listener, daemon=True, name="keyboard-input")
+    thread.start()
+    return thread
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1047,6 +1110,8 @@ def main(argv: list[str] | None = None) -> int:
             capture_naming=getattr(args, "capture_naming", "timestamp"),
             v3=getattr(args, "v3", False),
             cache_dir=getattr(args, "cache_dir", "~/.dreamsync/cache"),
+            local=getattr(args, "local", None) is not None,
+            local_audio=getattr(args, "local", None),
         )
         print(json.dumps(summary, separators=(",", ":")))
         return 0
@@ -1169,17 +1234,13 @@ def main(argv: list[str] | None = None) -> int:
         import threading
 
         from .output.auto_detect import build_multi_adapter, detect_all_devices, load_device_config
-        from .show.runtime import run_show_playback
 
-        mp3_path = args.mp3_path
+        audio_path = args.audio_path
         show_path = args.show
         config_path = args.config
 
-        if not mp3_path.exists():
-            print(f"Error: mp3 file not found: {mp3_path}")
-            return 1
-        if not show_path.exists():
-            print(f"Error: show file not found: {show_path}")
+        if not audio_path.exists():
+            print(f"Error: audio path not found: {audio_path}")
             return 1
         if not config_path.exists():
             print(f"Error: config file not found: {config_path}")
@@ -1187,47 +1248,97 @@ def main(argv: list[str] | None = None) -> int:
 
         brightness = max(0.0, min(1.0, float(args.brightness)))
 
-        try:
-            configs = load_device_config(config_path)
-            detected = detect_all_devices(configs)
-            multi_adapter = build_multi_adapter(
-                detected,
-                fps=args.fps,
-                brightness=brightness,
-                mirror=args.mirror,
+        if show_path is not None:
+            # Existing behavior: play pre-compiled show (single file only)
+            if not show_path.exists():
+                print(f"Error: show file not found: {show_path}")
+                return 1
+
+            try:
+                configs = load_device_config(config_path)
+                detected = detect_all_devices(configs)
+                multi_adapter = build_multi_adapter(
+                    detected,
+                    fps=args.fps,
+                    brightness=brightness,
+                    mirror=args.mirror,
+                )
+            except Exception as exc:
+                print(f"Device setup failed: {exc}")
+                return 1
+
+            stop_event = threading.Event()
+
+            def _signal_handler(signum, frame):
+                stop_event.set()
+
+            signal.signal(signal.SIGINT, _signal_handler)
+            signal.signal(signal.SIGTERM, _signal_handler)
+
+            from .show.runtime import run_show_playback
+
+            try:
+                summary = run_show_playback(
+                    audio_path,
+                    show_path,
+                    multi_adapter,
+                    sample_rate=args.sample_rate,
+                    audio_device=args.audio_device,
+                    stop_event=stop_event,
+                    debug=args.debug,
+                )
+            except Exception as exc:
+                print(f"Playback failed: {exc}")
+                return 1
+        else:
+            # On-the-fly compilation with playlist support
+            from .local_session import run_local_session
+            from .playlist import PlaylistManager
+
+            try:
+                configs = load_device_config(config_path)
+                detected = detect_all_devices(configs)
+                multi_adapter = build_multi_adapter(
+                    detected,
+                    fps=args.fps,
+                    brightness=brightness,
+                    mirror=args.mirror,
+                )
+            except Exception as exc:
+                print(f"Device setup failed: {exc}")
+                return 1
+
+            profile = None
+            if getattr(args, "profile", None):
+                from .profile import load_profile, resolve_profile_path
+                profile_path_resolved = resolve_profile_path(args.profile)
+                profile = load_profile(profile_path_resolved)
+
+            # Create playlist (auto-detects file, directory, or M3U)
+            playlist = PlaylistManager.from_path(
+                audio_path,
+                shuffle=getattr(args, "shuffle", False),
+                repeat=getattr(args, "repeat", False),
             )
-        except Exception as exc:
-            print(f"Device setup failed: {exc}")
-            return 1
 
-        stop_event = threading.Event()
+            stop_event = threading.Event()
+            signal.signal(signal.SIGINT, lambda *_: stop_event.set())
 
-        def _signal_handler(signum, frame):
-            stop_event.set()
+            # If playlist session, set up keyboard controls
+            if len(playlist) > 1:
+                _start_keyboard_listener(None, stop_event, debug=getattr(args, "debug", False))
 
-        signal.signal(signal.SIGINT, _signal_handler)
-        signal.signal(signal.SIGTERM, _signal_handler)
-
-        print(json.dumps({
-            "command": "play",
-            "mp3": str(mp3_path),
-            "show": str(show_path),
-            "config": str(config_path),
-        }, separators=(",", ":")))
-
-        try:
-            summary = run_show_playback(
-                mp3_path,
-                show_path,
+            summary = run_local_session(
                 multi_adapter,
+                audio_path,
+                cache_dir=getattr(args, "cache_dir", "~/.dreamsync/cache"),
+                profile=profile,
                 sample_rate=args.sample_rate,
                 audio_device=args.audio_device,
                 stop_event=stop_event,
-                debug=args.debug,
+                debug=getattr(args, "debug", False),
+                playlist=playlist if len(playlist) > 1 else None,
             )
-        except Exception as exc:
-            print(f"Playback failed: {exc}")
-            return 1
 
         print(json.dumps(summary, separators=(",", ":")))
         return 0
