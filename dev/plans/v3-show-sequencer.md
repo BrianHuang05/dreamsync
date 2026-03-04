@@ -63,18 +63,23 @@ Takes the structural map and produces a **show timeline** — a list of timed cu
 - The compiler can apply **narrative arc** rules: build energy across verse → pre-chorus → chorus, reset at bridge, peak at final chorus.
 - Output format: a JSON timeline of timestamped cues that the runtime can seek into at any point.
 
-### 4. Show Cache
+### 4. Show Cache — **DONE** (36 tests across D4.1–D4.4)
 
-- Compiled shows are cached by Spotify track ID.
+- Compiled shows are cached by Spotify track ID + profile fingerprint.
 - If a song has been compiled before, skip re-analysis.
-- Cache invalidation: profile change or manual flush.
+- Cache invalidation: profile change or manual flush via `cache-clear`.
+- File-based KV store: `~/.dreamsync/cache/{track_id}/{fingerprint}.show.json`.
+- CLI: `cache-list`, `cache-clear`, `cache-info` subcommands. `--cache-dir` on `compile` and `compile-and-play`.
 
-### 5. Playback Runtime
+### 5. Playback Runtime — **DONE** (22 tests across D5.1–D5.3)
 
 - Replaces the v2 Director in the main loop.
 - Reads the current Spotify playback position, seeks into the compiled timeline, and emits the corresponding `LightingIntent` to the existing v2 SegmentRenderer.
 - The renderer, device adapters (Govee LAN / BLE), health monitor, and profile system are **unchanged** from v2.
 - Handles pauses, seeks, and track skips by re-syncing to the Spotify playback position.
+- `PositionInterpolator` derives smooth position from periodic Spotify polls with slew-limited drift correction and seek detection.
+- `SpotifyShowSession` orchestrates track change → compilation → runtime swap, queue precompilation, and the ~200 Hz tick loop.
+- CLI integration: `--v3` and `--cache-dir` flags on the `session` subcommand. `run_v3_session()` entry point wired into `run_session()`.
 
 ### 6. Fallback to v2 Director
 

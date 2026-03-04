@@ -424,6 +424,18 @@ def build_parser() -> argparse.ArgumentParser:
         default="timestamp",
         help="Filename scheme for captured songs (default: timestamp).",
     )
+    session.add_argument(
+        "--v3",
+        action="store_true",
+        default=False,
+        help="Enable v3 pre-sequenced show playback (requires --spotify).",
+    )
+    session.add_argument(
+        "--cache-dir",
+        type=str,
+        default="~/.dreamsync/cache",
+        help="Show cache directory (default: ~/.dreamsync/cache).",
+    )
 
     # -- Spotify auth command ------------------------------------------------
     spotify_auth = sub.add_parser(
@@ -522,6 +534,8 @@ def build_parser() -> argparse.ArgumentParser:
     compile_cmd.add_argument("--output", "-o", type=Path, default=None, help="Output show JSON path.")
     compile_cmd.add_argument("--seed", type=int, default=None, help="Random seed for determinism.")
     compile_cmd.add_argument("--summary", action="store_true", help="Print human-readable summary.")
+    compile_cmd.add_argument("--cache-dir", type=str, default=None,
+                             help="Enable caching — store result in this directory")
 
     # -- Compile-and-play command ----------------------------------------------
     cap_cmd = sub.add_parser(
@@ -540,8 +554,39 @@ def build_parser() -> argparse.ArgumentParser:
     cap_cmd.add_argument("--mirror", dest="mirror", action="store_true", default=True)
     cap_cmd.add_argument("--no-mirror", dest="mirror", action="store_false")
     cap_cmd.add_argument("--debug", action="store_true", help="Print cue changes.")
+    cap_cmd.add_argument("--cache-dir", type=str, default=None,
+                         help="Enable caching — check/store in this directory")
+
+    # -- Cache management subcommands ------------------------------------------
+    cache_list_cmd = sub.add_parser("cache-list", help="List cached compiled shows")
+    cache_list_cmd.add_argument("--cache-dir", type=str, default="~/.dreamsync/cache",
+                                help="Cache directory (default: ~/.dreamsync/cache)")
+
+    cache_clear_cmd = sub.add_parser("cache-clear", help="Clear the show cache")
+    cache_clear_cmd.add_argument("--track-id", type=str, default=None,
+                                 help="Clear only entries for this track ID")
+    cache_clear_cmd.add_argument("--cache-dir", type=str, default="~/.dreamsync/cache",
+                                 help="Cache directory (default: ~/.dreamsync/cache)")
+    cache_clear_cmd.add_argument("--yes", "-y", action="store_true",
+                                 help="Skip confirmation prompt")
+
+    cache_info_cmd = sub.add_parser("cache-info", help="Show cache statistics")
+    cache_info_cmd.add_argument("--cache-dir", type=str, default="~/.dreamsync/cache",
+                                help="Cache directory (default: ~/.dreamsync/cache)")
 
     return parser
+
+
+def _format_bytes(n: int) -> str:
+    """Format byte count for human display."""
+    if n < 1024:
+        return f"{n} B"
+    elif n < 1024 * 1024:
+        return f"{n / 1024:.1f} KB"
+    elif n < 1024 * 1024 * 1024:
+        return f"{n / (1024 * 1024):.1f} MB"
+    else:
+        return f"{n / (1024 * 1024 * 1024):.1f} GB"
 
 
 def _resolve_profile_from_args(args: argparse.Namespace):
@@ -1000,6 +1045,8 @@ def main(argv: list[str] | None = None) -> int:
             capture=getattr(args, "capture", False),
             capture_dir=getattr(args, "capture_dir", "captured_songs"),
             capture_naming=getattr(args, "capture_naming", "timestamp"),
+            v3=getattr(args, "v3", False),
+            cache_dir=getattr(args, "cache_dir", "~/.dreamsync/cache"),
         )
         print(json.dumps(summary, separators=(",", ":")))
         return 0
@@ -1204,7 +1251,19 @@ def main(argv: list[str] | None = None) -> int:
         if profile == "error":
             return 1
 
-        timeline = compile_show(structure, profile, seed=args.seed)
+        if args.cache_dir:
+            from .cache import ShowCache, cached_compile_show, path_based_track_id
+            cache = ShowCache(args.cache_dir)
+            track_id = path_based_track_id(args.structure_path)
+            timeline, from_cache = cached_compile_show(
+                structure, profile, cache=cache, track_id=track_id, seed=args.seed,
+            )
+            if from_cache:
+                print("Cache hit — loaded from cache")
+            else:
+                print("Cache miss — compiled and cached")
+        else:
+            timeline = compile_show(structure, profile, seed=args.seed)
 
         if args.output:
             timeline.to_json(args.output)
@@ -1231,19 +1290,40 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Error: config file not found: {args.config}")
             return 1
 
-        print(f"Analyzing {args.mp3_path}...")
-        try:
-            structure = analyze_song(args.mp3_path)
-        except Exception as exc:
-            print(f"Analysis failed: {exc}")
-            return 1
-
         profile = _resolve_profile_from_args(args) if args.profile else None
         if profile == "error":
             return 1
 
-        print("Compiling show...")
-        timeline = compile_show(structure, profile, seed=args.seed)
+        if args.cache_dir:
+            from .cache import ShowCache, cached_compile_show, path_based_track_id
+            cache = ShowCache(args.cache_dir)
+            track_id = path_based_track_id(args.mp3_path)
+
+            if cache.has(track_id, profile):
+                timeline = cache.get(track_id, profile)
+                print("Cache hit — skipping analysis and compilation")
+            else:
+                print(f"Analyzing {args.mp3_path}...")
+                try:
+                    structure = analyze_song(args.mp3_path)
+                except Exception as exc:
+                    print(f"Analysis failed: {exc}")
+                    return 1
+
+                print("Cache miss — analyzing and compiling...")
+                timeline, _ = cached_compile_show(
+                    structure, profile, cache=cache, track_id=track_id, seed=args.seed,
+                )
+        else:
+            print(f"Analyzing {args.mp3_path}...")
+            try:
+                structure = analyze_song(args.mp3_path)
+            except Exception as exc:
+                print(f"Analysis failed: {exc}")
+                return 1
+
+            print("Compiling show...")
+            timeline = compile_show(structure, profile, seed=args.seed)
 
         if args.output:
             timeline.to_json(args.output)
@@ -1294,6 +1374,75 @@ def main(argv: list[str] | None = None) -> int:
             show_tmp.unlink(missing_ok=True)
 
         print(json.dumps(summary, separators=(",", ":")))
+        return 0
+
+    if args.command == "cache-list":
+        from .cache import ShowCache
+
+        cache = ShowCache(args.cache_dir)
+        s = cache.stats()
+        entries = cache.list_entries()
+
+        size_str = _format_bytes(s.total_bytes)
+        print(f"Show Cache: {s.entry_count} entries ({size_str}) in {s.cache_dir}\n")
+
+        if not entries:
+            print("Cache is empty.")
+            return 0
+
+        print(f"{'Track':<28} {'Artist':<16} {'Profile':<16} {'Compiled At':<21} {'Size':>8}")
+        print("\u2500" * 93)
+
+        for e in entries:
+            track = e.track_name[:27]
+            artist = e.artist[:15]
+            prof = e.profile_name[:15]
+            compiled = e.compiled_at[:19].replace("T", " ") if e.compiled_at != "unknown" else "unknown"
+            size = _format_bytes(e.file_size)
+            print(f"{track:<28} {artist:<16} {prof:<16} {compiled:<21} {size:>8}")
+
+        return 0
+
+    if args.command == "cache-clear":
+        from .cache import ShowCache
+
+        cache = ShowCache(args.cache_dir)
+
+        if args.track_id:
+            count = cache.invalidate(args.track_id)
+            if count:
+                print(f"Deleted {count} cached show{'s' if count != 1 else ''} for track {args.track_id}.")
+            else:
+                print(f"No cached shows found for track {args.track_id}.")
+        else:
+            s = cache.stats()
+            if s.entry_count == 0:
+                print("Cache is already empty.")
+                return 0
+
+            if not args.yes:
+                answer = input(f"Clear all {s.entry_count} cached shows? [y/N]: ")
+                if answer.lower() != "y":
+                    print("Aborted.")
+                    return 0
+
+            count = cache.clear()
+            print(f"Deleted {count} cached show{'s' if count != 1 else ''}.")
+
+        return 0
+
+    if args.command == "cache-info":
+        from .cache import ShowCache
+
+        cache = ShowCache(args.cache_dir)
+        s = cache.stats()
+
+        print("Show Cache Info")
+        print(f"  Directory:   {s.cache_dir}")
+        print(f"  Entries:     {s.entry_count}")
+        print(f"  Tracks:      {s.track_count}")
+        print(f"  Disk usage:  {_format_bytes(s.total_bytes)}")
+
         return 0
 
     parser.print_help()

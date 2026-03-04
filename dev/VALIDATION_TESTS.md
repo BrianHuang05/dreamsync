@@ -788,6 +788,88 @@ done
 
 ---
 
+## Phase 9 — Show Cache (Feature 4)
+
+These tests validate the show cache system. **No hardware or audio files needed** — all tests use in-memory structures and tmp directories.
+
+### 9.1 Cache unit tests (36 tests)
+
+```bash
+python -m pytest dev/tests/test_cache_fingerprint.py dev/tests/test_cache.py dev/tests/test_cache_compile.py -v
+```
+
+**Pass:** All 36 tests pass.
+
+### 9.2 CLI cache commands (no hardware required)
+
+```bash
+# List cache (empty)
+python -m dreamsync cache-list
+
+# Show cache info
+python -m dreamsync cache-info
+
+# Compile with caching enabled
+python -m dreamsync compile path/to/structure.json --cache-dir ~/.dreamsync/cache --summary
+
+# Second compile — should hit cache
+python -m dreamsync compile path/to/structure.json --cache-dir ~/.dreamsync/cache --summary
+
+# List cache (should show 1 entry)
+python -m dreamsync cache-list
+
+# Clear cache
+python -m dreamsync cache-clear --yes
+```
+
+**Pass criteria:**
+- First compile prints "Cache miss — compiled and cached"
+- Second compile prints "Cache hit — loaded from cache"
+- `cache-list` shows the entry with track name, profile, compiled time, size
+- `cache-info` shows accurate stats (1 entry, 1 track, disk usage > 0)
+- `cache-clear --yes` prints "Deleted 1 cached show."
+
+### 9.3 Compile-and-play with caching (requires mp3 + devices)
+
+```bash
+# First run — cache miss, full pipeline
+python -m dreamsync compile-and-play path/to/song.mp3 --config devices.yaml --cache-dir ~/.dreamsync/cache --debug
+
+# Second run — cache hit, skip analysis + compilation
+python -m dreamsync compile-and-play path/to/song.mp3 --config devices.yaml --cache-dir ~/.dreamsync/cache --debug
+```
+
+**Pass criteria:**
+- First run: "Analyzing..." → "Cache miss — analyzing and compiling..." → "Playing show..."
+- Second run: "Cache hit — skipping analysis and compilation" → "Playing show..." (much faster startup)
+- Both runs play audio and drive devices identically
+
+### 9.4 Profile-aware caching
+
+```bash
+python -m dreamsync compile path/to/structure.json --cache-dir ~/.dreamsync/cache --profile aurora --summary
+python -m dreamsync compile path/to/structure.json --cache-dir ~/.dreamsync/cache --profile neon_city --summary
+python -m dreamsync cache-list
+```
+
+**Pass criteria:**
+- Two distinct cache entries for the same track (different profile fingerprints)
+- `cache-list` shows both entries with different profile names
+
+### 9.5 Per-track invalidation
+
+```bash
+python -m dreamsync cache-list
+python -m dreamsync cache-clear --track-id <track_id_from_list>
+python -m dreamsync cache-list
+```
+
+**Pass criteria:**
+- Only entries for the specified track are deleted
+- Other track entries remain
+
+---
+
 ## Quick Reference — Full Test Sequence
 
 Run these in order for a complete validation pass:
@@ -827,6 +909,12 @@ Run these in order for a complete validation pass:
 - [ ] **33. Profile override** (different profiles produce different shows)
 - [ ] **34. Compile-and-play** (full pipeline with devices)
 - [ ] **35. Compiler genre variety** (5+ songs across genres)
+- [ ] **36. Cache unit tests** (36 tests)
+- [ ] **37. CLI cache commands** (list, info, clear — no hardware)
+- [ ] **38. Compile with caching** (miss then hit)
+- [ ] **39. Compile-and-play with caching** (skip analysis on hit)
+- [ ] **40. Profile-aware caching** (same track, different profiles)
+- [ ] **41. Per-track invalidation** (selective cache clear)
 
 ```bash
 # 1. Unit tests (all systems) ✅
@@ -933,6 +1021,29 @@ python -m dreamsync compile-and-play path/to/song.mp3 --config devices.yaml --pr
 
 # 35. Compiler genre variety (5+ songs)
 # for f in path/to/songs/*.mp3; do python -m dreamsync analyze "$f" --output "/tmp/$(basename "$f" .mp3).json"; python -m dreamsync compile "/tmp/$(basename "$f" .mp3).json" --summary --seed 42; done
+
+# 36. Cache unit tests (36 tests)
+python -m pytest dev/tests/test_cache_fingerprint.py dev/tests/test_cache.py dev/tests/test_cache_compile.py -v
+
+# 37. CLI cache commands (no hardware required)
+python -m dreamsync cache-list
+python -m dreamsync cache-info
+
+# 38. Compile with caching (first run = miss, second = hit)
+python -m dreamsync compile path/to/structure.json --cache-dir ~/.dreamsync/cache --summary
+python -m dreamsync compile path/to/structure.json --cache-dir ~/.dreamsync/cache --summary
+
+# 39. Compile-and-play with caching (requires mp3 + devices)
+python -m dreamsync compile-and-play path/to/song.mp3 --config devices.yaml --cache-dir ~/.dreamsync/cache --debug
+
+# 40. Profile-aware caching
+python -m dreamsync compile path/to/structure.json --cache-dir ~/.dreamsync/cache --profile aurora --summary
+python -m dreamsync compile path/to/structure.json --cache-dir ~/.dreamsync/cache --profile neon_city --summary
+python -m dreamsync cache-list
+
+# 41. Per-track invalidation
+python -m dreamsync cache-clear --track-id <TRACK_ID>
+python -m dreamsync cache-clear --yes
 ```
 
 ---
@@ -961,3 +1072,6 @@ python -m dreamsync compile-and-play path/to/song.mp3 --config devices.yaml --pr
 | `dreamsync compile` fails with "Error loading structure" | The JSON file may be invalid or incompatible. Re-generate with `dreamsync analyze`. |
 | Compiler summary shows flat intensity | Song may have all sections with similar energy. The arc planner amplifies existing differences — monotone songs produce monotone shows. |
 | `compile-and-play` fails at "Device setup failed" | Check `devices.yaml` is valid and devices are reachable. Run `dreamsync govee-scan` to verify. |
+| `cache-list` shows 0 entries after compiling | Ensure `--cache-dir` was passed to the compile command. Without it, caching is disabled. |
+| Second compile still says "Cache miss" | Profile changed between runs, or `--cache-dir` points to a different directory. Run `cache-list` to inspect. |
+| `cache-clear` hangs | It prompts for confirmation. Pass `--yes` to skip, or type `y` + Enter. |

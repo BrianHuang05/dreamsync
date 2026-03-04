@@ -6,7 +6,7 @@
 - **v3 vision**: Pre-sequenced show engine. See `dev/plans/v3-show-sequencer.md`.
 - **Platform**: Windows 11, bash/Unix shell syntax, Python 3.11+
 - **Install**: `pip install -e ".[session]"`
-- **Tests**: `pytest dev/tests/` (870 tests)
+- **Tests**: `pytest dev/tests/` (906 tests)
 - **Lint**: `ruff check src/`
 - **Branch**: `govee-lan-direct` (primary)
 
@@ -19,7 +19,7 @@
 | 1 | Spotify Queue Watcher | **DONE** (`7c3372b`) | `dev/plans/feature-1-spotify-queue-watcher.md` |
 | 2 | Song Structure Analyzer | **DONE** (C3+C4+C5 code complete — 213 tests) | `dev/plans/feature-2-song-structure-analyzer.md` |
 | 3 | Show Compiler | **DONE** (C1–C5 complete — 58 tests) | `dev/plans/feature-3-show-compiler.md` |
-| 4 | Show Cache | Not started | — |
+| 4 | Show Cache | **DONE** (D4.1–D4.4 complete — 36 tests) | `dev/plans/feature-4-show-cache.md` |
 | 5 | Playback Runtime | Not started | — |
 | 6 | v2 Fallback Switch | Not started | — |
 
@@ -51,11 +51,54 @@ These are implemented in code and unit-tested, but not manually validated end-to
 
 ---
 
-## Next: Feature 4 — Show Cache
+## Next: Feature 5 — Playback Runtime
 
 **Status**: Not started — needs plan.
 
-The Show Cache stores compiled shows by Spotify track ID so that re-analysis can be skipped for songs that have been compiled before. Cache invalidation triggers on profile change or manual flush.
+The Playback Runtime replaces the v2 Director in the main loop. It reads the current Spotify playback position, seeks into the compiled timeline, and emits the corresponding `LightingIntent` to the existing v2 SegmentRenderer. Uses `cached_compile_show()` from Feature 4 for cache-aware compilation.
+
+---
+
+## Previous: Feature 4 — Show Cache ✅
+
+Plan: `dev/plans/feature-4-show-cache.md`
+
+**Status**: Code complete (36 unit tests across 3 files). Ready for manual validation.
+
+### What it does
+
+File-based cache for compiled `ShowTimeline`s, keyed by composite `(track_id, profile_fingerprint)`. Skips re-analysis and re-compilation for songs that have been compiled before. Profile changes automatically produce new cache entries (different fingerprint). Manual flush via CLI.
+
+### Architecture
+
+```
+caller → cached_compile_show() → ShowCache.get() → HIT: return timeline
+                                                  → MISS: compile_show() → ShowCache.put()
+```
+
+### Files created
+
+```
+src/dreamsync/cache.py          # ShowCache, CacheEntry, CacheStats,
+                                # profile_fingerprint(), cached_compile_show(),
+                                # path_based_track_id(), _sanitize_track_id()
+```
+
+### Tests (36 total)
+
+```
+dev/tests/test_cache_fingerprint.py   —  8 tests (profile fingerprint)
+dev/tests/test_cache.py               — 14 tests (ShowCache CRUD)
+dev/tests/test_cache_compile.py       — 14 tests (cached compile + CLI args)
+```
+
+### CLI subcommands added
+
+- `dreamsync cache-list [--cache-dir DIR]`
+- `dreamsync cache-clear [--track-id ID] [--yes] [--cache-dir DIR]`
+- `dreamsync cache-info [--cache-dir DIR]`
+- `dreamsync compile --cache-dir DIR` (cache-aware compilation)
+- `dreamsync compile-and-play --cache-dir DIR` (skip analysis on cache hit)
 
 ---
 

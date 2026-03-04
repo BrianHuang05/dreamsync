@@ -58,6 +58,8 @@ def run_session(
     capture: bool = False,
     capture_dir: str = "captured_songs",
     capture_naming: str = "timestamp",
+    v3: bool = False,
+    cache_dir: str = "~/.dreamsync/cache",
 ) -> dict[str, Any]:
     """Run an infinite DreamSync session from a YAML config.
 
@@ -214,30 +216,45 @@ def run_session(
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    # 6. Run live loop
+    # 6. Run live loop (or v3 session)
     try:
-        logs, summary = run_live_to_govee(
-            multi_adapter=multi_adapter,
-            duration_seconds=None,
-            sample_rate=sample_rate,
-            channels=channels,
-            device=audio_device,
-            frame_size=frame_size,
-            hop_size=hop_size,
-            telemetry_interval_seconds=1.0,
-            blocksize=blocksize,
-            director_config=director_config,
-            half_time=half_time,
-            max_brightness=max_brightness,
-            auto_cycle=auto_cycle,
-            cycle_interval=cycle_interval,
-            debug_mood=debug_mood,
-            stop_event=stop_event,
-            telemetry_dir=telemetry_dir,
-            profile=profile,
-            effect_cycler_override=effect_cycler,
-            capture_pipeline=capture_pipeline,
-        )
+        if v3 and spotify_watcher is not None:
+            from dreamsync.v3_session import run_v3_session
+
+            summary = run_v3_session(
+                multi_adapter,
+                spotify_watcher,
+                cache_dir=cache_dir,
+                profile=profile,
+                capture_dir=capture_dir,
+                stop_event=stop_event,
+                debug=debug_mood,
+            )
+        else:
+            if v3 and spotify_watcher is None:
+                print("Warning: --v3 requires --spotify with a valid token. Falling back to v2.")
+            logs, summary = run_live_to_govee(
+                multi_adapter=multi_adapter,
+                duration_seconds=None,
+                sample_rate=sample_rate,
+                channels=channels,
+                device=audio_device,
+                frame_size=frame_size,
+                hop_size=hop_size,
+                telemetry_interval_seconds=1.0,
+                blocksize=blocksize,
+                director_config=director_config,
+                half_time=half_time,
+                max_brightness=max_brightness,
+                auto_cycle=auto_cycle,
+                cycle_interval=cycle_interval,
+                debug_mood=debug_mood,
+                stop_event=stop_event,
+                telemetry_dir=telemetry_dir,
+                profile=profile,
+                effect_cycler_override=effect_cycler,
+                capture_pipeline=capture_pipeline,
+            )
     finally:
         # 7. Cleanup
         if capture_pipeline is not None:
