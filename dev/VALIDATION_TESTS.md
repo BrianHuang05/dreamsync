@@ -704,6 +704,90 @@ print('Round-trip OK')
 
 ---
 
+## Phase 8 — Show Compiler (Feature 3)
+
+These tests validate the show compiler pipeline. **No Govee hardware or audio files needed** — all tests use in-memory structures.
+
+### 8.1 Compiler unit tests (58 tests)
+
+```bash
+python -m pytest dev/tests/test_compiler_arc.py dev/tests/test_compiler_treatments.py dev/tests/test_compiler_transitions.py dev/tests/test_compiler_assemble.py dev/tests/test_compiler_compile.py -v
+```
+
+**Pass:** All 58 tests pass.
+
+### 8.2 Single file compile (requires an analyzed structure JSON)
+
+```bash
+python -m dreamsync compile path/to/structure.json --summary
+```
+
+**Pass criteria:**
+- Summary table printed with Duration, BPM, Sections, Cues
+- Each section has a cue row with time, label, mood, effect, transition, intensity
+- Runs in < 1 second
+
+### 8.3 Compile to JSON output
+
+```bash
+python -m dreamsync compile path/to/structure.json --output show.json
+```
+
+**Pass criteria:**
+- `show.json` written, contains valid ShowTimeline JSON
+- Round-trips: `ShowTimeline.from_json("show.json")` succeeds
+
+### 8.4 Seed determinism
+
+```bash
+python -m dreamsync compile path/to/structure.json --seed 42 --output show1.json
+python -m dreamsync compile path/to/structure.json --seed 42 --output show2.json
+diff show1.json show2.json
+```
+
+**Pass:** No differences between show1.json and show2.json.
+
+### 8.5 Profile override
+
+```bash
+python -m dreamsync compile path/to/structure.json --profile aurora --summary
+python -m dreamsync compile path/to/structure.json --profile neon_city --summary
+```
+
+**Pass:** Summaries show different effects/palettes for each profile.
+
+### 8.6 Compile-and-play end-to-end (requires mp3 + devices)
+
+```bash
+python -m dreamsync compile-and-play path/to/song.mp3 --config devices.yaml --profile aurora --debug
+```
+
+**Pass criteria:**
+- "Analyzing..." → "Compiling show..." → "Playing show..." messages in order
+- Audio plays through speakers
+- Devices light up with cue transitions matching debug output
+- Ctrl+C cleanly stops playback
+
+### 8.7 Genre variety (5+ songs)
+
+Compile 5+ songs across genres and review show quality:
+
+```bash
+for f in path/to/songs/*.mp3; do
+  python -m dreamsync analyze "$f" --output "/tmp/$(basename "$f" .mp3).json"
+  python -m dreamsync compile "/tmp/$(basename "$f" .mp3).json" --summary --seed 42
+done
+```
+
+**Pass criteria:**
+- All songs compile without errors
+- Intro sections have low intensity (< 0.30)
+- Outro sections have low intensity (< 0.20)
+- Chorus/drop sections have higher intensity than verse sections
+- Transitions make musical sense (drops get cuts, outros get long fades)
+
+---
+
 ## Quick Reference — Full Test Sequence
 
 Run these in order for a complete validation pass:
@@ -736,6 +820,13 @@ Run these in order for a complete validation pass:
 - [ ] **26. Audio playback test** (play mp3 through speakers, no devices)
 - [ ] **27. Synchronized playback** (mp3 + show file + real Govee devices)
 - [ ] **28. Show file round-trip** (serialize/deserialize ShowTimeline)
+- [ ] **29. Compiler unit tests** (58 tests)
+- [ ] **30. Single file compile** (summary output)
+- [ ] **31. Compile to JSON output** (round-trip)
+- [ ] **32. Seed determinism** (identical output with same seed)
+- [ ] **33. Profile override** (different profiles produce different shows)
+- [ ] **34. Compile-and-play** (full pipeline with devices)
+- [ ] **35. Compiler genre variety** (5+ songs across genres)
 
 ```bash
 # 1. Unit tests (all systems) ✅
@@ -819,6 +910,29 @@ python -m dreamsync play path/to/song.mp3 --show path/to/show.json --config devi
 
 # 28. Show file round-trip
 python -c "from dreamsync.show.models import ShowTimeline; tl = ShowTimeline.from_json('path/to/show.json'); tl.to_json('/tmp/copy.json'); print('OK')"
+
+# 29. Compiler unit tests (58 tests)
+python -m pytest dev/tests/test_compiler_arc.py dev/tests/test_compiler_treatments.py dev/tests/test_compiler_transitions.py dev/tests/test_compiler_assemble.py dev/tests/test_compiler_compile.py -v
+
+# 30. Single file compile
+python -m dreamsync compile path/to/structure.json --summary
+
+# 31. Compile to JSON output
+python -m dreamsync compile path/to/structure.json --output show.json
+
+# 32. Seed determinism
+python -m dreamsync compile path/to/structure.json --seed 42 --output show1.json
+python -m dreamsync compile path/to/structure.json --seed 42 --output show2.json
+
+# 33. Profile override
+python -m dreamsync compile path/to/structure.json --profile aurora --summary
+python -m dreamsync compile path/to/structure.json --profile neon_city --summary
+
+# 34. Compile-and-play (requires mp3 + devices)
+python -m dreamsync compile-and-play path/to/song.mp3 --config devices.yaml --profile aurora --debug
+
+# 35. Compiler genre variety (5+ songs)
+# for f in path/to/songs/*.mp3; do python -m dreamsync analyze "$f" --output "/tmp/$(basename "$f" .mp3).json"; python -m dreamsync compile "/tmp/$(basename "$f" .mp3).json" --summary --seed 42; done
 ```
 
 ---
@@ -843,3 +957,7 @@ python -c "from dreamsync.show.models import ShowTimeline; tl = ShowTimeline.fro
 | Analyzer BPM is wrong by exactly 2x | Harmonic aliasing — the analyzer should auto-resolve this for BPMs outside 80-160 range. If persistent, file an issue. |
 | Analyzer produces only 1 section | Song may lack clear structural changes. Try a song with distinct verse/chorus dynamics. |
 | Analysis takes > 30 seconds | Expected for songs > 5 minutes or on slow hardware. Feature pipeline processes ~1000 frames/second. |
+| `dreamsync compile` fails with "structure file not found" | Check the path to the structure JSON. Run `dreamsync analyze` first to generate it. |
+| `dreamsync compile` fails with "Error loading structure" | The JSON file may be invalid or incompatible. Re-generate with `dreamsync analyze`. |
+| Compiler summary shows flat intensity | Song may have all sections with similar energy. The arc planner amplifies existing differences — monotone songs produce monotone shows. |
+| `compile-and-play` fails at "Device setup failed" | Check `devices.yaml` is valid and devices are reachable. Run `dreamsync govee-scan` to verify. |

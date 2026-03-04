@@ -512,6 +512,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     play_cmd.add_argument("--debug", action="store_true", help="Print cue changes, beat counts, position.")
 
+    # -- Compile command -------------------------------------------------------
+    compile_cmd = sub.add_parser(
+        "compile",
+        help="Compile a SongStructure into a ShowTimeline.",
+    )
+    compile_cmd.add_argument("structure_path", type=Path, help="Path to SongStructure JSON file.")
+    compile_cmd.add_argument("--profile", type=str, default=None, help="Profile name or path.")
+    compile_cmd.add_argument("--output", "-o", type=Path, default=None, help="Output show JSON path.")
+    compile_cmd.add_argument("--seed", type=int, default=None, help="Random seed for determinism.")
+    compile_cmd.add_argument("--summary", action="store_true", help="Print human-readable summary.")
+
+    # -- Compile-and-play command ----------------------------------------------
+    cap_cmd = sub.add_parser(
+        "compile-and-play",
+        help="Analyze, compile, and play a show from an audio file.",
+    )
+    cap_cmd.add_argument("mp3_path", type=Path, help="Path to audio file.")
+    cap_cmd.add_argument("--profile", type=str, default=None, help="Profile name or path.")
+    cap_cmd.add_argument("--config", type=Path, required=True, help="Device config YAML.")
+    cap_cmd.add_argument("--seed", type=int, default=None, help="Random seed for determinism.")
+    cap_cmd.add_argument("--output", "-o", type=Path, default=None, help="Save compiled show JSON.")
+    cap_cmd.add_argument("--sample-rate", type=int, default=44100, help="Audio sample rate.")
+    cap_cmd.add_argument("--audio-device", type=int, default=None, dest="audio_device", help="Output audio device ID.")
+    cap_cmd.add_argument("--fps", type=int, default=30, help="Device frame rate.")
+    cap_cmd.add_argument("--brightness", type=float, default=1.0, help="Global brightness (0-1).")
+    cap_cmd.add_argument("--mirror", dest="mirror", action="store_true", default=True)
+    cap_cmd.add_argument("--no-mirror", dest="mirror", action="store_false")
+    cap_cmd.add_argument("--debug", action="store_true", help="Print cue changes.")
+
     return parser
 
 
@@ -1152,6 +1181,117 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             print(f"Playback failed: {exc}")
             return 1
+
+        print(json.dumps(summary, separators=(",", ":")))
+        return 0
+
+    if args.command == "compile":
+        from .analyzer.models import SongStructure
+        from .compiler import compile_show
+        from .compiler.compile import format_summary
+
+        if not args.structure_path.exists():
+            print(f"Error: structure file not found: {args.structure_path}")
+            return 1
+
+        try:
+            structure = SongStructure.from_json(args.structure_path)
+        except Exception as exc:
+            print(f"Error loading structure: {exc}")
+            return 1
+
+        profile = _resolve_profile_from_args(args) if args.profile else None
+        if profile == "error":
+            return 1
+
+        timeline = compile_show(structure, profile, seed=args.seed)
+
+        if args.output:
+            timeline.to_json(args.output)
+            print(f"Show timeline written to {args.output}")
+        if args.summary:
+            print(format_summary(structure, timeline))
+        if not args.output and not args.summary:
+            print(json.dumps(timeline.to_dict(), indent=2))
+        return 0
+
+    if args.command == "compile-and-play":
+        import signal
+        import threading
+
+        from .analyzer.analyze import analyze_song
+        from .compiler import compile_show
+        from .output.auto_detect import build_multi_adapter, detect_all_devices, load_device_config
+        from .show.runtime import run_show_playback
+
+        if not args.mp3_path.exists():
+            print(f"Error: audio file not found: {args.mp3_path}")
+            return 1
+        if not args.config.exists():
+            print(f"Error: config file not found: {args.config}")
+            return 1
+
+        print(f"Analyzing {args.mp3_path}...")
+        try:
+            structure = analyze_song(args.mp3_path)
+        except Exception as exc:
+            print(f"Analysis failed: {exc}")
+            return 1
+
+        profile = _resolve_profile_from_args(args) if args.profile else None
+        if profile == "error":
+            return 1
+
+        print("Compiling show...")
+        timeline = compile_show(structure, profile, seed=args.seed)
+
+        if args.output:
+            timeline.to_json(args.output)
+            print(f"Show timeline saved to {args.output}")
+
+        brightness = max(0.0, min(1.0, float(args.brightness)))
+        try:
+            configs = load_device_config(args.config)
+            detected = detect_all_devices(configs)
+            multi_adapter = build_multi_adapter(
+                detected,
+                fps=args.fps,
+                brightness=brightness,
+                mirror=args.mirror,
+            )
+        except Exception as exc:
+            print(f"Device setup failed: {exc}")
+            return 1
+
+        # Write show to temp file for run_show_playback
+        import tempfile
+        show_tmp = Path(tempfile.mktemp(suffix=".json"))
+        timeline.to_json(show_tmp)
+
+        stop_event = threading.Event()
+
+        def _signal_handler(signum, frame):
+            stop_event.set()
+
+        signal.signal(signal.SIGINT, _signal_handler)
+        signal.signal(signal.SIGTERM, _signal_handler)
+
+        print("Playing show...")
+        try:
+            summary = run_show_playback(
+                args.mp3_path,
+                show_tmp,
+                multi_adapter,
+                sample_rate=args.sample_rate,
+                audio_device=args.audio_device,
+                stop_event=stop_event,
+                debug=args.debug,
+            )
+        except Exception as exc:
+            print(f"Playback failed: {exc}")
+            return 1
+        finally:
+            show_tmp.unlink(missing_ok=True)
 
         print(json.dumps(summary, separators=(",", ":")))
         return 0

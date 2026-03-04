@@ -53,7 +53,7 @@ The core new capability. Given a track, produce a structural map:
   - EDM: buildup → drop → breakdown → drop
 - **Per-section feature summary** — Energy, valence, danceability, tempo, loudness per section (from Spotify audio features + sections data). These feed into mood/palette selection.
 
-### 3. Show Compiler
+### 3. Show Compiler — **DONE** (58 tests across C1–C5)
 
 Takes the structural map and produces a **show timeline** — a list of timed cues:
 

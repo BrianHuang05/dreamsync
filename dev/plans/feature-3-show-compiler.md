@@ -1,6 +1,6 @@
 # Feature 3 — Show Compiler
 
-**Status**: **IN PROGRESS** (C1–C4 done, C5 remaining)
+**Status**: **DONE** (C1–C5 complete, 58 tests passing)
 
 ---
 

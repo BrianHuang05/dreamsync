@@ -6,7 +6,7 @@
 - **v3 vision**: Pre-sequenced show engine. See `dev/plans/v3-show-sequencer.md`.
 - **Platform**: Windows 11, bash/Unix shell syntax, Python 3.11+
 - **Install**: `pip install -e ".[session]"`
-- **Tests**: `pytest dev/tests/` (812 tests)
+- **Tests**: `pytest dev/tests/` (870 tests)
 - **Lint**: `ruff check src/`
 - **Branch**: `govee-lan-direct` (primary)
 
@@ -18,10 +18,20 @@
 |---|---------|--------|------|
 | 1 | Spotify Queue Watcher | **DONE** (`7c3372b`) | `dev/plans/feature-1-spotify-queue-watcher.md` |
 | 2 | Song Structure Analyzer | **DONE** (C3+C4+C5 code complete — 213 tests) | `dev/plans/feature-2-song-structure-analyzer.md` |
-| 3 | Show Compiler | Not started | — |
+| 3 | Show Compiler | **DONE** (C1–C5 complete — 58 tests) | `dev/plans/feature-3-show-compiler.md` |
 | 4 | Show Cache | Not started | — |
 | 5 | Playback Runtime | Not started | — |
 | 6 | v2 Fallback Switch | Not started | — |
+
+### Feature 3 Component Status
+
+| # | Component | Status | Tests |
+|---|-----------|--------|-------|
+| C1 | NarrativeArcPlanner | **DONE** | 12 tests (`test_compiler_arc.py`) |
+| C2 | TreatmentSelector | **DONE** | 15 tests (`test_compiler_treatments.py`) |
+| C3 | TransitionPlanner | **DONE** | 10 tests (`test_compiler_transitions.py`) |
+| C4 | TimelineAssembler | **DONE** | 8 tests (`test_compiler_assemble.py`) |
+| C5 | compile_show() Orchestrator + CLI | **DONE** | 13 tests (`test_compiler_compile.py`) |
 
 ### Feature 2 Component Status
 
@@ -41,11 +51,58 @@ These are implemented in code and unit-tested, but not manually validated end-to
 
 ---
 
-## Next: Feature 3 — Show Compiler
+## Next: Feature 4 — Show Cache
 
 **Status**: Not started — needs plan.
 
-The Show Compiler takes a `SongStructure` (from C4 Analyzer) and produces a `ShowTimeline` (consumed by C5 Show Player). This is the creative engine that maps song sections, energy profiles, and moods to lighting cues (render mode, color palette, intensity, speed, transitions).
+The Show Cache stores compiled shows by Spotify track ID so that re-analysis can be skipped for songs that have been compiled before. Cache invalidation triggers on profile change or manual flush.
+
+---
+
+## Previous: Feature 3 — Show Compiler ✅
+
+Plan: `dev/plans/feature-3-show-compiler.md`
+
+**Status**: Code complete (58 unit tests across 5 files). Ready for manual validation.
+
+### What it does
+
+Takes a `SongStructure` (from the Analyzer) and a `ProfileConfig` (active lighting profile) and compiles a complete `ShowTimeline` — a self-contained JSON file of timestamped lighting cues. The compiler selects lighting treatments per section (effect mode, color palette, intensity, speed), shapes a narrative arc across the song, plans transitions (cut vs. fade), and assembles everything into a playable timeline.
+
+### Architecture
+
+```
+SongStructure → NarrativeArcPlanner → TreatmentSelector → TransitionPlanner → TimelineAssembler → ShowTimeline
+```
+
+Orchestrated by `compile_show(structure, profile, **kwargs)` — single function call, structure in, timeline out.
+
+### Files created
+
+```
+src/dreamsync/compiler/
+├── __init__.py          # Re-export compile_show
+├── arc.py               # NarrativeArcPlanner (C1)
+├── treatments.py        # TreatmentSelector (C2)
+├── transitions.py       # TransitionPlanner (C3)
+├── assemble.py          # TimelineAssembler (C4)
+└── compile.py           # compile_show() orchestrator + format_summary() (C5)
+```
+
+### Tests (58 total)
+
+```
+dev/tests/test_compiler_arc.py          — 12 tests
+dev/tests/test_compiler_treatments.py   — 15 tests
+dev/tests/test_compiler_transitions.py  — 10 tests
+dev/tests/test_compiler_assemble.py     —  8 tests
+dev/tests/test_compiler_compile.py      — 13 tests
+```
+
+### CLI subcommands added
+
+- `dreamsync compile structure.json --output show.json [--profile NAME] [--seed N] [--summary]`
+- `dreamsync compile-and-play song.mp3 --config devices.yaml [--profile NAME] [--seed N] [--debug]`
 
 ---
 
@@ -92,61 +149,6 @@ dev/tests/test_show_cli.py         —  7 tests
 ```bash
 dreamsync play song.mp3 --show show.json --config devices.yaml [--debug] [--audio-device N]
 ```
-
----
-
-## Previous: Feature 2, Component 4 — Song Structure Analyzer ✅
-
-Plan: `dev/plans/feature-2-component-4-analyzer.md`
-
-**Status**: Code complete (80 unit tests). Ready for manual validation with real mp3 files.
-
-### What it does
-
-Takes an mp3 file (from Component 3 capture or direct input) and produces a `SongStructure` — global BPM, beat grid, section boundaries with labels (intro, verse, chorus, bridge, drop, outro), and per-section energy/mood profiles. This feeds the Show Compiler (Feature 3).
-
-### Key decisions made
-
-- **All-local analysis** — no Spotify Audio Analysis API dependency. Analysis uses the existing `LiveBpmEstimator`, `Director`, `MoodClassifier` etc. run offline over the complete file.
-- **Section detection** — spectral self-similarity matrix + novelty curve (standard MIR technique). No ML models.
-- **No new pip deps** — numpy + ffmpeg only.
-- **No live.py refactoring needed** — all helper functions (`_prepare_bass_window`, `_spectral_features`, `_compute_whitened_flux`, `_feature_row_from_frame`) and classes were already importable.
-
-### Files created
-
-```
-src/dreamsync/analyzer/
-├── __init__.py        # Package init
-├── decode.py          # Mp3Decoder (D4.1)
-├── features.py        # OfflineFeaturePipeline (D4.2)
-├── bpm.py             # GlobalBpmEstimator (D4.3)
-├── sections.py        # SectionSegmenter (D4.4)
-├── models.py          # SongStructure, Section, BeatGrid (D4.5)
-└── analyze.py         # analyze_song() orchestrator (D4.5)
-```
-
-### CLI subcommands added
-
-- `dreamsync analyze song.mp3` — full analysis, JSON to stdout
-- `dreamsync analyze song.mp3 --output structure.json` — write JSON to file
-- `dreamsync analyze song.mp3 --summary` — human-readable summary
-- `dreamsync analyze-dir captured_songs/ --output-dir analysis/` — batch mode
-
-### Tests (80 total)
-
-```
-dev/tests/test_analyzer_decode.py      — 13 tests
-dev/tests/test_analyzer_features.py    — 15 tests
-dev/tests/test_analyzer_bpm.py         — 18 tests
-dev/tests/test_analyzer_sections.py    — 20 tests
-dev/tests/test_analyzer_models.py      — 14 tests
-```
-
-### Next: manual validation
-
-See `dev/VALIDATION_TESTS.md` Phase 6 for manual validation steps with real mp3 files.
-
-Features 3–6 follow in order. See `dev/plans/v3-show-sequencer.md` for the full vision.
 
 ---
 
