@@ -168,10 +168,13 @@ python -m dreamsync devices
 ## Run tests
 
 ```bash
-python -m pytest tests/ -v
+python -m pytest tests/ -v        # Core subsystems (569 tests)
+python -m pytest dev/tests/ -v    # Audio capture pipeline (185 tests)
 ```
 
-569 tests covering all subsystems:
+754 tests total covering all subsystems:
+
+### Core tests (`tests/`)
 
 | Test file | Tests | Scope |
 |---|---|---|
@@ -186,6 +189,25 @@ python -m pytest tests/ -v
 | `test_live_bpm.py` | 95 | BPM estimation, hybrid onset, noise floor, HPSS percussive, spectral template, noise-lock fixes, harmonic classifier + lock, IOI histogram |
 | `test_spectral_template.py` | 6 | SpectralBeatTemplate bootstrap, similarity, adaptation, reset |
 | `test_dsp_features.py` | 21 | Feature extraction, spectral features, BPM autocorrelation confidence |
+
+### Audio capture pipeline tests (`dev/tests/`)
+
+| Test file | Tests | Scope |
+|---|---|---|
+| `test_ffmpeg_device.py` | 13 | FFmpeg DirectShow device discovery, stderr parsing |
+| `test_capture_process.py` | 13 | Capture process lifecycle, config validation |
+| `test_pcm_reader.py` | 14 | Frame-aligned PCM chunking, partial reads, EOF |
+| `test_pcm_buffer.py` | 24 | Thread-safe queue buffer, frame counter, backpressure |
+| `test_segment_boundary.py` | 11 | Boundary computation from song duration arrays |
+| `test_encoder_process.py` | 10 | Per-segment FFmpeg MP3 encoder lifecycle |
+| `test_split_logic.py` | 12 | Zero-loss PCM split at frame boundaries |
+| `test_file_namer.py` | 12 | Deterministic naming, sanitization, collision avoidance |
+| `test_boundary_queue.py` | 17 | Mutable boundary queue, safety margin enforcement |
+| `test_timing_integrator.py` | 8 | External timing integration, periodic refresh |
+| `test_pipeline_logger.py` | 12 | Structured JSON + console logging |
+| `test_metadata_writer.py` | 12 | JSON sidecar files, atomic writes |
+| `test_drift_detector.py` | 12 | 4-level drift detection, boundary correction |
+| `test_recovery_manager.py` | 10 | Capture/encoder failure recovery cascade |
 
 ## Architecture
 
@@ -224,6 +246,28 @@ System Audio → LiveBpmEstimator → beat events + BPM
 | Per-song telemetry (JSONL per song, session summary) | `src/dreamsync/telemetry.py` |
 | Hot-reload device config (mtime polling, diff, atomic swap) | `src/dreamsync/config_watcher.py` |
 | Infinite session runner (YAML config + Ctrl+C shutdown) | `src/dreamsync/session.py` |
+
+### Audio capture pipeline (`src/dreamsync/capture/`)
+
+Separate FFmpeg-based pipeline for recording system audio as per-song MP3 files. Operates at 48kHz stereo s16le (4 bytes/frame, 192KB/s).
+
+| Component | Location |
+|---|---|
+| FFmpeg device discovery (DirectShow) | `capture/ffmpeg_device.py` |
+| Capture process lifecycle (spawn/monitor/kill) | `capture/capture_process.py` |
+| Frame-aligned PCM chunk reader | `capture/pcm_reader.py` |
+| Thread-safe audio buffer with frame counter | `capture/pcm_buffer.py` |
+| Segment boundary computation from timing data | `capture/segment_boundary.py` |
+| Per-segment FFmpeg MP3 encoder | `capture/encoder_process.py` |
+| Zero-loss PCM split at frame boundaries | `capture/split_logic.py` |
+| Deterministic file naming + sanitization | `capture/file_namer.py` |
+| Mutable boundary queue with safety margins | `capture/boundary_queue.py` |
+| External timing integration + refresh | `capture/timing_integrator.py` |
+| JSON metadata sidecar files (atomic writes) | `capture/metadata_writer.py` |
+| Drift detection + boundary correction | `capture/drift_detector.py` |
+| Failure recovery cascade (retry/fallback/skip) | `capture/recovery_manager.py` |
+| Structured JSON + console pipeline logging | `capture/pipeline_logger.py` |
+| Windows audio routing via PowerShell | `capture/audio_router.py` |
 
 ### Transport protocols
 

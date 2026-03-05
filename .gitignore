@@ -9,3 +9,4 @@ out/
 dev/out/
 telemetry-test/
 dev/telemetry-test/
+.audio_route_state.json
