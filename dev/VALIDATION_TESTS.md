@@ -5,13 +5,15 @@ Tests below cover features not yet validated end-to-end. Phases 1-4 (auto-detect
 > **Prerequisites:**
 > - Python virtual environment activated (`.venv`)
 > - `ffmpeg` installed and on PATH
+> - VB-Audio Virtual Cable installed and configured (see README "Audio routing setup")
 > - `devices.yaml` created in the project root (for device tests)
+> - Spotify authorized via `dreamsync spotify-auth` (for metadata capture tests)
 
 ---
 
 ## Phase 5 — Song Capture Pipeline (Component 3)
 
-These tests validate the `--capture` pipeline: continuous audio → per-song mp3 files on disk. **Requires ffmpeg installed and on PATH.** Play music through system audio so the loopback capture has real signal.
+These tests validate the `--capture` pipeline: continuous audio -> per-song mp3 files on disk. **Requires ffmpeg installed and on PATH.** Requires VB-Audio Virtual Cable configured (see README "Audio routing setup"). Play music through system audio so the capture has real signal.
 
 ### 5.1 Unit tests
 
@@ -21,37 +23,39 @@ python -m pytest dev/tests/test_capture_buffer.py dev/tests/test_capture_boundar
 
 **Pass:** All 68 tests pass.
 
-### 5.2 ffmpeg availability
+### 5.2 ffmpeg + VB-Cable availability
 
 ```bash
 ffmpeg -version
+ffmpeg -hide_banner -list_devices true -f dshow -i dummy 2>&1 | grep -i "cable"
 ```
 
-**Pass:** ffmpeg version string printed. If missing, install ffmpeg and add to PATH before proceeding.
+**Pass:** ffmpeg version string printed, and `CABLE Output (VB-Audio Virtual Cable)` appears in the device list. If VB-Cable is missing, install from https://vb-audio.com/Cable/ and configure per README instructions.
 
-### 5.3 Basic capture (5 min, no hardware required)
+### 5.3 Basic capture (5 min, no Govee hardware required)
 
-**Setup:** Start playing music before launching the command.
+**Setup:** Ensure VB-Cable routing is configured (CABLE Input as default playback, CABLE Output "Listen" enabled). Start playing music before launching the command.
+
+Use `govee-live` with a dummy device IP (UDP frames silently drop):
 
 ```bash
 mkdir -p out/capture-test
 
-python -m dreamsync session \
-  --config devices.yaml \
+python -m dreamsync govee-live \
+  --device 10.0.0.1:7:primary:ptreal \
+  --duration 300 \
   --capture \
   --capture-dir out/capture-test \
   --capture-naming timestamp \
   --debug-mood \
-  --duration 300 \
   2>&1 | tee out/capture-test/console.log
 ```
 
-If no `devices.yaml` is available, use `govee-live` with a dummy device (UDP frames silently drop):
+Or with a `devices.yaml` and `session` (runs until Ctrl+C, no `--duration`):
 
 ```bash
-python -m dreamsync govee-live \
-  --device 10.126.166.180:7:primary:ptreal \
-  --duration 300 \
+python -m dreamsync session \
+  --config dev/devices.yaml \
   --capture \
   --capture-dir out/capture-test \
   --capture-naming timestamp \
@@ -60,58 +64,72 @@ python -m dreamsync govee-live \
 ```
 
 **Pass criteria:**
-- Console shows `Capture: enabled → out/capture-test/ (naming=timestamp)`
-- At song boundaries: `Capture: saved YYYYMMDD_HHMMSS.mp3 (silence)` messages appear
-- After Ctrl+C: `Capture: flushed final song → YYYYMMDD_HHMMSS.mp3` (if buffer had data)
-- No crashes or ffmpeg errors in the log
+- Console shows `Capture: enabled -> out/capture-test/`
+- After Ctrl+C: `Capture: N segments, Xs captured` summary printed
+- No crashes, no ffmpeg errors, no `UnicodeEncodeError`
+- Pipeline log at `out/capture-test/logs/pipeline.jsonl` shows `encoder_failures: 0`
+- Drift checks show drift < 0.5s (if drift is ~1s per 10s, VB-Cable sample rate doesn't match — see Troubleshooting)
 
 ### 5.4 Verify captured files
 
 ```bash
 ls -la out/capture-test/*.mp3
+ffprobe -v error -show_format out/capture-test/*.mp3 2>&1 | grep -E "filename|duration|bit_rate"
 ```
 
 **Pass criteria:**
-- At least 1 mp3 file exists (more if multiple songs played)
-- File sizes are reasonable (a 3-min song at 192k ≈ 4.3 MB)
-- Files are playable — open each in any mp3 player and verify audio is correct
+- At least 1 mp3 file exists
+- File sizes are reasonable (a 3-min song at 192k ~= 4.3 MB)
+- Files are playable — open each in any mp3 player and verify audio is correct (not silence, no static)
+- JSON sidecar files exist alongside each mp3
 
-### 5.5 Capture with metadata naming
+### 5.5 Capture with Spotify metadata naming
 
-**Setup:** Ensure the metadata source is configured (e.g., a music service integration or local file tags), then play music.
+**Setup:** Authorize Spotify first (`python -m dreamsync spotify-auth`). Then play music on Spotify.
 
 ```bash
-python -m dreamsync session \
-  --config devices.yaml \
+mkdir -p out/capture-meta
+
+python -m dreamsync govee-live \
+  --device 10.0.0.1:7:primary:ptreal \
+  --duration 600 \
   --capture \
   --capture-dir out/capture-meta \
   --capture-naming metadata \
-  --debug-mood
+  --spotify \
+  --debug-mood \
+  2>&1 | tee out/capture-meta/console.log
 ```
 
 Let at least 2 songs play through, then Ctrl+C.
 
 **Pass criteria:**
-- Console shows `Capture: saved Artist - Title.mp3` messages
+- Console shows `Spotify: now playing 'Track' by Artist` on each song change
+- Console shows `Capture: saved Artist - Title.mp3` messages at song boundaries
 - Files in `out/capture-meta/` have `Artist - Title.mp3` filenames
+- JSON sidecars have non-null `songTitle` and `artist` fields
 - Filenames are sanitised (no illegal path characters)
 - If duplicate names occur, suffixed with `_2`, `_3`, etc.
 
 ### 5.6 Song boundary accuracy (5+ songs)
 
-**Setup:** Queue a playlist of 5+ distinct songs. Play through from start. Note the actual number of song transitions.
+**Setup:** Queue a playlist of 5+ distinct songs on Spotify. Note the actual number of song transitions.
 
 ```bash
-python -m dreamsync session \
-  --config devices.yaml \
+mkdir -p out/capture-boundary
+
+python -m dreamsync govee-live \
+  --device 10.0.0.1:7:primary:ptreal \
+  --duration 1800 \
   --capture \
   --capture-dir out/capture-boundary \
-  --capture-naming timestamp \
+  --capture-naming metadata \
+  --spotify \
   --debug-mood \
   2>&1 | tee out/capture-boundary/console.log
 ```
 
-After the playlist finishes (or after 5+ songs), Ctrl+C.
+After 5+ songs, Ctrl+C.
 
 **Verify:**
 
@@ -121,10 +139,13 @@ ls out/capture-boundary/*.mp3 | wc -l
 
 # Check boundary events in log
 grep "Capture: saved" out/capture-boundary/console.log
+
+# Check sidecar metadata
+cat out/capture-boundary/*.json | python -m json.tool | grep -E "songTitle|artist"
 ```
 
 **Pass criteria:**
-- Number of mp3 files matches number of songs played (±1 for the flush on exit)
+- Number of mp3 files matches number of songs played (+/- 1 for the flush on exit)
 - Each file contains approximately one song (verify by listening to start/end of each file)
 - No files shorter than 15 seconds (fragments are discarded by min_duration_seconds)
 - Boundary detection latency < 2 seconds (song transitions in captured files align with actual transitions)
@@ -135,7 +156,7 @@ grep "Capture: saved" out/capture-boundary/console.log
 
 **Long track (>10 min):** Play a long track. Verify the full track is captured in one file without truncation (buffer cap is 15 min).
 
-**Gapless/crossfade playback:** Play a playlist with crossfade enabled. Verify boundaries are detected (may use crossfade or separate signals rather than silence).
+**Gapless/crossfade playback:** Play a playlist with crossfade enabled. Verify boundaries are detected via Spotify track-change events even when audio crossfades.
 
 ---
 
@@ -439,10 +460,10 @@ python -m dreamsync cache-list
 ## Quick Reference — Remaining Test Sequence
 
 - [ ] **14. Capture unit tests** (68 tests)
-- [ ] **15. Basic capture** (5 min, timestamp naming)
+- [ ] **15. Basic capture** (5 min, timestamp naming, dummy device)
 - [ ] **16. Captured file verification** (playable mp3s with correct content)
-- [ ] **17. Metadata capture** (artist-title naming)
-- [ ] **18. Boundary accuracy** (5+ songs, file count matches song count)
+- [ ] **17. Capture with Spotify metadata** (artist-title naming + track splitting)
+- [ ] **18. Boundary accuracy** (5+ songs with Spotify, file count matches song count)
 - [ ] **19. Edge cases** (short track, long track, gapless/crossfade)
 - [ ] **20. Analyzer unit tests** (80 tests)
 - [ ] **21. Single file analysis** (summary output + BPM check)
@@ -461,7 +482,7 @@ python -m dreamsync cache-list
 - [ ] **34. Compile-and-play** (full pipeline with devices)
 - [ ] **35. Compiler genre variety** (5+ songs across genres)
 - [ ] **36. Cache unit tests** (36 tests)
-- [ ] **37. CLI cache commands** (list, info, clear — no hardware)
+- [ ] **37. CLI cache commands** (list, info, clear -- no hardware)
 - [ ] **38. Compile with caching** (miss then hit)
 - [ ] **39. Compile-and-play with caching** (skip analysis on hit)
 - [ ] **40. Profile-aware caching** (same track, different profiles)
@@ -471,16 +492,19 @@ python -m dreamsync cache-list
 # 14. Capture unit tests
 python -m pytest dev/tests/test_capture_buffer.py dev/tests/test_capture_boundary.py dev/tests/test_capture_writer.py dev/tests/test_capture_pipeline.py -v
 
-# 15+16. Basic capture (5 min, play music through system audio)
+# 15+16. Basic capture (5 min, play music through VB-Cable)
 mkdir -p out/capture-test
-python -m dreamsync session --config devices.yaml --capture --capture-dir out/capture-test --capture-naming timestamp --debug-mood 2>&1 | tee out/capture-test/console.log
+python -m dreamsync govee-live --device 10.0.0.1:7:primary:ptreal --duration 300 --capture --capture-dir out/capture-test --capture-naming timestamp --debug-mood 2>&1 | tee out/capture-test/console.log
 ls -la out/capture-test/*.mp3
+ffprobe -v error -show_format out/capture-test/*.mp3 2>&1 | grep -E "filename|duration"
 
-# 17. Metadata capture
-python -m dreamsync session --config devices.yaml --capture --capture-dir out/capture-meta --capture-naming metadata --debug-mood
+# 17. Capture with Spotify metadata (play music on Spotify)
+mkdir -p out/capture-meta
+python -m dreamsync govee-live --device 10.0.0.1:7:primary:ptreal --duration 600 --capture --capture-dir out/capture-meta --capture-naming metadata --spotify --debug-mood 2>&1 | tee out/capture-meta/console.log
 
-# 18. Boundary accuracy (5+ songs)
-python -m dreamsync session --config devices.yaml --capture --capture-dir out/capture-boundary --capture-naming timestamp --debug-mood 2>&1 | tee out/capture-boundary/console.log
+# 18. Boundary accuracy (5+ songs on Spotify)
+mkdir -p out/capture-boundary
+python -m dreamsync govee-live --device 10.0.0.1:7:primary:ptreal --duration 1800 --capture --capture-dir out/capture-boundary --capture-naming metadata --spotify --debug-mood 2>&1 | tee out/capture-boundary/console.log
 ls out/capture-boundary/*.mp3 | wc -l
 grep "Capture: saved" out/capture-boundary/console.log
 
@@ -504,10 +528,10 @@ python -m dreamsync analyze song.mp3 --summary
 python -m pytest dev/tests/test_show_models.py dev/tests/test_show_player.py dev/tests/test_show_runtime.py dev/tests/test_show_cli.py -v
 
 # 26. Audio playback test (no devices required)
-python -m dreamsync play path/to/song.mp3 --show path/to/show.json --config devices.yaml --debug
+python -m dreamsync play path/to/song.mp3 --show path/to/show.json --config dev/devices.yaml --debug
 
 # 27. Synchronized playback (with real devices)
-python -m dreamsync play path/to/song.mp3 --show path/to/show.json --config devices.yaml --debug
+python -m dreamsync play path/to/song.mp3 --show path/to/show.json --config dev/devices.yaml --debug
 
 # 28. Show file round-trip
 python -c "from dreamsync.show.models import ShowTimeline; tl = ShowTimeline.from_json('path/to/show.json'); tl.to_json('/tmp/copy.json'); print('OK')"
@@ -530,7 +554,7 @@ python -m dreamsync compile path/to/structure.json --profile aurora --summary
 python -m dreamsync compile path/to/structure.json --profile neon_city --summary
 
 # 34. Compile-and-play (requires mp3 + devices)
-python -m dreamsync compile-and-play path/to/song.mp3 --config devices.yaml --profile aurora --debug
+python -m dreamsync compile-and-play path/to/song.mp3 --config dev/devices.yaml --profile aurora --debug
 
 # 35. Compiler genre variety (5+ songs)
 # for f in path/to/songs/*.mp3; do python -m dreamsync analyze "$f" --output "/tmp/$(basename "$f" .mp3).json"; python -m dreamsync compile "/tmp/$(basename "$f" .mp3).json" --summary --seed 42; done
@@ -547,7 +571,7 @@ python -m dreamsync compile path/to/structure.json --cache-dir ~/.dreamsync/cach
 python -m dreamsync compile path/to/structure.json --cache-dir ~/.dreamsync/cache --summary
 
 # 39. Compile-and-play with caching (requires mp3 + devices)
-python -m dreamsync compile-and-play path/to/song.mp3 --config devices.yaml --cache-dir ~/.dreamsync/cache --debug
+python -m dreamsync compile-and-play path/to/song.mp3 --config dev/devices.yaml --cache-dir ~/.dreamsync/cache --debug
 
 # 40. Profile-aware caching
 python -m dreamsync compile path/to/structure.json --cache-dir ~/.dreamsync/cache --profile aurora --summary
@@ -566,9 +590,16 @@ python -m dreamsync cache-clear --yes
 | Symptom | Fix |
 |---|---|
 | `Capture: ffmpeg not found on PATH` | Install ffmpeg and ensure it's on PATH. Run `ffmpeg -version` to verify. |
-| Capture produces 0 mp3 files | No song boundaries detected — ensure music is playing and songs actually transition. Also check `min_duration_seconds` (15s default) isn't filtering short fragments. |
-| Capture files have no audio | Check that system audio loopback is working. The capture pipeline records what the audio callback receives — if the callback gets silence, so does the capture. |
-| Metadata naming shows timestamps instead of artist-title | Metadata source must be active and configured. Without a metadata source, metadata naming falls back to timestamp. |
+| `No audio device matching 'CABLE Output' found` | Install VB-Audio Virtual Cable from https://vb-audio.com/Cable/. Verify with `ffmpeg -hide_banner -list_devices true -f dshow -i dummy 2>&1`. |
+| Capture files are silence | VB-Cable is not receiving system audio. Set **CABLE Input** as default playback device in Windows Sound Settings, and enable **Listen to this device** on CABLE Output (see README). |
+| Drift ~1s per 10s in pipeline.jsonl | Sample rate mismatch. VB-Cable may be at a non-default rate. Open VB-Cable Control Panel and verify it's set to 44100 Hz (matches pipeline default). |
+| Capture audio has static/glitches | Sample rate mismatch between VB-Cable and capture pipeline. Ensure both use 44100 Hz. |
+| `UnicodeEncodeError` on Windows | Fixed in current version. Track-change and segment-saved callbacks now encode non-ASCII characters with `errors="replace"` before printing. Callback exceptions are also isolated so they cannot block the capture orchestrator. |
+| Encoder exit code 255 on Ctrl+C | Fixed in current version via `CREATE_NEW_PROCESS_GROUP`. If it recurs on older code, update `capture_process.py` and `encoder_process.py`. |
+| Capture produces 0 mp3 files | Without `--spotify`, there are no song boundaries, so everything goes into one segment (flushed on Ctrl+C). Use `--spotify` for track-accurate splitting. |
+| Capture files have no song metadata (null artist/title) | `--spotify` flag was not passed. Add `--spotify` to enable Spotify track change detection and metadata. Fixed: `_fetch_timing()` now correctly accesses `queue.currently_playing` and gets `progress_ms` from `PlaybackState`. |
+| Metadata naming shows timestamps instead of artist-title | Pass `--spotify` along with `--capture-naming metadata`. Without Spotify, metadata naming falls back to timestamp. |
+| `Spotify: no valid token found` | Run `python -m dreamsync spotify-auth` first to authorize. |
 | `dreamsync analyze` fails with DecodeError | Ensure ffmpeg is installed and on PATH. Run `ffmpeg -version` to verify. Check the audio file is a valid format. |
 | Analyzer BPM is wrong by exactly 2x | Harmonic aliasing — the analyzer should auto-resolve this for BPMs outside 80-160 range. If persistent, file an issue. |
 | Analyzer produces only 1 section | Song may lack clear structural changes. Try a song with distinct verse/chorus dynamics. |

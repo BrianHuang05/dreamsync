@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import signal
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -153,12 +154,16 @@ def run_session(
             print("Continuing in v2 reactive mode.")
         else:
             client = SpotifyClient(token_store)
+            def _safe_track_msg(new):
+                enc = sys.stdout.encoding or "utf-8"
+                name = new.name.encode(enc, errors="replace").decode(enc, errors="replace")
+                artist = new.artist.encode(enc, errors="replace").decode(enc, errors="replace")
+                return f"Spotify: now playing '{name}' by {artist}"
+
             spotify_watcher = SpotifyQueueWatcher(
                 client,
                 poll_interval=spotify_poll_interval,
-                on_track_changed=lambda new, old: print(
-                    f"Spotify: now playing '{new.name}' by {new.artist}"
-                ),
+                on_track_changed=lambda new, old: print(_safe_track_msg(new)),
                 on_queue_updated=lambda q: print(
                     f"Spotify: queue updated ({len(q.queue)} upcoming tracks)"
                 ),
@@ -177,18 +182,20 @@ def run_session(
             from dreamsync.capture.orchestrator import CaptureOrchestrator, OrchestratorConfig
 
             orch_cfg = OrchestratorConfig(
-                sample_rate=48000,
-                channels=2,
                 output_dir=capture_dir,
                 naming=capture_naming,
                 log_dir=str(Path(capture_dir) / "logs"),
             )
+            def _safe_segment_msg(path, meta):
+                enc = sys.stdout.encoding or "utf-8"
+                fname = Path(path).name
+                artist = str(meta.get("artist", "unknown")).encode(enc, errors="replace").decode(enc, errors="replace")
+                title = str(meta.get("song_title", "unknown")).encode(enc, errors="replace").decode(enc, errors="replace")
+                return f"Capture: saved {fname} ({artist} - {title})"
+
             capture_orchestrator = CaptureOrchestrator(
                 config=orch_cfg,
-                on_segment_saved=lambda path, meta: print(
-                    f"Capture: saved {Path(path).name} "
-                    f"({meta.get('artist', 'unknown')} - {meta.get('song_title', 'unknown')})"
-                ),
+                on_segment_saved=lambda path, meta: print(_safe_segment_msg(path, meta)),
             )
 
             # Connect Spotify track changes to capture orchestrator
@@ -196,8 +203,7 @@ def run_session(
                 _orig_on_track = spotify_watcher._on_track_changed
 
                 def _capture_track_changed(new, old, _orig=_orig_on_track):
-                    if _orig:
-                        _orig(new, old)
+                    # Critical path: notify orchestrator of track change
                     try:
                         capture_orchestrator.on_track_change({
                             "song_durations": [new.duration_ms / 1000.0],
@@ -205,15 +211,21 @@ def run_session(
                             "current_song": {
                                 "song_title": new.name,
                                 "artist": new.artist,
-                                "album": getattr(new, "album", None),
+                                "album": new.album,
                             },
                         })
                     except Exception:
                         pass
+                    # Informational: display track change to user
+                    if _orig:
+                        try:
+                            _orig(new, old)
+                        except Exception:
+                            pass
 
                 spotify_watcher._on_track_changed = _capture_track_changed
 
-            print(f"Capture: enabled → {capture_dir}/ (naming={capture_naming})")
+            print(f"Capture: enabled -> {capture_dir}/ (naming={capture_naming})")
 
     # 5. Signal handling
     stop_event = threading.Event()
@@ -232,19 +244,21 @@ def run_session(
         capture_orchestrator.start()
         if spotify_watcher is not None:
             def _fetch_timing():
-                queue = spotify_watcher.get_queue()
-                if queue is None:
+                queue = spotify_watcher.queue
+                if queue is None or queue.currently_playing is None:
                     return None
+                current = queue.currently_playing
+                pb = spotify_watcher.playback_state
                 return {
                     "song_durations": [
                         t.duration_ms / 1000.0
-                        for t in [queue.current] + queue.queue
+                        for t in [current, *queue.queue]
                     ],
-                    "current_playback_time": queue.current.progress_ms / 1000.0,
+                    "current_playback_time": (pb.progress_ms / 1000.0) if pb else 0.0,
                     "current_song": {
-                        "song_title": queue.current.name,
-                        "artist": queue.current.artist,
-                        "album": getattr(queue.current, "album", None),
+                        "song_title": current.name,
+                        "artist": current.artist,
+                        "album": current.album,
                     },
                 }
             capture_orchestrator.start_periodic_timing(_fetch_timing)
