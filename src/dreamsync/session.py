@@ -165,42 +165,51 @@ def run_session(
             )
             spotify_watcher.start()
 
-    # 4e. Capture pipeline
-    capture_pipeline = None
+    # 4e. Capture pipeline (CaptureOrchestrator — independent FFmpeg subprocess)
+    capture_orchestrator = None
     if capture:
-        from dreamsync.capture.pipeline import CaptureConfig, StreamCapturePipeline
-        from dreamsync.capture.buffer import BufferConfig
-        from dreamsync.capture.writer import WriterConfig, check_ffmpeg
+        from dreamsync.capture.writer import check_ffmpeg
 
         if not check_ffmpeg():
             print("Capture: ffmpeg not found on PATH. Install ffmpeg to enable song capture.")
             print("Continuing without capture.")
         else:
-            cap_cfg = CaptureConfig(
-                buffer=BufferConfig(sample_rate=sample_rate, channels=channels),
-                writer=WriterConfig(
-                    output_dir=capture_dir,
-                    sample_rate=sample_rate,
-                    channels=channels,
-                    naming=capture_naming,
-                ),
-                hop_size=hop_size,
-                sample_rate=sample_rate,
+            from dreamsync.capture.orchestrator import CaptureOrchestrator, OrchestratorConfig
+
+            orch_cfg = OrchestratorConfig(
+                sample_rate=48000,
+                channels=2,
+                output_dir=capture_dir,
+                naming=capture_naming,
+                log_dir=str(Path(capture_dir) / "logs"),
             )
-            capture_pipeline = StreamCapturePipeline(
-                config=cap_cfg,
-                on_song_saved=lambda path, meta: print(
-                    f"Capture: saved {path.name} ({meta.get('source', '?')})"
+            capture_orchestrator = CaptureOrchestrator(
+                config=orch_cfg,
+                on_segment_saved=lambda path, meta: print(
+                    f"Capture: saved {Path(path).name} "
+                    f"({meta.get('artist', 'unknown')} - {meta.get('song_title', 'unknown')})"
                 ),
             )
-            # Connect Spotify track changes to capture boundary detector
+
+            # Connect Spotify track changes to capture orchestrator
             if spotify_watcher is not None:
                 _orig_on_track = spotify_watcher._on_track_changed
 
                 def _capture_track_changed(new, old, _orig=_orig_on_track):
                     if _orig:
                         _orig(new, old)
-                    capture_pipeline.notify_track_changed(new, old)
+                    try:
+                        capture_orchestrator.on_track_change({
+                            "song_durations": [new.duration_ms / 1000.0],
+                            "current_playback_time": 0.0,
+                            "current_song": {
+                                "song_title": new.name,
+                                "artist": new.artist,
+                                "album": getattr(new, "album", None),
+                            },
+                        })
+                    except Exception:
+                        pass
 
                 spotify_watcher._on_track_changed = _capture_track_changed
 
@@ -217,6 +226,28 @@ def run_session(
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
+
+    # 5b. Start capture orchestrator (independent FFmpeg subprocess)
+    if capture_orchestrator is not None:
+        capture_orchestrator.start()
+        if spotify_watcher is not None:
+            def _fetch_timing():
+                queue = spotify_watcher.get_queue()
+                if queue is None:
+                    return None
+                return {
+                    "song_durations": [
+                        t.duration_ms / 1000.0
+                        for t in [queue.current] + queue.queue
+                    ],
+                    "current_playback_time": queue.current.progress_ms / 1000.0,
+                    "current_song": {
+                        "song_title": queue.current.name,
+                        "artist": queue.current.artist,
+                        "album": getattr(queue.current, "album", None),
+                    },
+                }
+            capture_orchestrator.start_periodic_timing(_fetch_timing)
 
     # 6. Run live loop (local, v3, or v2 session)
     try:
@@ -255,7 +286,6 @@ def run_session(
                 telemetry_dir=telemetry_dir,
                 profile=profile,
                 effect_cycler_override=effect_cycler,
-                capture_pipeline=capture_pipeline,
             )
         elif v3 and spotify_watcher is not None:
             from dreamsync.v3_session import run_v3_session
@@ -292,14 +322,17 @@ def run_session(
                 telemetry_dir=telemetry_dir,
                 profile=profile,
                 effect_cycler_override=effect_cycler,
-                capture_pipeline=capture_pipeline,
             )
     finally:
-        # 7. Cleanup
-        if capture_pipeline is not None:
-            flushed = capture_pipeline.flush()
-            if flushed:
-                print(f"Capture: flushed final song → {flushed.name}")
+        # 7. Cleanup — shutdown capture before Spotify (needs timing data)
+        if capture_orchestrator is not None:
+            capture_orchestrator.shutdown()
+            stats = capture_orchestrator.stats
+            print(
+                f"Capture: {stats['segments_completed']} songs saved, "
+                f"{stats['elapsed_seconds']:.0f}s captured, "
+                f"{stats['drift_corrections']} drift corrections"
+            )
         if spotify_watcher is not None:
             spotify_watcher.stop()
         if health_mon is not None:

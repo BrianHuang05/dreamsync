@@ -1,5 +1,7 @@
 import argparse
 import json
+import signal
+import threading
 from pathlib import Path
 
 from .audio.system_input import list_input_devices
@@ -67,6 +69,30 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Write feature stream to JSONL path (defaults to stdout).",
+    )
+    capture.add_argument(
+        "--mp3",
+        action="store_true",
+        default=False,
+        help="Enable MP3 capture pipeline (records per-song MP3 files via FFmpeg).",
+    )
+    capture.add_argument(
+        "--output-dir",
+        type=str,
+        default="captured_songs",
+        help="Output directory for captured MP3 files (default: captured_songs).",
+    )
+    capture.add_argument(
+        "--naming",
+        choices=["timestamp", "metadata"],
+        default="timestamp",
+        help="Filename scheme for captured songs (default: timestamp).",
+    )
+    capture.add_argument(
+        "--device-pattern",
+        type=str,
+        default="CABLE Output",
+        help="DirectShow audio device name pattern for FFmpeg (default: CABLE Output).",
     )
     # -- Govee LAN direct commands ----------------------------------------
     sub.add_parser("govee-scan", help="Scan for Govee devices on the local network.")
@@ -250,6 +276,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=300.0,
         help="Seconds between profile rotations when using --profile-rotation (default: 300).",
+    )
+    govee_live.add_argument(
+        "--capture",
+        action="store_true",
+        default=False,
+        help="Enable MP3 capture pipeline (records per-song MP3 files via FFmpeg).",
+    )
+    govee_live.add_argument(
+        "--capture-dir",
+        type=str,
+        default="captured_songs",
+        help="Output directory for captured MP3 files (default: captured_songs).",
+    )
+    govee_live.add_argument(
+        "--capture-naming",
+        choices=["timestamp", "metadata"],
+        default="timestamp",
+        help="Filename scheme for captured songs (default: timestamp).",
     )
 
     # -- Session command (YAML config + auto-detect + infinite loop) ----------
@@ -724,6 +768,41 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "capture":
+        if getattr(args, "mp3", False):
+            # MP3 capture pipeline mode
+            from dreamsync.capture.orchestrator import CaptureOrchestrator, OrchestratorConfig
+
+            orch_cfg = OrchestratorConfig(
+                sample_rate=getattr(args, "sample_rate", 48000),
+                channels=getattr(args, "channels", 2),
+                device_pattern=args.device_pattern,
+                output_dir=args.output_dir,
+                naming=args.naming,
+            )
+            orchestrator = CaptureOrchestrator(
+                config=orch_cfg,
+                on_segment_saved=lambda path, meta: print(
+                    f"Saved: {Path(path).name}"
+                ),
+            )
+            orchestrator.start()
+            print(f"Capturing MP3 to {args.output_dir}/ (Ctrl+C to stop)")
+
+            stop = threading.Event()
+            original_sigint = signal.getsignal(signal.SIGINT)
+            signal.signal(signal.SIGINT, lambda *_: stop.set())
+            stop.wait(timeout=args.duration)
+            signal.signal(signal.SIGINT, original_sigint)
+
+            orchestrator.shutdown()
+            stats = orchestrator.stats
+            print(
+                f"Done: {stats['segments_completed']} segments, "
+                f"{stats['elapsed_seconds']:.0f}s captured"
+            )
+            return 0
+
+        # Feature extraction capture mode (unchanged)
         stream, meta, telemetry_rows = capture_system_input_features_to_stream(
             duration_seconds=args.duration,
             sample_rate=args.sample_rate,
@@ -1001,27 +1080,59 @@ def main(argv: list[str] | None = None) -> int:
             profile = rotation.current
             print(f"Profile rotation: {len(rotation_profiles)} profiles, rotating every {args.rotation_interval:.0f}s")
 
-        logs, summary = run_live_to_govee(
-            multi_adapter=multi_adapter,
-            duration_seconds=args.duration,
-            sample_rate=args.sample_rate,
-            channels=args.channels,
-            device=args.audio_device,
-            frame_size=args.frame_size,
-            hop_size=args.hop_size,
-            telemetry_interval_seconds=max(0.1, float(args.heartbeat_seconds)),
-            blocksize=args.blocksize,
-            director_config=director_config,
-            half_time=args.half_time,
-            max_brightness=args.max_brightness,
-            auto_cycle=args.auto_cycle,
-            cycle_interval=max(1.0, float(args.cycle_interval)),
-            debug_mood=args.debug_mood,
-            telemetry_dir=args.telemetry_dir,
-            crossfade_detect=getattr(args, "crossfade_detect", False),
-            profile=profile,
-            profile_rotation=rotation,
-        )
+        # Start capture orchestrator if --capture flag is set
+        capture_orchestrator = None
+        if getattr(args, "capture", False):
+            from dreamsync.capture.orchestrator import CaptureOrchestrator, OrchestratorConfig
+
+            capture_dir = getattr(args, "capture_dir", "captured_songs")
+            orch_cfg = OrchestratorConfig(
+                sample_rate=48000,
+                channels=2,
+                output_dir=capture_dir,
+                naming=getattr(args, "capture_naming", "timestamp"),
+                log_dir=str(Path(capture_dir) / "logs"),
+            )
+            capture_orchestrator = CaptureOrchestrator(
+                config=orch_cfg,
+                on_segment_saved=lambda path, meta: print(
+                    f"Capture: saved {Path(path).name}"
+                ),
+            )
+            capture_orchestrator.start()
+            print(f"Capture: enabled → {capture_dir}/")
+
+        try:
+            logs, summary = run_live_to_govee(
+                multi_adapter=multi_adapter,
+                duration_seconds=args.duration,
+                sample_rate=args.sample_rate,
+                channels=args.channels,
+                device=args.audio_device,
+                frame_size=args.frame_size,
+                hop_size=args.hop_size,
+                telemetry_interval_seconds=max(0.1, float(args.heartbeat_seconds)),
+                blocksize=args.blocksize,
+                director_config=director_config,
+                half_time=args.half_time,
+                max_brightness=args.max_brightness,
+                auto_cycle=args.auto_cycle,
+                cycle_interval=max(1.0, float(args.cycle_interval)),
+                debug_mood=args.debug_mood,
+                telemetry_dir=args.telemetry_dir,
+                crossfade_detect=getattr(args, "crossfade_detect", False),
+                profile=profile,
+                profile_rotation=rotation,
+            )
+        finally:
+            if capture_orchestrator is not None:
+                capture_orchestrator.shutdown()
+                stats = capture_orchestrator.stats
+                print(
+                    f"Capture: {stats['segments_completed']} segments, "
+                    f"{stats['elapsed_seconds']:.0f}s captured"
+                )
+
         if args.jsonl:
             args.jsonl.parent.mkdir(parents=True, exist_ok=True)
             with args.jsonl.open("w", encoding="utf-8") as f:
