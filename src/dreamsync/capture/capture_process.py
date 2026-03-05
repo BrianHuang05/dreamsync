@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 class CaptureConfig:
     """Parameters for the FFmpeg capture subprocess."""
 
-    sample_rate: int = 48000
+    sample_rate: int = 44100
     channels: int = 2
     thread_queue_size: int = 1024
     device_pattern: str = "CABLE Output"
@@ -72,10 +73,17 @@ class CaptureProcessManager:
         cmd = self._build_command(device_name)
         logger.info("Starting capture: %s", " ".join(cmd))
 
+        # On Windows, CREATE_NEW_PROCESS_GROUP prevents Ctrl+C from
+        # propagating to the child — our code terminates it cleanly.
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+
         self._process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            **kwargs,
         )
 
         # Monitor stderr in a background thread so it doesn't block.

@@ -58,7 +58,7 @@ def _make_orch_with_cb(tmp_path, on_segment_saved=None, **cfg_overrides):
 class TestOrchestratorConfig:
     def test_config_defaults(self):
         cfg = OrchestratorConfig()
-        assert cfg.sample_rate == 48000
+        assert cfg.sample_rate == 44100
         assert cfg.channels == 2
         assert cfg.device_pattern == "CABLE Output"
         assert cfg.chunk_ms == 100
@@ -67,7 +67,7 @@ class TestOrchestratorConfig:
         assert cfg.output_dir == "./captured_songs"
         assert cfg.naming == "timestamp"
         assert cfg.log_dir == "./logs"
-        assert cfg.safety_margin_frames == 24_000
+        assert cfg.safety_margin_frames == 22_050
         assert cfg.timing_refresh_interval == 5.0
         assert cfg.drift_warning_threshold == 0.1
         assert cfg.drift_correction_threshold == 0.5
@@ -97,10 +97,10 @@ class TestOrchestratorConfig:
         cfg = OrchestratorConfig()
         cc = cfg.to_capture_config()
         assert isinstance(cc, CaptureConfig)
-        assert cc.sample_rate == 48000
+        assert cc.sample_rate == 44100
         assert cc.channels == 2
         assert cc.device_pattern == "CABLE Output"
-        assert OrchestratorConfig(sample_rate=44100).to_capture_config().sample_rate == 44100
+        assert OrchestratorConfig(sample_rate=48000).to_capture_config().sample_rate == 48000
 
     def test_config_creates_recovery_config(self):
         cfg = OrchestratorConfig()
@@ -327,17 +327,17 @@ class TestCallbackWiring:
         cb = lambda path, meta: calls.append((path, meta))
         orch = _make_orch_with_cb(tmp_path, on_segment_saved=cb)
 
-        orch._on_segment_complete(0, 0, 48000)
+        orch._on_segment_complete(0, 0, 44100)
         assert len(calls) == 1
         path, meta = calls[0]
         assert meta["segment_index"] == 0
         assert meta["start_frame"] == 0
-        assert meta["end_frame"] == 48000
-        assert meta["sample_rate"] == 48000
+        assert meta["end_frame"] == 44100
+        assert meta["sample_rate"] == 44100
         assert meta["channels"] == 2
         assert meta["bitrate"] == "192k"
 
-        orch._on_segment_complete(1, 48000, 96000)
+        orch._on_segment_complete(1, 44100, 88200)
         assert len(calls) == 2
         assert calls[1][1]["segment_index"] == 1
 
@@ -765,11 +765,11 @@ class TestBuildSegmentMetadata:
         mock_enc.output_path = "/tmp/song.mp3"
         orch._encoders[0] = mock_enc
 
-        meta = orch._build_segment_metadata(0, 0, 230400)
+        meta = orch._build_segment_metadata(0, 0, 220500)
         assert meta.start_frame == 0
-        assert meta.end_frame == 230400
-        assert meta.segment_duration_frames == 230400
-        assert meta.segment_duration_seconds == 4.8
+        assert meta.end_frame == 220500
+        assert meta.segment_duration_frames == 220500
+        assert meta.segment_duration_seconds == 5.0
 
     def test_build_metadata_includes_song_info(self, tmp_path):
         orch = _make_orch(tmp_path)
@@ -1056,10 +1056,10 @@ class TestExternalTimingAPI:
         assert len(orch._boundary_queue) == 2
 
         entries = orch._boundary_queue.entries()
-        # First boundary at 180s * 48000 = 8_640_000 frames
-        assert entries[0].frame_position == 8_640_000
-        # Second boundary at (180+240)s * 48000 = 20_160_000 frames
-        assert entries[1].frame_position == 20_160_000
+        # First boundary at 180s * 44100 = 7_938_000 frames
+        assert entries[0].frame_position == 7_938_000
+        # Second boundary at (180+240)s * 44100 = 18_522_000 frames
+        assert entries[1].frame_position == 18_522_000
 
     def test_track_change_immediate_refresh(self, tmp_path):
         orch = _make_orch(tmp_path)
@@ -1080,8 +1080,8 @@ class TestExternalTimingAPI:
         assert count == 2
         # Old unlocked boundaries replaced
         entries = orch._boundary_queue.entries()
-        assert entries[0].frame_position == round(150.0 * 48000)
-        assert entries[1].frame_position == round((150.0 + 250.0) * 48000)
+        assert entries[0].frame_position == round(150.0 * 44100)
+        assert entries[1].frame_position == round((150.0 + 250.0) * 44100)
 
     def test_start_periodic_timing_delegates(self, tmp_path):
         orch = _make_orch(tmp_path)

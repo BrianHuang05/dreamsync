@@ -19,22 +19,22 @@ class TestConstants:
         assert BYTES_PER_FRAME == 4
 
     def test_bytes_per_second(self):
-        # 48000 * 4 = 192000
-        assert BYTES_PER_SECOND == 192000
+        # 44100 * 4 = 176400
+        assert BYTES_PER_SECOND == 176400
 
     def test_sample_rate(self):
-        assert SAMPLE_RATE == 48000
+        assert SAMPLE_RATE == 44100
 
 
 class TestChunkBytesForMs:
     def test_100ms(self):
-        assert chunk_bytes_for_ms(100) == 19200  # 4800 frames * 4
+        assert chunk_bytes_for_ms(100) == 17640  # 4410 frames * 4
 
     def test_50ms(self):
-        assert chunk_bytes_for_ms(50) == 9600  # 2400 frames * 4
+        assert chunk_bytes_for_ms(50) == 8820  # 2205 frames * 4
 
     def test_20ms(self):
-        assert chunk_bytes_for_ms(20) == 3840  # 960 frames * 4
+        assert chunk_bytes_for_ms(20) == 3528  # 882 frames * 4
 
     def test_always_frame_aligned(self):
         for ms in range(1, 200):
@@ -42,8 +42,8 @@ class TestChunkBytesForMs:
             assert size % BYTES_PER_FRAME == 0, f"{ms}ms -> {size} not aligned"
 
     def test_1ms_nonzero(self):
-        # 1ms = 192 bytes = 48 frames
-        assert chunk_bytes_for_ms(1) == 192
+        # 1ms = 176 bytes = 44 frames
+        assert chunk_bytes_for_ms(1) == 176
 
 
 class TestReadChunks:

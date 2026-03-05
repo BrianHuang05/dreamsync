@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import sys
 import threading
 
 logger = logging.getLogger(__name__)
@@ -58,11 +59,18 @@ class EncoderProcess:
         ]
         logger.debug("Starting encoder: %s", " ".join(cmd))
 
+        # On Windows, CREATE_NEW_PROCESS_GROUP prevents Ctrl+C from
+        # propagating to the child — our code terminates it cleanly.
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+
         self._process = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
+            **kwargs,
         )
         self._stderr_lines.clear()
         self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)

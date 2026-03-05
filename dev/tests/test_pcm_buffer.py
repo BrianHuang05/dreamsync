@@ -56,16 +56,16 @@ class TestFrameCounter:
         assert buf.frames_processed == 1000
         assert buf.bytes_processed == 4000
 
-    def test_10_seconds_equals_480000_frames(self):
+    def test_10_seconds_equals_441000_frames(self):
         """Verify the integration test from the phase plan."""
         buf = AudioBuffer(max_chunks=200)
-        # 10 seconds at 48kHz = 480,000 frames = 1,920,000 bytes
+        # 10 seconds at 44.1kHz = 441,000 frames = 1,764,000 bytes
         # Deliver as 100 chunks of 100ms each
-        chunk = b"\x00" * 19200  # 100ms = 4800 frames
+        chunk = b"\x00" * 17640  # 100ms = 4410 frames
         for _ in range(100):
             buf.put(chunk)
-        assert buf.frames_processed == 480_000
-        assert buf.bytes_processed == 1_920_000
+        assert buf.frames_processed == 441_000
+        assert buf.bytes_processed == 1_764_000
 
 
 class TestElapsedSeconds:
@@ -75,15 +75,15 @@ class TestElapsedSeconds:
 
     def test_1_second(self):
         buf = AudioBuffer()
-        # 1 second = 48000 frames = 192000 bytes
-        chunk = b"\x00" * 19200  # 100ms
+        # 1 second = 44100 frames = 176400 bytes
+        chunk = b"\x00" * 17640  # 100ms
         for _ in range(10):
             buf.put(chunk)
         assert buf.elapsed_seconds() == pytest.approx(1.0)
 
     def test_fractional_seconds(self):
         buf = AudioBuffer()
-        chunk = b"\x00" * 19200  # 100ms
+        chunk = b"\x00" * 17640  # 100ms
         buf.put(chunk)
         assert buf.elapsed_seconds() == pytest.approx(0.1)
 

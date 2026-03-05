@@ -18,10 +18,14 @@ These tests validate the `--capture` pipeline: continuous audio -> per-song mp3 
 ### 5.1 Unit tests
 
 ```bash
+# Core capture tests (68 tests)
 python -m pytest dev/tests/test_capture_buffer.py dev/tests/test_capture_boundary.py dev/tests/test_capture_writer.py dev/tests/test_capture_pipeline.py -v
+
+# Capture-meta fix tests (24 tests)
+python -m pytest dev/tests/test_fetch_timing.py dev/tests/test_unicode_callback.py dev/tests/test_callback_isolation.py -v
 ```
 
-**Pass:** All 68 tests pass.
+**Pass:** All 92 tests pass (68 core + 24 capture-meta fixes).
 
 ### 5.2 ffmpeg + VB-Cable availability
 
@@ -459,7 +463,7 @@ python -m dreamsync cache-list
 
 ## Quick Reference — Remaining Test Sequence
 
-- [ ] **14. Capture unit tests** (68 tests)
+- [ ] **14. Capture unit tests** (92 tests: 68 core + 24 capture-meta fixes)
 - [ ] **15. Basic capture** (5 min, timestamp naming, dummy device)
 - [ ] **16. Captured file verification** (playable mp3s with correct content)
 - [ ] **17. Capture with Spotify metadata** (artist-title naming + track splitting)
@@ -489,8 +493,8 @@ python -m dreamsync cache-list
 - [ ] **41. Per-track invalidation** (selective cache clear)
 
 ```bash
-# 14. Capture unit tests
-python -m pytest dev/tests/test_capture_buffer.py dev/tests/test_capture_boundary.py dev/tests/test_capture_writer.py dev/tests/test_capture_pipeline.py -v
+# 14. Capture unit tests (68 core + 24 capture-meta fixes = 92)
+python -m pytest dev/tests/test_capture_buffer.py dev/tests/test_capture_boundary.py dev/tests/test_capture_writer.py dev/tests/test_capture_pipeline.py dev/tests/test_fetch_timing.py dev/tests/test_unicode_callback.py dev/tests/test_callback_isolation.py -v
 
 # 15+16. Basic capture (5 min, play music through VB-Cable)
 mkdir -p out/capture-test

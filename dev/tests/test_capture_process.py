@@ -17,7 +17,7 @@ def manager():
 class TestCaptureConfig:
     def test_defaults(self):
         cfg = CaptureConfig()
-        assert cfg.sample_rate == 48000
+        assert cfg.sample_rate == 44100
         assert cfg.channels == 2
         assert cfg.thread_queue_size == 1024
         assert cfg.device_pattern == "CABLE Output"

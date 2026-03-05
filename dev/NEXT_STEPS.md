@@ -2,7 +2,7 @@
 
 ## Audio Capture Pipeline — Complete
 
-All 15 capture modules and the `CaptureOrchestrator` are implemented with 339 tests (185 unit + 87 orchestrator + 13 CLI + 30 integration + 24 capture-meta fixes). 1309 total dev tests pass.
+All 15 capture modules and the `CaptureOrchestrator` are implemented with 339 dev tests (185 unit + 87 orchestrator + 13 CLI + 30 integration + 24 capture-meta fixes). 1309 total dev tests pass.
 
 ### Completed
 
@@ -30,6 +30,11 @@ All 15 capture modules and the `CaptureOrchestrator` are implemented with 339 te
 - [x] C2: Unicode-safe `print()` in track-change and segment-saved callbacks (encode/replace for Windows cp1252)
 - [x] C3: Callback exception isolation — orchestrator called first, display callback wrapped in try/except
 
+### Cleanup
+
+- [x] Removed `dev/plans/audio-capture/` (26 old phase plan files) — fully implemented, plans superseded by code
+- [x] Removed `dev/plans/audio_capture_pipeline_plan.md` — original high-level plan, superseded by implementation
+
 ### Manual Validation (Live Testing)
 
 - [x] Run live capture with VB-Cable routing (5 min, timestamp naming) -- verify audio is not silence
@@ -44,7 +49,7 @@ All 15 capture modules and the `CaptureOrchestrator` are implemented with 339 te
 ### Remaining Validation Tests
 
 See `dev/VALIDATION_TESTS.md` for the full remaining test matrix (items 14-41), covering:
-- Song capture pipeline (component 3) -- in progress
+- Song capture pipeline (component 3) — in progress
 - Song structure analyzer (component 4)
 - Show playback runtime (component 5)
 - Show compiler (feature 3)

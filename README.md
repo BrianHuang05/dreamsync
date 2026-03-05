@@ -159,6 +159,59 @@ python -m dreamsync session --config devices.yaml --health-monitor --health-inte
 
 When a device goes offline (3 consecutive failed probes), its adapter is paused. When it comes back (2 consecutive successes), it resumes automatically. The audio pipeline is never blocked.
 
+## MP3 song capture
+
+Record per-song MP3 files from system audio using FFmpeg. Requires [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) for audio routing on Windows.
+
+### Audio routing setup (Windows)
+
+The capture pipeline uses FFmpeg to read from VB-Cable's output device. You must route system audio through VB-Cable so the capture can see it.
+
+1. **Install VB-Audio Virtual Cable** from https://vb-audio.com/Cable/ (free)
+2. **Set CABLE Input as default playback device:**
+   - Open **Settings > System > Sound** (or right-click the speaker icon in the taskbar)
+   - Under **Output**, select **CABLE Input (VB-Audio Virtual Cable)**
+   - All system audio now flows into the virtual cable instead of your speakers
+3. **Echo audio back to your speakers:**
+   - Open **Control Panel > Sound** (the classic panel, not Settings)
+   - Go to the **Recording** tab
+   - Right-click **CABLE Output (VB-Audio Virtual Cable)** > **Properties**
+   - Go to the **Listen** tab
+   - Check **"Listen to this device"**
+   - In the dropdown, select your real speakers/headphones
+   - Click **OK**
+4. **Verify:** Play music. You should hear it through your speakers, and running `ffmpeg -hide_banner -list_devices true -f dshow -i dummy 2>&1` should show `CABLE Output (VB-Audio Virtual Cable)` as an available audio device.
+
+The audio path is: App -> CABLE Input -> CABLE Output -> FFmpeg capture (+ echoed to speakers via Listen).
+
+### Standalone capture
+
+```bash
+python -m dreamsync capture --duration 300 --mp3 --output-dir ./songs --naming metadata
+```
+
+### Capture during a live session
+
+```bash
+python -m dreamsync session --config devices.yaml --capture --capture-dir ./songs --capture-naming metadata --spotify
+```
+
+### Capture with govee-live
+
+```bash
+python -m dreamsync govee-live --device 10.0.0.1:7:primary:ptreal --duration 300 --capture --capture-dir ./songs
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--mp3` | off | Enable MP3 capture pipeline (capture subcommand) |
+| `--capture` | off | Enable MP3 capture pipeline (session/govee-live) |
+| `--output-dir` / `--capture-dir` | `captured_songs` | Output directory for MP3 files |
+| `--naming` / `--capture-naming` | `timestamp` | Filename scheme: `timestamp` or `metadata` |
+| `--device-pattern` | `CABLE Output` | DirectShow audio device for FFmpeg |
+
+With `--spotify`, song boundaries come from Spotify's queue API for frame-accurate splits. Without Spotify, the pipeline captures continuously without splitting.
+
 ## List audio devices
 
 ```bash
@@ -169,10 +222,10 @@ python -m dreamsync devices
 
 ```bash
 python -m pytest tests/ -v        # Core subsystems (569 tests)
-python -m pytest dev/tests/ -v    # Audio capture pipeline (185 tests)
+python -m pytest dev/tests/ -v    # Audio capture pipeline (315 tests)
 ```
 
-754 tests total covering all subsystems:
+884 tests total covering all subsystems:
 
 ### Core tests (`tests/`)
 
@@ -208,6 +261,9 @@ python -m pytest dev/tests/ -v    # Audio capture pipeline (185 tests)
 | `test_metadata_writer.py` | 12 | JSON sidecar files, atomic writes |
 | `test_drift_detector.py` | 12 | 4-level drift detection, boundary correction |
 | `test_recovery_manager.py` | 10 | Capture/encoder failure recovery cascade |
+| `test_orchestrator.py` | 87 | CaptureOrchestrator: config, lifecycle, threads, DynamicSplitProcessor, timing, drift, recovery, logging |
+| `test_cli_capture.py` | 13 | CLI integration: --mp3 args, govee-live --capture, session orchestrator config, Spotify wiring |
+| `test_capture_integration.py` | 30 | E2E: split accuracy, metadata sidecars, dynamic boundaries, drift, failure injection, logging, file naming |
 
 ## Architecture
 
@@ -267,6 +323,7 @@ Separate FFmpeg-based pipeline for recording system audio as per-song MP3 files.
 | Drift detection + boundary correction | `capture/drift_detector.py` |
 | Failure recovery cascade (retry/fallback/skip) | `capture/recovery_manager.py` |
 | Structured JSON + console pipeline logging | `capture/pipeline_logger.py` |
+| Pipeline orchestrator (unified lifecycle + CLI) | `capture/orchestrator.py` |
 | Windows audio routing via PowerShell | `capture/audio_router.py` |
 
 ### Transport protocols

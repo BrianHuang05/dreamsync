@@ -29,7 +29,7 @@ class OrchestratorConfig:
     """
 
     # --- Capture process (-> CaptureConfig) ---
-    sample_rate: int = 48000
+    sample_rate: int = 44100
     channels: int = 2
     device_pattern: str = "CABLE Output"
 
@@ -48,7 +48,7 @@ class OrchestratorConfig:
     log_dir: str = "./logs"
 
     # --- Timing (-> BoundaryQueue, TimingIntegrator) ---
-    safety_margin_frames: int = 24_000  # 0.5 s at 48 kHz
+    safety_margin_frames: int = 22_050  # 0.5 s at 44.1 kHz
     timing_refresh_interval: float = 5.0
 
     # --- Drift (-> DriftDetector) ---
