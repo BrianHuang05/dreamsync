@@ -81,6 +81,85 @@ class OrchestratorConfig:
 DRIFT_CHECK_INTERVAL_CHUNKS = 100  # ~10 seconds at 100 ms chunks
 
 
+class PcmAccumulator:
+    """Duck-types ``EncoderProcess`` to absorb PCM writes while the real
+    encoder spawns in a background thread.
+
+    Two modes:
+
+    1. **Buffering** — before ``attach_encoder()`` is called, ``write()``
+       appends raw PCM bytes to an internal list.
+    2. **Pass-through** — after ``attach_encoder()``, ``write()`` delegates
+       directly to the real encoder.
+
+    Thread safety: a ``threading.Lock`` protects the buffer↔encoder swap.
+    A ``threading.Event`` gates ``wait()`` and ``output_path`` (only called
+    from background finalization, never the consumer thread).
+    """
+
+    def __init__(self) -> None:
+        self._buffer: list[bytes] = []
+        self._encoder: object | None = None
+        self._lock = threading.Lock()
+        self._attached = threading.Event()
+        self._close_requested = False
+        self._closed = False
+
+    # -- Consumer-thread API (non-blocking) --------------------------------
+
+    def write(self, data: bytes) -> None:
+        """Buffer *data* or pass through to the real encoder."""
+        with self._lock:
+            if self._encoder is not None:
+                self._encoder.write(data)  # type: ignore[union-attr]
+            else:
+                self._buffer.append(data)
+
+    def close(self) -> None:
+        """Signal end-of-input.  Non-blocking in both modes."""
+        with self._lock:
+            if self._encoder is not None:
+                self._encoder.close()  # type: ignore[union-attr]
+                self._closed = True
+            else:
+                self._close_requested = True
+
+    # -- Background-thread API ---------------------------------------------
+
+    def attach_encoder(self, encoder: object) -> None:
+        """Drain the buffer into *encoder* and switch to pass-through mode."""
+        with self._lock:
+            for chunk in self._buffer:
+                encoder.write(chunk)  # type: ignore[union-attr]
+            self._buffer.clear()
+            self._encoder = encoder
+            self._attached.set()
+            if self._close_requested:
+                encoder.close()  # type: ignore[union-attr]
+                self._closed = True
+
+    def wait(self, timeout: float = 30.0) -> int:
+        """Block until the real encoder is attached, then delegate ``wait``."""
+        self._attached.wait(timeout=timeout)
+        if self._encoder is None:
+            return -1
+        return self._encoder.wait(timeout=timeout)  # type: ignore[union-attr]
+
+    @property
+    def output_path(self) -> str:
+        """Block until the real encoder is attached, then return its path."""
+        self._attached.wait()
+        if self._encoder is None:
+            return ""
+        return self._encoder.output_path  # type: ignore[union-attr]
+
+    @property
+    def stderr_output(self) -> list[str]:
+        if self._encoder is None:
+            return []
+        return self._encoder.stderr_output  # type: ignore[union-attr]
+
+
 class DynamicSplitProcessor:
     """SplitProcessor that reads boundaries from a BoundaryQueue.
 
@@ -283,8 +362,10 @@ class CaptureOrchestrator:
         self._consumer_thread: threading.Thread | None = None
         self._start_time: float | None = None
         self._segments_completed: int = 0
-        self._encoders: dict[int, EncoderProcess] = {}
+        self._encoders: dict[int, object] = {}
         self._split: DynamicSplitProcessor | None = None
+        self._finalize_threads: list[threading.Thread] = []
+        self._finalize_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Properties
@@ -395,6 +476,17 @@ class CaptureOrchestrator:
                     "WARNING", "lifecycle", "consumer.join_timeout",
                 )
 
+        # Join all background finalization threads
+        with self._finalize_lock:
+            pending_threads = list(self._finalize_threads)
+        for ft in pending_threads:
+            ft.join(timeout=10.0)
+            if ft.is_alive():
+                self._logger.log(
+                    "WARNING", "lifecycle", "finalize_thread.join_timeout",
+                    data={"thread_name": ft.name},
+                )
+
         self._logger.log(
             "INFO", "lifecycle", "pipeline.stopped",
             data=self.stats,
@@ -445,9 +537,31 @@ class CaptureOrchestrator:
         start_frame: int,
         end_frame: int,
     ) -> None:
-        """Handle segment completion — wait for encoder, write sidecar, fire callback."""
+        """Handle segment completion — capture metadata, dispatch finalization to background."""
         self._segments_completed += 1
 
+        # Capture boundary metadata on the consumer thread (before queue can change)
+        boundary_meta = self._get_segment_metadata(segment_index)
+
+        # Dispatch all blocking work to a background thread
+        t = threading.Thread(
+            target=self._finalize_segment,
+            args=(segment_index, start_frame, end_frame, boundary_meta),
+            name=f"finalize-segment-{segment_index}",
+            daemon=True,
+        )
+        t.start()
+        with self._finalize_lock:
+            self._finalize_threads.append(t)
+
+    def _finalize_segment(
+        self,
+        segment_index: int,
+        start_frame: int,
+        end_frame: int,
+        boundary_meta: dict | None,
+    ) -> None:
+        """Background thread: wait for encoder, write sidecar, fire callback."""
         # Retrieve and wait for encoder
         encoder = self._encoders.get(segment_index)
         if encoder is not None:
@@ -484,8 +598,10 @@ class CaptureOrchestrator:
         else:
             mp3_path = ""
 
-        # Build segment metadata
-        seg_meta = self._build_segment_metadata(segment_index, start_frame, end_frame)
+        # Build segment metadata (using pre-captured boundary_meta)
+        seg_meta = self._build_segment_metadata(
+            segment_index, start_frame, end_frame, boundary_meta=boundary_meta,
+        )
 
         # Write JSON sidecar
         try:
@@ -623,31 +739,42 @@ class CaptureOrchestrator:
         """
         return None
 
-    def _start_encoder(self, segment_index: int) -> EncoderProcess:
-        """Create and start a new EncoderProcess for segment N."""
+    def _start_encoder(self, segment_index: int) -> PcmAccumulator:
+        """Create a PcmAccumulator and spawn the real encoder in the background.
+
+        Returns immediately — the accumulator buffers writes until the real
+        ``EncoderProcess`` is attached by the background spawn thread.
+        """
+        accumulator = PcmAccumulator()
+        self._encoders[segment_index] = accumulator
+
+        # Capture metadata now (consumer thread) before the queue can change
         metadata = self._get_segment_metadata(segment_index)
-        mp3_path = self._file_namer.next_filename(metadata)
 
-        encoder = EncoderProcess(
-            output_path=mp3_path,
-            sample_rate=self._config.sample_rate,
-            channels=self._config.channels,
-            bitrate=self._config.bitrate,
-        )
-        encoder.start()
+        def _spawn() -> None:
+            mp3_path = self._file_namer.next_filename(metadata)
+            encoder = EncoderProcess(
+                output_path=mp3_path,
+                sample_rate=self._config.sample_rate,
+                channels=self._config.channels,
+                bitrate=self._config.bitrate,
+            )
+            encoder.start()
+            accumulator.attach_encoder(encoder)
 
-        self._encoders[segment_index] = encoder
+            self._logger.log(
+                "INFO", "encoder", "encoder_started",
+                data={
+                    "segment_index": segment_index,
+                    "output_path": mp3_path,
+                },
+                frame_position=self._buffer.frames_processed,
+            )
 
-        self._logger.log(
-            "INFO", "encoder", "encoder_started",
-            data={
-                "segment_index": segment_index,
-                "output_path": mp3_path,
-            },
-            frame_position=self._buffer.frames_processed,
-        )
+        t = threading.Thread(target=_spawn, name=f"spawn-encoder-{segment_index}", daemon=True)
+        t.start()
 
-        return encoder
+        return accumulator
 
     def _get_segment_metadata(self, segment_index: int) -> dict | None:
         """Retrieve metadata from BoundaryQueue for the given segment."""
@@ -658,9 +785,11 @@ class CaptureOrchestrator:
 
     def _build_segment_metadata(
         self, segment_index: int, start_frame: int, end_frame: int,
+        boundary_meta: dict | None = None,
     ) -> SegmentMetadata:
         """Construct metadata for a completed segment."""
-        boundary_meta = self._get_segment_metadata(segment_index)
+        if boundary_meta is None:
+            boundary_meta = self._get_segment_metadata(segment_index)
         gaps = [
             {
                 "start_frame": g.start_frame,

@@ -28,16 +28,6 @@ python -m dreamsync govee-live \
 
 **Known gap:** No initial timing fetch on startup — first 5 seconds have no boundaries. If a song ends in that window, the split will be missed.
 
-## Capture Pipeline Bug Fixes (DONE)
-
-Three bugs from live testing on 2026-03-05 — all fixed (see `dev/plans/capture-meta-log-analysis.md`):
-
-1. ~~`queue.current` → `queue.currently_playing`~~ — fixed in `cli.py:1185`, `session.py:248`
-2. ~~`charmap` UnicodeEncodeError on track change~~ — fixed with `errors="replace"` in `cli.py:1142-1143`
-3. ~~Callback exception skips orchestrator~~ — fixed: orchestrator called first in `cli.py:1156-1169`, `_orig` in separate try/except
-
-Root cause analysis: `dev/plans/split-pipeline-root-cause.md`
-
 ## Manual Validation (Live Testing)
 
 - [x] Basic capture produces valid, playable MP3 (test 15-16)

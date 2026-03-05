@@ -20,6 +20,7 @@ from dreamsync.capture.orchestrator import (
     CaptureOrchestrator,
     DynamicSplitProcessor,
     OrchestratorConfig,
+    PcmAccumulator,
 )
 from dreamsync.capture.pcm_buffer import AudioBuffer
 from dreamsync.capture.pcm_reader import BYTES_PER_FRAME, chunk_bytes_for_ms
@@ -27,6 +28,14 @@ from dreamsync.capture.pipeline_logger import PipelineLogger
 from dreamsync.capture.recovery_manager import GapRecord, RecoveryConfig, RecoveryManager
 from dreamsync.capture.split_logic import SplitProcessor
 from dreamsync.capture.timing_integrator import TimingIntegrator
+
+
+def _wait_for_finalizations(orchestrator, timeout=5):
+    """Join all background finalization threads so tests can assert on side effects."""
+    with orchestrator._finalize_lock:
+        threads = list(orchestrator._finalize_threads)
+    for t in threads:
+        t.join(timeout=timeout)
 
 
 def _make_orch(tmp_path, **cfg_overrides):
@@ -314,6 +323,7 @@ class TestCallbackWiring:
         orch = _make_orch(tmp_path)
         assert orch._on_segment_saved is None
         orch._on_segment_complete(0, 0, 48000)
+        _wait_for_finalizations(orch)
         assert orch._segments_completed == 1
 
     def test_callback_stored(self, tmp_path):
@@ -328,6 +338,7 @@ class TestCallbackWiring:
         orch = _make_orch_with_cb(tmp_path, on_segment_saved=cb)
 
         orch._on_segment_complete(0, 0, 44100)
+        _wait_for_finalizations(orch)
         assert len(calls) == 1
         path, meta = calls[0]
         assert meta["segment_index"] == 0
@@ -338,6 +349,7 @@ class TestCallbackWiring:
         assert meta["bitrate"] == "192k"
 
         orch._on_segment_complete(1, 44100, 88200)
+        _wait_for_finalizations(orch)
         assert len(calls) == 2
         assert calls[1][1]["segment_index"] == 1
 
@@ -567,10 +579,12 @@ class TestEncoderFactory:
         mock_popen.return_value = mock_proc
 
         orch = _make_orch(tmp_path)
-        encoder = orch._start_encoder(0)
+        acc = orch._start_encoder(0)
 
-        assert isinstance(encoder, EncoderProcess)
-        assert encoder.output_path.endswith(".mp3")
+        assert isinstance(acc, PcmAccumulator)
+        # Wait for background spawn to complete
+        acc._attached.wait(timeout=5.0)
+        assert acc.output_path.endswith(".mp3")
         mock_popen.assert_called_once()
 
     @patch("dreamsync.capture.encoder_process.subprocess.Popen")
@@ -582,25 +596,28 @@ class TestEncoderFactory:
 
         orch = _make_orch(tmp_path)
         orch._file_namer.next_filename = MagicMock(return_value=str(tmp_path / "out" / "test.mp3"))
-        encoder = orch._start_encoder(0)
+        acc = orch._start_encoder(0)
 
+        # Wait for the background spawn to attach
+        acc._attached.wait(timeout=5.0)
         orch._file_namer.next_filename.assert_called_once()
-        assert encoder.output_path == str(tmp_path / "out" / "test.mp3")
+        assert acc.output_path == str(tmp_path / "out" / "test.mp3")
 
     @patch("dreamsync.capture.encoder_process.subprocess.Popen")
-    def test_encoder_factory_stores_encoder(self, mock_popen, tmp_path):
+    def test_encoder_factory_stores_accumulator(self, mock_popen, tmp_path):
         mock_proc = MagicMock()
         mock_proc.stderr = io.BytesIO(b"")
         mock_proc.poll.return_value = None
         mock_popen.return_value = mock_proc
 
         orch = _make_orch(tmp_path)
-        e0 = orch._start_encoder(0)
-        assert orch._encoders[0] is e0
+        acc0 = orch._start_encoder(0)
+        assert orch._encoders[0] is acc0
+        assert isinstance(acc0, PcmAccumulator)
 
-        e1 = orch._start_encoder(1)
-        assert orch._encoders[1] is e1
-        assert e0 is not e1
+        acc1 = orch._start_encoder(1)
+        assert orch._encoders[1] is acc1
+        assert acc0 is not acc1
 
     @patch("dreamsync.capture.encoder_process.subprocess.Popen")
     def test_encoder_factory_passes_audio_config(self, mock_popen, tmp_path):
@@ -610,8 +627,11 @@ class TestEncoderFactory:
         mock_popen.return_value = mock_proc
 
         orch = _make_orch(tmp_path, sample_rate=44100, channels=1, bitrate="128k")
-        encoder = orch._start_encoder(0)
+        acc = orch._start_encoder(0)
 
+        # Wait for the background spawn to attach the real encoder
+        acc._attached.wait(timeout=5.0)
+        encoder = acc._encoder
         assert encoder._sample_rate == 44100
         assert encoder._channels == 1
         assert encoder._bitrate == "128k"
@@ -625,8 +645,9 @@ class TestEncoderFactory:
 
         orch = _make_orch(tmp_path)
         # BoundaryQueue is empty — no metadata
-        encoder = orch._start_encoder(0)
-        assert encoder is not None
+        acc = orch._start_encoder(0)
+        assert acc is not None
+        assert isinstance(acc, PcmAccumulator)
 
 
 # ======================================================================
@@ -644,6 +665,7 @@ class TestSegmentCompletion:
         orch._encoders[0] = mock_enc
 
         orch._on_segment_complete(0, 0, 4800)
+        _wait_for_finalizations(orch)
 
         mock_sidecar.assert_called_once()
         args = mock_sidecar.call_args
@@ -663,6 +685,7 @@ class TestSegmentCompletion:
         orch._encoders[0] = mock_enc
 
         orch._on_segment_complete(0, 0, 4800)
+        _wait_for_finalizations(orch)
 
         assert len(calls) == 1
         path, meta = calls[0]
@@ -680,6 +703,7 @@ class TestSegmentCompletion:
         orch._encoders[0] = mock_enc
 
         orch._on_segment_complete(0, 0, 4800)
+        _wait_for_finalizations(orch)
 
         mock_sidecar.assert_not_called()
 
@@ -692,6 +716,7 @@ class TestSegmentCompletion:
         orch._encoders[0] = mock_enc
 
         orch._on_segment_complete(0, 0, 4800)
+        _wait_for_finalizations(orch)
         # No exception, sidecar still written
         mock_sidecar.assert_called_once()
 
@@ -715,9 +740,10 @@ class TestEncoderLifecycleTracking:
         mock_popen.return_value = mock_proc
 
         orch = _make_orch(tmp_path)
-        e = orch._start_encoder(0)
+        acc = orch._start_encoder(0)
         assert 0 in orch._encoders
-        assert orch._encoders[0] is e
+        assert orch._encoders[0] is acc
+        assert isinstance(acc, PcmAccumulator)
 
     @patch("dreamsync.capture.encoder_process.subprocess.Popen")
     def test_multiple_encoders_tracked(self, mock_popen, tmp_path):
@@ -727,14 +753,14 @@ class TestEncoderLifecycleTracking:
         mock_popen.return_value = mock_proc
 
         orch = _make_orch(tmp_path)
-        e0 = orch._start_encoder(0)
-        e1 = orch._start_encoder(1)
-        e2 = orch._start_encoder(2)
+        acc0 = orch._start_encoder(0)
+        acc1 = orch._start_encoder(1)
+        acc2 = orch._start_encoder(2)
 
         assert len(orch._encoders) == 3
-        assert orch._encoders[0] is e0
-        assert orch._encoders[1] is e1
-        assert orch._encoders[2] is e2
+        assert orch._encoders[0] is acc0
+        assert orch._encoders[1] is acc1
+        assert orch._encoders[2] is acc2
 
     @patch("dreamsync.capture.metadata_writer.MetadataWriter.write_sidecar")
     def test_encoder_preserved_after_completion(self, mock_sidecar, tmp_path):
@@ -745,6 +771,7 @@ class TestEncoderLifecycleTracking:
         orch._encoders[0] = mock_enc
 
         orch._on_segment_complete(0, 0, 4800)
+        _wait_for_finalizations(orch)
         assert 0 in orch._encoders
 
     def test_encoder_dict_key_error_on_missing(self, tmp_path):
@@ -1388,6 +1415,7 @@ class TestEncoderFailureRecovery:
         orch._logger.recovery_event = MagicMock()
 
         orch._on_segment_complete(0, 0, 4800)
+        _wait_for_finalizations(orch)
 
         orch._recovery.handle_encoder_failure.assert_called_once()
         # Sidecar still written for retried segments
@@ -1405,6 +1433,7 @@ class TestEncoderFailureRecovery:
         orch._recovery.handle_encoder_failure = MagicMock(return_value="skipped")
 
         orch._on_segment_complete(0, 0, 4800)
+        _wait_for_finalizations(orch)
 
         # No sidecar for skipped segments
         mock_sidecar.assert_not_called()
@@ -1422,6 +1451,7 @@ class TestEncoderFailureRecovery:
         orch._logger.recovery_event = MagicMock()
 
         orch._on_segment_complete(0, 0, 4800)
+        _wait_for_finalizations(orch)
 
         # encoder_failure event
         calls = orch._logger.recovery_event.call_args_list
@@ -1490,3 +1520,308 @@ class TestShutdownLogging:
         assert stats["capture_restarts"] == 0
         assert stats["encoder_failures"] == 0
         assert stats["gaps"] == 0
+
+
+# ======================================================================
+# PcmAccumulator
+# ======================================================================
+
+
+class TestPcmAccumulator:
+    def test_write_buffers_before_attach(self):
+        acc = PcmAccumulator()
+        acc.write(b"\x01" * 100)
+        acc.write(b"\x02" * 200)
+        assert len(acc._buffer) == 2
+        assert acc._encoder is None
+
+    def test_attach_drains_buffer(self):
+        acc = PcmAccumulator()
+        acc.write(b"\x01" * 100)
+        acc.write(b"\x02" * 200)
+
+        mock_enc = MagicMock()
+        acc.attach_encoder(mock_enc)
+
+        assert mock_enc.write.call_count == 2
+        assert mock_enc.write.call_args_list[0][0][0] == b"\x01" * 100
+        assert mock_enc.write.call_args_list[1][0][0] == b"\x02" * 200
+        assert acc._buffer == []
+
+    def test_write_passes_through_after_attach(self):
+        acc = PcmAccumulator()
+        mock_enc = MagicMock()
+        acc.attach_encoder(mock_enc)
+
+        acc.write(b"\xAB" * 50)
+        acc.write(b"\xCD" * 75)
+
+        assert mock_enc.write.call_count == 2
+        assert mock_enc.write.call_args_list[0][0][0] == b"\xAB" * 50
+        assert mock_enc.write.call_args_list[1][0][0] == b"\xCD" * 75
+
+    def test_close_before_attach_sets_flag(self):
+        acc = PcmAccumulator()
+        acc.close()
+        assert acc._close_requested is True
+        assert acc._closed is False
+
+    def test_close_after_attach_closes_encoder(self):
+        acc = PcmAccumulator()
+        mock_enc = MagicMock()
+        acc.attach_encoder(mock_enc)
+
+        acc.close()
+        mock_enc.close.assert_called_once()
+        assert acc._closed is True
+
+    def test_attach_after_close_drains_and_closes(self):
+        acc = PcmAccumulator()
+        acc.write(b"\x01" * 100)
+        acc.close()
+
+        mock_enc = MagicMock()
+        acc.attach_encoder(mock_enc)
+
+        # Buffer drained
+        assert mock_enc.write.call_count == 1
+        assert mock_enc.write.call_args_list[0][0][0] == b"\x01" * 100
+        # Encoder immediately closed
+        mock_enc.close.assert_called_once()
+        assert acc._closed is True
+
+    def test_wait_blocks_until_attached(self):
+        acc = PcmAccumulator()
+        mock_enc = MagicMock()
+        mock_enc.wait.return_value = 0
+
+        result = [None]
+
+        def waiter():
+            result[0] = acc.wait(timeout=5.0)
+
+        t = threading.Thread(target=waiter)
+        t.start()
+
+        time.sleep(0.05)
+        assert t.is_alive()  # still waiting
+
+        acc.attach_encoder(mock_enc)
+        t.join(timeout=2.0)
+
+        assert not t.is_alive()
+        assert result[0] == 0
+        mock_enc.wait.assert_called_once_with(timeout=5.0)
+
+    def test_wait_delegates_to_encoder(self):
+        acc = PcmAccumulator()
+        mock_enc = MagicMock()
+        mock_enc.wait.return_value = 42
+        acc.attach_encoder(mock_enc)
+
+        rc = acc.wait(timeout=10.0)
+        assert rc == 42
+        mock_enc.wait.assert_called_once_with(timeout=10.0)
+
+    def test_output_path_blocks_until_attached(self):
+        acc = PcmAccumulator()
+        mock_enc = MagicMock()
+        mock_enc.output_path = "/tmp/song.mp3"
+
+        result = [None]
+
+        def reader():
+            result[0] = acc.output_path
+
+        t = threading.Thread(target=reader)
+        t.start()
+
+        time.sleep(0.05)
+        assert t.is_alive()
+
+        acc.attach_encoder(mock_enc)
+        t.join(timeout=2.0)
+
+        assert not t.is_alive()
+        assert result[0] == "/tmp/song.mp3"
+
+    def test_output_path_returns_encoder_path(self):
+        acc = PcmAccumulator()
+        mock_enc = MagicMock()
+        mock_enc.output_path = "/output/track_01.mp3"
+        acc.attach_encoder(mock_enc)
+
+        assert acc.output_path == "/output/track_01.mp3"
+
+    def test_thread_safety_concurrent_writes(self):
+        acc = PcmAccumulator()
+        mock_enc = MagicMock()
+        errors = []
+
+        def writer(tag, count):
+            try:
+                for i in range(count):
+                    acc.write(bytes([tag]) * 100)
+            except Exception as e:
+                errors.append(e)
+
+        # Start writers before attach
+        threads = [threading.Thread(target=writer, args=(i, 50)) for i in range(4)]
+        for t in threads:
+            t.start()
+
+        time.sleep(0.01)
+        acc.attach_encoder(mock_enc)
+
+        for t in threads:
+            t.join(timeout=5.0)
+
+        assert not errors
+        # Total writes = buffered + pass-through, all 200 should arrive
+        assert mock_enc.write.call_count == 200
+
+    def test_empty_buffer_attach(self):
+        acc = PcmAccumulator()
+        mock_enc = MagicMock()
+        acc.attach_encoder(mock_enc)
+
+        # No writes were buffered — drain is a no-op
+        mock_enc.write.assert_not_called()
+        assert acc._attached.is_set()
+        assert acc._encoder is mock_enc
+
+
+# ======================================================================
+# TestNonBlockingRotation — Integration tests
+# ======================================================================
+
+
+class TestNonBlockingRotation:
+    @patch("dreamsync.capture.encoder_process.subprocess.Popen")
+    def test_rotation_does_not_block_consumer(self, mock_popen, tmp_path):
+        """_start_encoder returns in <10ms (encoder spawns in background)."""
+        mock_proc = MagicMock()
+        mock_proc.stderr = io.BytesIO(b"")
+        mock_proc.poll.return_value = None
+        mock_popen.return_value = mock_proc
+
+        orch = _make_orch(tmp_path)
+
+        t0 = time.monotonic()
+        acc = orch._start_encoder(0)
+        elapsed = time.monotonic() - t0
+
+        assert isinstance(acc, PcmAccumulator)
+        assert elapsed < 0.010  # must return in <10ms
+
+    @patch("dreamsync.capture.metadata_writer.MetadataWriter.write_sidecar")
+    def test_segment_complete_does_not_block_consumer(self, mock_sidecar, tmp_path):
+        """_on_segment_complete returns in <10ms (finalization runs in background)."""
+        orch = _make_orch(tmp_path)
+        mock_enc = MagicMock(spec=EncoderProcess)
+        # Simulate a slow encoder wait
+        mock_enc.wait.side_effect = lambda timeout=30.0: (time.sleep(0.05), 0)[1]
+        mock_enc.output_path = "/tmp/song.mp3"
+        orch._encoders[0] = mock_enc
+
+        t0 = time.monotonic()
+        orch._on_segment_complete(0, 0, 44100)
+        elapsed = time.monotonic() - t0
+
+        assert elapsed < 0.010  # must return immediately
+        # Finalization still completes in background
+        _wait_for_finalizations(orch)
+        mock_sidecar.assert_called_once()
+
+    @patch("dreamsync.capture.metadata_writer.MetadataWriter.write_sidecar")
+    @patch("dreamsync.capture.encoder_process.subprocess.Popen")
+    def test_concurrent_rotation_and_finalization(self, mock_popen, mock_sidecar, tmp_path):
+        """Two rapid splits both finalize correctly."""
+        mock_proc = MagicMock()
+        mock_proc.stderr = io.BytesIO(b"")
+        mock_proc.poll.return_value = None
+        mock_popen.return_value = mock_proc
+
+        orch = _make_orch(tmp_path)
+
+        # Simulate two segments: manually set up encoders with mock waits
+        mock_enc0 = MagicMock(spec=EncoderProcess)
+        mock_enc0.wait.return_value = 0
+        mock_enc0.output_path = str(tmp_path / "out" / "seg0.mp3")
+        orch._encoders[0] = mock_enc0
+
+        mock_enc1 = MagicMock(spec=EncoderProcess)
+        mock_enc1.wait.return_value = 0
+        mock_enc1.output_path = str(tmp_path / "out" / "seg1.mp3")
+        orch._encoders[1] = mock_enc1
+
+        # Rapid-fire two segment completions
+        orch._on_segment_complete(0, 0, 44100)
+        orch._on_segment_complete(1, 44100, 88200)
+
+        _wait_for_finalizations(orch)
+
+        assert orch._segments_completed == 2
+        assert mock_sidecar.call_count == 2
+
+    def test_data_continuity_across_split(self):
+        """All PCM data reaches encoders across a split boundary (no drops)."""
+        queue = BoundaryQueue()
+        queue.add(BoundaryEntry(frame_position=2400, segment_index=0))
+
+        accumulators = {}
+        mock_encoders = {}
+
+        def start_encoder(idx):
+            acc = PcmAccumulator()
+            accumulators[idx] = acc
+            # Simulate background attach with a mock encoder
+            mock_enc = MagicMock()
+            mock_enc.write = MagicMock()
+            mock_enc.close = MagicMock()
+            mock_encoders[idx] = mock_enc
+            # Attach immediately (simulates fast spawn)
+            acc.attach_encoder(mock_enc)
+            return acc
+
+        completions = []
+
+        split = DynamicSplitProcessor(
+            boundary_queue=queue,
+            start_encoder=start_encoder,
+            on_segment_complete=lambda idx, s, e: completions.append((idx, s, e)),
+        )
+        split.start()
+
+        # Write 4800 frames — first 2400 go to encoder 0, next 2400 to encoder 1
+        chunk = b"\xAB" * (4800 * BYTES_PER_FRAME)
+        split.process_chunk(chunk)
+        split.finish()
+
+        # Verify data continuity — all bytes accounted for
+        enc0_bytes = sum(len(c[0][0]) for c in mock_encoders[0].write.call_args_list)
+        enc1_bytes = sum(len(c[0][0]) for c in mock_encoders[1].write.call_args_list)
+        assert enc0_bytes == 2400 * BYTES_PER_FRAME
+        assert enc1_bytes == 2400 * BYTES_PER_FRAME
+        assert enc0_bytes + enc1_bytes == len(chunk)  # no drops
+
+    @patch("dreamsync.capture.metadata_writer.MetadataWriter.write_sidecar")
+    def test_stop_waits_for_pending_finalizations(self, mock_sidecar, tmp_path):
+        """stop() waits for all finalization threads before returning."""
+        orch = _make_orch(tmp_path)
+        orch._running = True
+        orch._start_time = time.monotonic()
+
+        mock_enc = MagicMock(spec=EncoderProcess)
+        mock_enc.wait.side_effect = lambda timeout=30.0: (time.sleep(0.1), 0)[1]
+        mock_enc.output_path = str(tmp_path / "out" / "song.mp3")
+        orch._encoders[0] = mock_enc
+
+        # Trigger finalization (runs in background)
+        orch._on_segment_complete(0, 0, 44100)
+
+        # stop() should wait for finalization to complete
+        orch.stop()
+
+        # After stop, sidecar must have been written
+        mock_sidecar.assert_called_once()

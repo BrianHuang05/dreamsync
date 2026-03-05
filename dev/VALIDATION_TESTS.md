@@ -363,7 +363,7 @@ python -m dreamsync cache-list
 
 ## Quick Reference — Remaining Test Sequence
 
-- [x] **14. Capture unit tests** (92 tests: 68 core + 24 capture-meta fixes)
+- [x] **14. Capture unit tests** (104 orchestrator tests: 87 core + 12 PcmAccumulator + 5 non-blocking rotation integration)
 - [x] **15. Basic capture** (5 min, timestamp naming, dummy device)
 - [x] **16. Captured file verification** (playable mp3s with correct content)
 - [x] **17. Capture with Spotify metadata** (artist-title naming + track splitting)

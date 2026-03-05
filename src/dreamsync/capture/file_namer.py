@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -36,6 +37,7 @@ class FileNamer:
         self._output_dir.mkdir(parents=True, exist_ok=True)
         self._pattern = pattern
         self._counter: int = 0
+        self._lock = threading.Lock()
 
     @property
     def output_dir(self) -> Path:
@@ -47,9 +49,10 @@ class FileNamer:
 
     def next_filename(self, metadata: dict | None = None) -> str:
         """Return the full path for the next segment file."""
-        self._counter += 1
-        base = self._build_base(metadata)
-        return str(self._resolve_collision(base))
+        with self._lock:
+            self._counter += 1
+            base = self._build_base(metadata)
+            return str(self._resolve_collision(base))
 
     # ------------------------------------------------------------------
     # Internals
