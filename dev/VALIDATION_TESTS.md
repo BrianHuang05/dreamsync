@@ -15,106 +15,6 @@ Tests below cover features not yet validated end-to-end. Phases 1-4 (auto-detect
 
 These tests validate the `--capture` pipeline: continuous audio -> per-song mp3 files on disk. **Requires ffmpeg installed and on PATH.** Requires VB-Audio Virtual Cable configured (see README "Audio routing setup"). Play music through system audio so the capture has real signal.
 
-### 5.1 Unit tests
-
-```bash
-# Core capture tests (68 tests)
-python -m pytest dev/tests/test_capture_buffer.py dev/tests/test_capture_boundary.py dev/tests/test_capture_writer.py dev/tests/test_capture_pipeline.py -v
-
-# Capture-meta fix tests (24 tests)
-python -m pytest dev/tests/test_fetch_timing.py dev/tests/test_unicode_callback.py dev/tests/test_callback_isolation.py -v
-```
-
-**Pass:** All 92 tests pass (68 core + 24 capture-meta fixes).
-
-### 5.2 ffmpeg + VB-Cable availability
-
-```bash
-ffmpeg -version
-ffmpeg -hide_banner -list_devices true -f dshow -i dummy 2>&1 | grep -i "cable"
-```
-
-**Pass:** ffmpeg version string printed, and `CABLE Output (VB-Audio Virtual Cable)` appears in the device list. If VB-Cable is missing, install from https://vb-audio.com/Cable/ and configure per README instructions.
-
-### 5.3 Basic capture (5 min, no Govee hardware required)
-
-**Setup:** Ensure VB-Cable routing is configured (CABLE Input as default playback, CABLE Output "Listen" enabled). Start playing music before launching the command.
-
-Use `govee-live` with a dummy device IP (UDP frames silently drop):
-
-```bash
-mkdir -p out/capture-test
-
-python -m dreamsync govee-live \
-  --device 10.0.0.1:7:primary:ptreal \
-  --duration 300 \
-  --capture \
-  --capture-dir out/capture-test \
-  --capture-naming timestamp \
-  --debug-mood \
-  2>&1 | tee out/capture-test/console.log
-```
-
-Or with a `devices.yaml` and `session` (runs until Ctrl+C, no `--duration`):
-
-```bash
-python -m dreamsync session \
-  --config dev/devices.yaml \
-  --capture \
-  --capture-dir out/capture-test \
-  --capture-naming timestamp \
-  --debug-mood \
-  2>&1 | tee out/capture-test/console.log
-```
-
-**Pass criteria:**
-- Console shows `Capture: enabled -> out/capture-test/`
-- After Ctrl+C: `Capture: N segments, Xs captured` summary printed
-- No crashes, no ffmpeg errors, no `UnicodeEncodeError`
-- Pipeline log at `out/capture-test/logs/pipeline.jsonl` shows `encoder_failures: 0`
-- Drift checks show drift < 0.5s (if drift is ~1s per 10s, VB-Cable sample rate doesn't match — see Troubleshooting)
-
-### 5.4 Verify captured files
-
-```bash
-ls -la out/capture-test/*.mp3
-ffprobe -v error -show_format out/capture-test/*.mp3 2>&1 | grep -E "filename|duration|bit_rate"
-```
-
-**Pass criteria:**
-- At least 1 mp3 file exists
-- File sizes are reasonable (a 3-min song at 192k ~= 4.3 MB)
-- Files are playable — open each in any mp3 player and verify audio is correct (not silence, no static)
-- JSON sidecar files exist alongside each mp3
-
-### 5.5 Capture with Spotify metadata naming
-
-**Setup:** Authorize Spotify first (`python -m dreamsync spotify-auth`). Then play music on Spotify.
-
-```bash
-mkdir -p out/capture-meta
-
-python -m dreamsync govee-live \
-  --device 10.0.0.1:7:primary:ptreal \
-  --duration 600 \
-  --capture \
-  --capture-dir out/capture-meta \
-  --capture-naming metadata \
-  --spotify \
-  --debug-mood \
-  2>&1 | tee out/capture-meta/console.log
-```
-
-Let at least 2 songs play through, then Ctrl+C.
-
-**Pass criteria:**
-- Console shows `Spotify: now playing 'Track' by Artist` on each song change
-- Console shows `Capture: saved Artist - Title.mp3` messages at song boundaries
-- Files in `out/capture-meta/` have `Artist - Title.mp3` filenames
-- JSON sidecars have non-null `songTitle` and `artist` fields
-- Filenames are sanitised (no illegal path characters)
-- If duplicate names occur, suffixed with `_2`, `_3`, etc.
-
 ### 5.6 Song boundary accuracy (5+ songs)
 
 **Setup:** Queue a playlist of 5+ distinct songs on Spotify. Note the actual number of song transitions.
@@ -463,10 +363,10 @@ python -m dreamsync cache-list
 
 ## Quick Reference — Remaining Test Sequence
 
-- [ ] **14. Capture unit tests** (92 tests: 68 core + 24 capture-meta fixes)
-- [ ] **15. Basic capture** (5 min, timestamp naming, dummy device)
-- [ ] **16. Captured file verification** (playable mp3s with correct content)
-- [ ] **17. Capture with Spotify metadata** (artist-title naming + track splitting)
+- [x] **14. Capture unit tests** (92 tests: 68 core + 24 capture-meta fixes)
+- [x] **15. Basic capture** (5 min, timestamp naming, dummy device)
+- [x] **16. Captured file verification** (playable mp3s with correct content)
+- [x] **17. Capture with Spotify metadata** (artist-title naming + track splitting)
 - [ ] **18. Boundary accuracy** (5+ songs with Spotify, file count matches song count)
 - [ ] **19. Edge cases** (short track, long track, gapless/crossfade)
 - [ ] **20. Analyzer unit tests** (80 tests)
