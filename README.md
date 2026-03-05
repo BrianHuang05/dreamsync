@@ -285,46 +285,88 @@ System Audio → LiveBpmEstimator → beat events + BPM
 
 ### Module map
 
-| Component | Location |
-|---|---|
-| Audio capture (WASAPI loopback) | `src/dreamsync/live.py` |
-| Beat detection (hybrid onset, adaptive threshold, kick isolation) | `src/dreamsync/bpm.py` |
-| Noise-robust BPM (IOI histogram, HPSS percussive onset, bass-frequency gating, subharmonic snap, autocorrelation confidence, energy-gated template, selectivity monitor, harmonic-lock stabilization) | `src/dreamsync/live.py`, `src/dreamsync/dsp/features.py` |
-| Composite energy metric (RMS + spectral flux + bass + onset) | `src/dreamsync/director.py` |
-| Mood classification (CHILL / GROOVE / HYPE / DROP) | `src/dreamsync/mood.py` |
-| Effect cycling + color profiles | `src/dreamsync/effects.py`, `profile.py` |
-| Segment rendering (SOLID, PULSE, SCROLL, BREATHE, STROBE, WAVE, GRADIENT) | `src/dreamsync/render.py` |
-| LAN output (ptreal, razer, colorwc over UDP) | `src/dreamsync/output/govee_lan.py` |
-| BLE output (bleak GATT, mood-follower mode) | `src/dreamsync/output/govee_ble.py` |
-| Auto-detect device roles (latency-based classification) | `src/dreamsync/output/auto_detect.py` |
-| Device health monitor (probe loop, offline/online, role reclass) | `src/dreamsync/device_health.py` |
-| Song boundary detection (silence-gap + crossfade voting) | `src/dreamsync/live.py` |
-| Per-song telemetry (JSONL per song, session summary) | `src/dreamsync/telemetry.py` |
-| Hot-reload device config (mtime polling, diff, atomic swap) | `src/dreamsync/config_watcher.py` |
-| Infinite session runner (YAML config + Ctrl+C shutdown) | `src/dreamsync/session.py` |
+| Component | Location | Key classes/functions |
+|---|---|---|
+| CLI entry point + all subcommands | `cli.py` | `build_parser()`, `main()` |
+| Audio capture (WASAPI loopback) | `live.py` | `LiveBpmEstimator` |
+| Beat detection (hybrid onset, adaptive threshold, kick isolation) | `bpm.py` | `BeatDetector` |
+| Noise-robust BPM (IOI histogram, HPSS percussive onset, bass-frequency gating, subharmonic snap, autocorrelation confidence, energy-gated template, selectivity monitor, harmonic-lock stabilization) | `live.py`, `dsp/features.py` | `LiveBpmEstimator`, `extract_features()` |
+| Composite energy metric (RMS + spectral flux + bass + onset) | `director.py` | `Director`, `DirectorConfig` |
+| Mood classification (CHILL / GROOVE / HYPE / DROP) | `mood.py` | `MoodClassifier`, `MoodConfig` |
+| Effect cycling + color profiles | `effects.py`, `profile.py` | `EffectCycler`, `ProfileLoader`, `ProfileWatcher` |
+| Segment rendering (SOLID, PULSE, SCROLL, BREATHE, STROBE, WAVE, GRADIENT) | `render.py` | `SegmentRenderer` |
+| LAN output (ptreal, razer, colorwc over UDP) | `output/govee_lan.py` | `GoveeLanAdapter` |
+| BLE output (bleak GATT, mood-follower mode) | `output/govee_ble.py` | `GoveeBleAdapter` |
+| Auto-detect device roles (latency-based classification) | `output/auto_detect.py` | `auto_detect_roles()` |
+| Device health monitor (probe loop, offline/online, role reclass) | `device_health.py` | `DeviceHealthMonitor` |
+| Song boundary detection (silence-gap + crossfade voting) | `live.py` | `SongBoundaryDetector`, `CrossfadeBoundaryDetector` |
+| Per-song telemetry (JSONL per song, session summary) | `telemetry.py` | `TelemetryWriter` |
+| Hot-reload device config (mtime polling, diff, atomic swap) | `config_watcher.py` | `ConfigWatcher` |
+| Infinite session runner (YAML config + Ctrl+C shutdown) | `session.py` | `run_session()` |
+| Spotify OAuth + API client | `spotify/auth.py`, `spotify/client.py` | `SpotifyAuth`, `SpotifyClient` |
+| Spotify queue watcher (track change detection) | `spotify/queue_watcher.py` | `SpotifyQueueWatcher` — polls playback, fires `on_track_changed(new, old)` |
+| Spotify data models | `spotify/models.py` | `PlaybackState`, `Track` (has `.name`, `.artist`, `.album`, `.duration_ms`, `.track_id`, `.progress_ms`) |
+
+All paths relative to `src/dreamsync/`.
 
 ### Audio capture pipeline (`src/dreamsync/capture/`)
 
-Separate FFmpeg-based pipeline for recording system audio as per-song MP3 files. Operates at 48kHz stereo s16le (4 bytes/frame, 192KB/s).
+Separate FFmpeg-based pipeline for recording system audio as per-song MP3 files. Operates at 44.1kHz stereo s16le (4 bytes/frame).
 
-| Component | Location |
-|---|---|
-| FFmpeg device discovery (DirectShow) | `capture/ffmpeg_device.py` |
-| Capture process lifecycle (spawn/monitor/kill) | `capture/capture_process.py` |
-| Frame-aligned PCM chunk reader | `capture/pcm_reader.py` |
-| Thread-safe audio buffer with frame counter | `capture/pcm_buffer.py` |
-| Segment boundary computation from timing data | `capture/segment_boundary.py` |
-| Per-segment FFmpeg MP3 encoder | `capture/encoder_process.py` |
-| Zero-loss PCM split at frame boundaries | `capture/split_logic.py` |
-| Deterministic file naming + sanitization | `capture/file_namer.py` |
-| Mutable boundary queue with safety margins | `capture/boundary_queue.py` |
-| External timing integration + refresh | `capture/timing_integrator.py` |
-| JSON metadata sidecar files (atomic writes) | `capture/metadata_writer.py` |
-| Drift detection + boundary correction | `capture/drift_detector.py` |
-| Failure recovery cascade (retry/fallback/skip) | `capture/recovery_manager.py` |
-| Structured JSON + console pipeline logging | `capture/pipeline_logger.py` |
-| Pipeline orchestrator (unified lifecycle + CLI) | `capture/orchestrator.py` |
-| Windows audio routing via PowerShell | `capture/audio_router.py` |
+| Component | Location | Key classes/functions |
+|---|---|---|
+| FFmpeg device discovery (DirectShow) | `capture/ffmpeg_device.py` | `list_devices()`, `find_device()` |
+| Capture process lifecycle (spawn/monitor/kill) | `capture/capture_process.py` | `CaptureProcessManager` — wraps FFmpeg subprocess |
+| Frame-aligned PCM chunk reader | `capture/pcm_reader.py` | `PcmReader` — reads from stdout pipe, `BYTES_PER_FRAME=4` |
+| Thread-safe audio buffer with frame counter | `capture/pcm_buffer.py` | `PcmBuffer` — `.put()` updates frame counter atomically, `.frames_processed` for drift |
+| Segment boundary computation from timing data | `capture/segment_boundary.py` | `compute_boundaries(song_durations, current_playback_time, sample_rate)` -> frame offsets |
+| Per-segment FFmpeg MP3 encoder | `capture/encoder_process.py` | `EncoderProcess` — one per segment, `.write()` / `.finish()` / `.wait()` |
+| Zero-loss PCM split at frame boundaries | `capture/split_logic.py` | `split_at_frame()` |
+| Deterministic file naming + sanitization | `capture/file_namer.py` | `FileNamer` — timestamp or metadata naming, collision avoidance |
+| Mutable boundary queue with safety margins | `capture/boundary_queue.py` | `BoundaryQueue` — thread-safe sorted queue, `BoundaryEntry` has `.frame_position`, `.metadata` |
+| External timing integration + refresh | `capture/timing_integrator.py` | `TimingIntegrator` — `.update(timing_data)`, `.on_track_change(timing_data)` |
+| JSON metadata sidecar files (atomic writes) | `capture/metadata_writer.py` | `MetadataWriter`, `SegmentMetadata` dataclass (song_title, artist, album, etc.) |
+| Drift detection + boundary correction | `capture/drift_detector.py` | `DriftDetector` — `.measure(actual_frames, elapsed_wall_seconds)`, 4 levels: ok/warning/correction/critical |
+| Failure recovery cascade (retry/fallback/skip) | `capture/recovery_manager.py` | `RecoveryManager` — capture/encoder failure retry with backoff |
+| Structured JSON + console pipeline logging | `capture/pipeline_logger.py` | `PipelineLogger` — JSONL to `logs/pipeline.jsonl` + console |
+| Pipeline orchestrator (unified lifecycle + CLI) | `capture/orchestrator.py` | `CaptureOrchestrator`, `DynamicSplitProcessor`, `OrchestratorConfig` |
+| Windows audio routing via PowerShell | `capture/audio_router.py` | `AudioRouter` |
+
+### Capture pipeline data flow
+
+```
+CaptureProcessManager (FFmpeg stdin pipe)
+    -> PcmReader (frame-aligned chunks)
+    -> PcmBuffer (thread-safe queue, atomic frame counter)
+    -> DynamicSplitProcessor (checks BoundaryQueue on every chunk)
+        -> EncoderProcess (one per segment, PCM -> MP3)
+        -> on segment rotate: _on_segment_complete() -> MetadataWriter (JSON sidecar)
+
+TimingIntegrator (periodic Spotify poll or on_track_change)
+    -> compute_boundaries() -> BoundaryEntry objects
+    -> BoundaryQueue.replace_future() (thread-safe merge)
+
+DriftDetector.measure(buffer.frames_processed, wall_elapsed)
+    -> drift_seconds = (actual_frames - expected_frames) / sample_rate
+    -> Checked every ~10s in consumer loop
+```
+
+### CLI -> capture orchestrator wiring (`cli.py`)
+
+The `main()` function in `cli.py` handles all subcommands. Capture pipeline integration:
+
+1. **`govee-live --capture --spotify`**: `main()` creates `CaptureOrchestrator` + `SpotifyQueueWatcher`. The watcher's `on_track_changed` callback is monkey-patched to call both `capture_orchestrator.on_track_change(timing_data)` (for segment splits) and the original display callback (prints "Spotify: now playing...").
+
+2. **Track change data format** passed to `on_track_change()`:
+   ```python
+   {"song_durations": [new.duration_ms / 1000.0],
+    "current_playback_time": 0.0,
+    "current_song": {"song_title": new.name, "artist": new.artist, "album": new.album}}
+   ```
+
+3. **Segment metadata flow**: `BoundaryEntry.metadata` -> `_get_segment_metadata(segment_index)` -> `_build_segment_metadata()` -> `SegmentMetadata` dataclass -> `MetadataWriter.write_sidecar()` -> JSON file.
+
+4. **Console display**: `_safe_track_msg(new)` encodes song name with `errors="replace"` for Windows cp1252 safety. Same pattern in `session.py` for the session subcommand.
 
 ### Transport protocols
 
