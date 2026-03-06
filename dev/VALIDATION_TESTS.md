@@ -62,6 +62,92 @@ cat out/capture-boundary/*.json | python -m json.tool | grep -E "songTitle|artis
 
 **Gapless/crossfade playback:** Play a playlist with crossfade enabled. Verify boundaries are detected via Spotify track-change events even when audio crossfades.
 
+### 5.8 Non-blocking encoder rotation (PcmAccumulator)
+
+These tests validate that segment splits no longer block the consumer thread. The `PcmAccumulator` buffers PCM writes while a new FFmpeg encoder spawns in the background, eliminating the 200-1000ms+ stall that caused static clipping at split points. **No hardware or audio files needed** — all tests use mocks and in-memory structures.
+
+#### 5.8.1 PcmAccumulator unit tests (12 tests)
+
+```bash
+python -m pytest dev/tests/test_orchestrator.py -v -k "TestPcmAccumulator"
+```
+
+**Pass:** All 12 tests pass:
+1. `test_write_buffers_before_attach` — writes buffered until encoder attached
+2. `test_attach_drains_buffer` — attach flushes all buffered data to encoder
+3. `test_write_passes_through_after_attach` — post-attach writes go directly to encoder
+4. `test_close_before_attach_sets_flag` — close without encoder sets pending flag
+5. `test_close_after_attach_closes_encoder` — close delegates to real encoder
+6. `test_attach_after_close_drains_and_closes` — drain buffer + immediate close
+7. `test_wait_blocks_until_attached` — wait returns only after attach
+8. `test_wait_delegates_to_encoder` — timeout forwarded to encoder.wait()
+9. `test_output_path_blocks_until_attached` — property blocks on event
+10. `test_output_path_returns_encoder_path` — returns real encoder path
+11. `test_thread_safety_concurrent_writes` — 4-thread concurrent writes don't corrupt
+12. `test_empty_buffer_attach` — attach with no buffered data is a no-op drain
+
+#### 5.8.2 Non-blocking rotation integration tests (5 tests)
+
+```bash
+python -m pytest dev/tests/test_orchestrator.py -v -k "TestNonBlockingRotation"
+```
+
+**Pass:** All 5 tests pass:
+1. `test_rotation_does_not_block_consumer` — `_start_encoder` returns in <10ms
+2. `test_segment_complete_does_not_block_consumer` — `_on_segment_complete` returns in <10ms
+3. `test_concurrent_rotation_and_finalization` — two rapid splits both finalize correctly
+4. `test_data_continuity_across_split` — all PCM data reaches encoders across split boundary (no drops)
+5. `test_stop_waits_for_pending_finalizations` — `stop()` waits for finalization threads, sidecar files exist after return
+
+#### 5.8.3 Full orchestrator regression (all tests)
+
+```bash
+python -m pytest dev/tests/test_orchestrator.py -v
+```
+
+**Pass criteria:**
+- All tests pass (87 core + 12 PcmAccumulator + 5 non-blocking rotation = 104 total)
+- No regressions from async finalization changes
+- Tests using `_wait_for_finalizations()` helper correctly await background thread completion
+
+#### 5.8.4 Live split quality (requires Spotify + VB-Cable)
+
+Play 3+ songs with Spotify splitting and verify no static at split boundaries:
+
+```bash
+mkdir -p out/capture-split-test
+python -m dreamsync govee-live \
+  --device 10.0.0.1:7:primary:ptreal \
+  --duration 600 \
+  --capture \
+  --capture-dir out/capture-split-test \
+  --capture-naming metadata \
+  --spotify \
+  --debug-mood \
+  2>&1 | tee out/capture-split-test/console.log
+```
+
+After 3+ song transitions, Ctrl+C.
+
+**Verify:**
+
+```bash
+# Check segment durations add up (no gaps)
+for f in out/capture-split-test/*.mp3; do
+  echo "$f"; ffprobe -v error -show_entries format=duration \
+    -of default=noprint_wrappers=1:nokey=1 "$f"
+done
+
+# Listen to first/last 5 seconds of each file for static or clipping
+# (Previously, encoder rotation caused 200ms+ stalls → audible artifacts)
+```
+
+**Pass criteria:**
+- No static clipping or audio artifacts at the start/end of captured segments
+- Segment durations are contiguous (sum ≈ total session duration, no missing audio)
+- Console log shows non-blocking rotation messages (no "encoder wait" stalls on consumer thread)
+- All sidecar `.json` files written correctly (finalization completed in background)
+
 ---
 
 ## Phase 6 — Song Structure Analyzer (Component 4)
@@ -364,10 +450,13 @@ python -m dreamsync cache-list
 ## Quick Reference — Remaining Test Sequence
 
 - [x] **14. Capture unit tests** (104 orchestrator tests: 87 core + 12 PcmAccumulator + 5 non-blocking rotation integration)
+- [x] **14a. PcmAccumulator unit tests** (12 tests — non-blocking buffer/pass-through/thread-safety)
+- [x] **14b. Non-blocking rotation integration** (5 tests — timing, data continuity, finalization)
 - [x] **15. Basic capture** (5 min, timestamp naming, dummy device)
 - [x] **16. Captured file verification** (playable mp3s with correct content)
 - [x] **17. Capture with Spotify metadata** (artist-title naming + track splitting)
 - [ ] **18. Boundary accuracy** (5+ songs with Spotify, file count matches song count)
+- [ ] **18a. Live split quality** (3+ songs, no static/clipping at split boundaries)
 - [ ] **19. Edge cases** (short track, long track, gapless/crossfade)
 - [ ] **20. Analyzer unit tests** (80 tests)
 - [ ] **21. Single file analysis** (summary output + BPM check)
@@ -396,6 +485,15 @@ python -m dreamsync cache-list
 # 14. Capture unit tests (68 core + 24 capture-meta fixes = 92)
 python -m pytest dev/tests/test_capture_buffer.py dev/tests/test_capture_boundary.py dev/tests/test_capture_writer.py dev/tests/test_capture_pipeline.py dev/tests/test_fetch_timing.py dev/tests/test_unicode_callback.py dev/tests/test_callback_isolation.py -v
 
+# 14a. PcmAccumulator unit tests (12 tests)
+python -m pytest dev/tests/test_orchestrator.py -v -k "TestPcmAccumulator"
+
+# 14b. Non-blocking rotation integration tests (5 tests)
+python -m pytest dev/tests/test_orchestrator.py -v -k "TestNonBlockingRotation"
+
+# 14c. Full orchestrator regression (104 tests)
+python -m pytest dev/tests/test_orchestrator.py -v
+
 # 15+16. Basic capture (5 min, play music through VB-Cable)
 mkdir -p out/capture-test
 python -m dreamsync govee-live --device 10.0.0.1:7:primary:ptreal --duration 300 --capture --capture-dir out/capture-test --capture-naming timestamp --debug-mood 2>&1 | tee out/capture-test/console.log
@@ -411,6 +509,11 @@ mkdir -p out/capture-boundary
 python -m dreamsync govee-live --device 10.0.0.1:7:primary:ptreal --duration 1800 --capture --capture-dir out/capture-boundary --capture-naming metadata --spotify --debug-mood 2>&1 | tee out/capture-boundary/console.log
 ls out/capture-boundary/*.mp3 | wc -l
 grep "Capture: saved" out/capture-boundary/console.log
+
+# 18a. Live split quality (3+ songs, verify no static at boundaries)
+mkdir -p out/capture-split-test
+python -m dreamsync govee-live --device 10.0.0.1:7:primary:ptreal --duration 600 --capture --capture-dir out/capture-split-test --capture-naming metadata --spotify --debug-mood 2>&1 | tee out/capture-split-test/console.log
+for f in out/capture-split-test/*.mp3; do echo "$f"; ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$f"; done
 
 # 20. Analyzer unit tests (80 tests)
 python -m pytest dev/tests/test_analyzer_decode.py dev/tests/test_analyzer_features.py dev/tests/test_analyzer_bpm.py dev/tests/test_analyzer_sections.py dev/tests/test_analyzer_models.py -v
@@ -497,7 +600,7 @@ python -m dreamsync cache-clear --yes
 | `No audio device matching 'CABLE Output' found` | Install VB-Audio Virtual Cable from https://vb-audio.com/Cable/. Verify with `ffmpeg -hide_banner -list_devices true -f dshow -i dummy 2>&1`. |
 | Capture files are silence | VB-Cable is not receiving system audio. Set **CABLE Input** as default playback device in Windows Sound Settings, and enable **Listen to this device** on CABLE Output (see README). |
 | Drift ~1s per 10s in pipeline.jsonl | Sample rate mismatch. VB-Cable may be at a non-default rate. Open VB-Cable Control Panel and verify it's set to 44100 Hz (matches pipeline default). |
-| Capture audio has static/glitches | Sample rate mismatch between VB-Cable and capture pipeline. Ensure both use 44100 Hz. |
+| Capture audio has static/glitches | Sample rate mismatch between VB-Cable and capture pipeline. Ensure both use 44100 Hz. If static occurs only at song boundaries (split points), the PcmAccumulator fix should resolve this — verify `PcmAccumulator` tests pass: `pytest dev/tests/test_orchestrator.py -k TestPcmAccumulator`. |
 | `UnicodeEncodeError` on Windows | Fixed in current version. Track-change and segment-saved callbacks now encode non-ASCII characters with `errors="replace"` before printing. Callback exceptions are also isolated so they cannot block the capture orchestrator. |
 | Encoder exit code 255 on Ctrl+C | Fixed in current version via `CREATE_NEW_PROCESS_GROUP`. If it recurs on older code, update `capture_process.py` and `encoder_process.py`. |
 | Capture produces 0 mp3 files | Without `--spotify`, there are no song boundaries, so everything goes into one segment (flushed on Ctrl+C). Use `--spotify` for track-accurate splitting. |

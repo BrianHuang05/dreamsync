@@ -203,6 +203,12 @@ def run_session(
                 _orig_on_track = spotify_watcher._on_track_changed
 
                 def _capture_track_changed(new, old, _orig=_orig_on_track):
+                    import time as _time
+                    enc = sys.stdout.encoding or "utf-8"
+                    name = new.name.encode(enc, errors="replace").decode(enc, errors="replace")
+                    artist = new.artist.encode(enc, errors="replace").decode(enc, errors="replace")
+                    ts = _time.strftime("%H:%M:%S")
+                    print(f"[{ts}] Capture: track changed -> '{name}' by {artist}")
                     # Critical path: notify orchestrator of track change
                     try:
                         capture_orchestrator.on_track_change({
@@ -213,6 +219,9 @@ def run_session(
                                 "artist": new.artist,
                                 "album": new.album,
                             },
+                            "songs": [
+                                {"song_title": new.name, "artist": new.artist, "album": new.album},
+                            ],
                         })
                     except Exception:
                         pass
@@ -249,10 +258,11 @@ def run_session(
                     return None
                 current = queue.currently_playing
                 pb = spotify_watcher.playback_state
+                tracks = [current, *queue.queue]
                 return {
                     "song_durations": [
                         t.duration_ms / 1000.0
-                        for t in [current, *queue.queue]
+                        for t in tracks
                     ],
                     "current_playback_time": (pb.progress_ms / 1000.0) if pb else 0.0,
                     "current_song": {
@@ -260,6 +270,10 @@ def run_session(
                         "artist": current.artist,
                         "album": current.album,
                     },
+                    "songs": [
+                        {"song_title": t.name, "artist": t.artist, "album": t.album}
+                        for t in tracks
+                    ],
                 }
             capture_orchestrator.start_periodic_timing(_fetch_timing)
 

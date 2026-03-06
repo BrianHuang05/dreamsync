@@ -154,7 +154,7 @@ def _run_split_pipeline(
     # Create and run DynamicSplitProcessor
     completed_segments = []
 
-    def on_complete(seg_idx, start_frame, end_frame):
+    def on_complete(seg_idx, start_frame, end_frame, meta=None):
         completed_segments.append((seg_idx, start_frame, end_frame))
 
     split = DynamicSplitProcessor(
@@ -451,7 +451,10 @@ class TestDriftDetection:
             critical_threshold=2.0,
         )
 
-        # Large drift: 10s elapsed but 510000 frames (0.625s drift)
+        # Establish zero baseline: 1s elapsed, 48000 frames (no drift)
+        drift.measure(actual_frames=48000, elapsed_wall_seconds=1.0)
+
+        # Large adjusted drift: 10s elapsed but 510000 frames (0.625s adjusted drift)
         m = drift.measure_and_correct(
             actual_frames=510000,
             elapsed_wall_seconds=10.0,
@@ -543,6 +546,12 @@ class TestFailureInjection:
         orch._logger.recovery_event = MagicMock()
 
         orch._on_segment_complete(0, 0, 4800)
+
+        # Wait for background finalization thread
+        with orch._finalize_lock:
+            threads = list(orch._finalize_threads)
+        for t in threads:
+            t.join(timeout=5.0)
 
         # encoder_failure event logged
         orch._logger.recovery_event.assert_any_call(

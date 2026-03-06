@@ -18,6 +18,8 @@ class DriftMeasurement:
     drift_frames: int
     drift_seconds: float
     level: str  # "acceptable", "warning", "correction", "critical"
+    adjusted_drift_frames: int = 0
+    adjusted_drift_seconds: float = 0.0
 
 
 class DriftDetector:
@@ -52,6 +54,7 @@ class DriftDetector:
         self._critical = critical_threshold
         self._corrections_applied: int = 0
         self._last_measurement: DriftMeasurement | None = None
+        self._baseline_drift_frames: int | None = None
 
     @property
     def corrections_applied(self) -> int:
@@ -83,7 +86,15 @@ class DriftDetector:
         drift_frames = actual_frames - expected
         drift_seconds = drift_frames / self._sample_rate
 
-        abs_drift = abs(drift_seconds)
+        # Record baseline on first measurement (captures constant startup offset)
+        if self._baseline_drift_frames is None:
+            self._baseline_drift_frames = drift_frames
+
+        adjusted_drift_frames = drift_frames - self._baseline_drift_frames
+        adjusted_drift_seconds = adjusted_drift_frames / self._sample_rate
+
+        # Use adjusted drift for level classification
+        abs_drift = abs(adjusted_drift_seconds)
         if abs_drift >= self._critical:
             level = "critical"
         elif abs_drift >= self._correct:
@@ -97,6 +108,8 @@ class DriftDetector:
             drift_frames=drift_frames,
             drift_seconds=drift_seconds,
             level=level,
+            adjusted_drift_frames=adjusted_drift_frames,
+            adjusted_drift_seconds=adjusted_drift_seconds,
         )
         self._last_measurement = m
         self._log_measurement(m)
@@ -112,7 +125,7 @@ class DriftDetector:
         if self._queue is None:
             return False
 
-        offset = measurement.drift_frames
+        offset = measurement.adjusted_drift_frames
         entries = self._queue.entries()
         for entry in entries:
             if not entry.locked:
@@ -124,9 +137,9 @@ class DriftDetector:
 
         self._corrections_applied += 1
         logger.info(
-            "Drift correction applied: offset=%d frames (%.3fs), corrections_total=%d",
+            "Drift correction applied: offset=%d frames (%.3fs adjusted), corrections_total=%d",
             offset,
-            measurement.drift_seconds,
+            measurement.adjusted_drift_seconds,
             self._corrections_applied,
         )
         return True
@@ -143,14 +156,20 @@ class DriftDetector:
             self.correct(m, current_frame)
         return m
 
+    def reset_baseline(self) -> None:
+        """Clear the baseline so the next measurement re-establishes it."""
+        self._baseline_drift_frames = None
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
     def _log_measurement(self, m: DriftMeasurement) -> None:
-        msg = "Drift: %.4fs (%d frames) [%s]" % (
+        msg = "Drift: %.4fs (%d frames) adjusted=%.4fs (%d frames) [%s]" % (
             m.drift_seconds,
             m.drift_frames,
+            m.adjusted_drift_seconds,
+            m.adjusted_drift_frames,
             m.level,
         )
         if m.level == "critical":

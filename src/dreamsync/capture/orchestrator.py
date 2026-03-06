@@ -127,7 +127,22 @@ class PcmAccumulator:
     # -- Background-thread API ---------------------------------------------
 
     def attach_encoder(self, encoder: object) -> None:
-        """Drain the buffer into *encoder* and switch to pass-through mode."""
+        """Two-phase attach: minimize lock hold time.
+
+        Phase 1 (under lock): swap buffer list, keep encoder=None (still buffering)
+        Phase 2 (no lock):    drain old buffer to encoder
+        Phase 3 (under lock): drain any interim writes, set encoder, set attached event
+        """
+        # Phase 1: grab current buffer under lock
+        with self._lock:
+            old_buffer = self._buffer
+            self._buffer = []
+
+        # Phase 2: drain without lock (consumer thread continues buffering)
+        for chunk in old_buffer:
+            encoder.write(chunk)  # type: ignore[union-attr]
+
+        # Phase 3: drain interim writes, switch to pass-through
         with self._lock:
             for chunk in self._buffer:
                 encoder.write(chunk)  # type: ignore[union-attr]
@@ -184,7 +199,7 @@ class DynamicSplitProcessor:
         self,
         boundary_queue: BoundaryQueue,
         start_encoder: Callable[[int], object],
-        on_segment_complete: Callable[[int, int, int], None] | None = None,
+        on_segment_complete: Callable[[int, int, int, dict | None], None] | None = None,
     ) -> None:
         self._queue = boundary_queue
         self._start_encoder = start_encoder
@@ -230,8 +245,8 @@ class DynamicSplitProcessor:
 
             if frames_to_boundary <= 0:
                 # Boundary is at or behind current position — consume and rotate
-                self._queue.pop_next()
-                self._rotate_encoder()
+                popped = self._queue.pop_next()
+                self._rotate_encoder(popped_meta=popped.metadata if popped else None)
                 continue
 
             if chunk_frames <= frames_to_boundary:
@@ -246,8 +261,8 @@ class DynamicSplitProcessor:
                 self._current_frame += frames_to_boundary
                 offset += split_bytes
                 chunk_frames -= frames_to_boundary
-                self._queue.pop_next()
-                self._rotate_encoder()
+                popped = self._queue.pop_next()
+                self._rotate_encoder(popped_meta=popped.metadata if popped else None)
 
     def finish(self) -> None:
         """Close the final encoder and fire the segment-complete callback."""
@@ -258,10 +273,11 @@ class DynamicSplitProcessor:
                     self._segment_index,
                     self._segment_start_frame,
                     self._current_frame,
+                    None,
                 )
             self._finished = True
 
-    def _rotate_encoder(self) -> None:
+    def _rotate_encoder(self, popped_meta: dict | None = None) -> None:
         """Close the current encoder, fire callback, and start a new one."""
         if self._encoder is not None:
             self._encoder.close()
@@ -270,6 +286,7 @@ class DynamicSplitProcessor:
                     self._segment_index,
                     self._segment_start_frame,
                     self._current_frame,
+                    popped_meta,
                 )
 
         self._segment_index += 1
@@ -320,6 +337,7 @@ class CaptureOrchestrator:
         # Boundary queue for segment split points
         self._boundary_queue = BoundaryQueue(
             safety_margin_frames=self._config.safety_margin_frames,
+            logger=self._logger,
         )
 
         # Output file naming
@@ -348,6 +366,7 @@ class CaptureOrchestrator:
             get_current_frame=lambda: self._buffer.frames_processed,
             sample_rate=self._config.sample_rate,
             refresh_interval=self._config.timing_refresh_interval,
+            logger=self._logger,
         )
 
         # Failure recovery
@@ -536,12 +555,28 @@ class CaptureOrchestrator:
         segment_index: int,
         start_frame: int,
         end_frame: int,
+        popped_meta: dict | None = None,
     ) -> None:
         """Handle segment completion — capture metadata, dispatch finalization to background."""
         self._segments_completed += 1
 
-        # Capture boundary metadata on the consumer thread (before queue can change)
-        boundary_meta = self._get_segment_metadata(segment_index)
+        # Use popped boundary metadata if available, fall back to peek_next()
+        if popped_meta is not None:
+            boundary_meta = popped_meta
+            meta_source = "popped_boundary"
+        else:
+            boundary_meta = self._get_segment_metadata(segment_index)
+            meta_source = "peek_next"
+
+        self._logger.log(
+            "DEBUG", "split", "segment_complete.metadata",
+            data={
+                "segment_index": segment_index,
+                "meta_source": meta_source,
+                "song_title": boundary_meta.get("song_title") if boundary_meta else None,
+            },
+            frame_position=end_frame,
+        )
 
         # Dispatch all blocking work to a background thread
         t = threading.Thread(
@@ -651,6 +686,12 @@ class CaptureOrchestrator:
             for chunk in read_chunks(self._capture.stdout, self._config.chunk_ms):
                 if not self._running:
                     break
+                if self._buffer._queue.full():
+                    self._logger.log(
+                        "WARNING", "buffer", "backpressure",
+                        data={"max_chunks": self._config.buffer_max_chunks},
+                        frame_position=self._buffer.frames_processed,
+                    )
                 self._buffer.put(chunk)
                 self._recovery.reset_capture_failure_count()
         except Exception as exc:
@@ -693,6 +734,14 @@ class CaptureOrchestrator:
                 chunks_since_drift_check += 1
                 if chunks_since_drift_check >= DRIFT_CHECK_INTERVAL_CHUNKS:
                     self._check_drift()
+                    self._logger.log(
+                        "DEBUG", "buffer", "buffer_status",
+                        data={
+                            "pending_chunks": self._buffer._queue.qsize(),
+                            "full": self._buffer._queue.full(),
+                        },
+                        frame_position=self._buffer.frames_processed,
+                    )
                     chunks_since_drift_check = 0
         except Exception as exc:
             self._logger.log(
@@ -725,6 +774,8 @@ class CaptureOrchestrator:
             frame_position=self._buffer.frames_processed,
             drift_seconds=m.drift_seconds,
             drift_frames=m.drift_frames,
+            adjusted_drift_seconds=m.adjusted_drift_seconds,
+            adjusted_drift_frames=m.adjusted_drift_frames,
             level=m.level,
         )
 
@@ -760,6 +811,7 @@ class CaptureOrchestrator:
                 bitrate=self._config.bitrate,
             )
             encoder.start()
+            buffer_chunks = len(accumulator._buffer)
             accumulator.attach_encoder(encoder)
 
             self._logger.log(
@@ -767,6 +819,7 @@ class CaptureOrchestrator:
                 data={
                     "segment_index": segment_index,
                     "output_path": mp3_path,
+                    "drain_buffer_chunks": buffer_chunks,
                 },
                 frame_position=self._buffer.frames_processed,
             )

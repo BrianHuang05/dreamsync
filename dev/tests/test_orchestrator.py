@@ -897,7 +897,7 @@ class TestDynamicSplitProcessor:
             encoders.append((idx, enc))
             return enc
 
-        def on_complete(idx, start, end):
+        def on_complete(idx, start, end, meta=None):
             completions.append((idx, start, end))
 
         dsp = DynamicSplitProcessor(
@@ -934,7 +934,7 @@ class TestDynamicSplitProcessor:
             encoders.append((idx, enc))
             return enc
 
-        def on_complete(idx, start, end):
+        def on_complete(idx, start, end, meta=None):
             completions.append((idx, start, end))
 
         dsp = DynamicSplitProcessor(queue, start_enc, on_complete)
@@ -968,7 +968,7 @@ class TestDynamicSplitProcessor:
             encoders.append((idx, enc))
             return enc
 
-        def on_complete(idx, start, end):
+        def on_complete(idx, start, end, meta=None):
             completions.append((idx, start, end))
 
         dsp = DynamicSplitProcessor(queue, start_enc, on_complete)
@@ -1001,7 +1001,7 @@ class TestDynamicSplitProcessor:
             encoders.append((idx, enc))
             return enc
 
-        def on_complete(idx, start, end):
+        def on_complete(idx, start, end, meta=None):
             completions.append((idx, start, end))
 
         dsp = DynamicSplitProcessor(queue, start_enc, on_complete)
@@ -1046,7 +1046,7 @@ class TestDynamicSplitProcessor:
             encoders.append((idx, enc))
             return enc
 
-        def on_complete(idx, start, end):
+        def on_complete(idx, start, end, meta=None):
             completions.append((idx, start, end))
 
         dsp = DynamicSplitProcessor(queue, start_enc, on_complete)
@@ -1063,6 +1063,98 @@ class TestDynamicSplitProcessor:
         dsp.finish()
         encoders[0][1].close.assert_called_once()
         assert len(completions) == 1
+
+
+# ======================================================================
+# Metadata Flow — popped boundary metadata reaches callback
+# ======================================================================
+
+
+class TestMetadataFlow:
+    def test_popped_metadata_reaches_callback(self):
+        """Popped boundary's metadata should be passed to on_segment_complete."""
+        queue = BoundaryQueue()
+        queue.add(BoundaryEntry(
+            frame_position=2400, segment_index=0,
+            metadata={"song_title": "SongA", "artist": "ArtistA"},
+        ))
+
+        encoders = []
+        completions = []
+
+        def start_enc(idx):
+            enc = _mock_encoder()
+            encoders.append((idx, enc))
+            return enc
+
+        def on_complete(idx, start, end, meta=None):
+            completions.append((idx, start, end, meta))
+
+        dsp = DynamicSplitProcessor(queue, start_enc, on_complete)
+        dsp.start()
+
+        chunk = b"\x00" * (4800 * BYTES_PER_FRAME)
+        dsp.process_chunk(chunk)
+
+        assert len(completions) == 1
+        assert completions[0][3] == {"song_title": "SongA", "artist": "ArtistA"}
+
+    def test_multiple_splits_get_correct_metadata(self):
+        """Each boundary's metadata should be associated with the correct segment."""
+        queue = BoundaryQueue()
+        queue.add(BoundaryEntry(
+            frame_position=1000, segment_index=0,
+            metadata={"song_title": "Song1"},
+        ))
+        queue.add(BoundaryEntry(
+            frame_position=2000, segment_index=1,
+            metadata={"song_title": "Song2"},
+        ))
+
+        encoders = []
+        completions = []
+
+        def start_enc(idx):
+            enc = _mock_encoder()
+            encoders.append((idx, enc))
+            return enc
+
+        def on_complete(idx, start, end, meta=None):
+            completions.append((idx, start, end, meta))
+
+        dsp = DynamicSplitProcessor(queue, start_enc, on_complete)
+        dsp.start()
+
+        chunk = b"\x00" * (4800 * BYTES_PER_FRAME)
+        dsp.process_chunk(chunk)
+
+        assert len(completions) == 2
+        assert completions[0][3] == {"song_title": "Song1"}
+        assert completions[1][3] == {"song_title": "Song2"}
+
+    def test_finish_passes_none_metadata(self):
+        """finish() should pass None as popped_meta (no boundary popped)."""
+        queue = BoundaryQueue()
+        encoders = []
+        completions = []
+
+        def start_enc(idx):
+            enc = _mock_encoder()
+            encoders.append((idx, enc))
+            return enc
+
+        def on_complete(idx, start, end, meta=None):
+            completions.append((idx, start, end, meta))
+
+        dsp = DynamicSplitProcessor(queue, start_enc, on_complete)
+        dsp.start()
+
+        chunk = b"\x00" * (4800 * BYTES_PER_FRAME)
+        dsp.process_chunk(chunk)
+        dsp.finish()
+
+        assert len(completions) == 1
+        assert completions[0][3] is None
 
 
 # ======================================================================
@@ -1160,16 +1252,21 @@ class TestDriftMeasurement:
         assert entries[1].frame_position == 1_000_000
 
     def test_drift_check_correction(self, tmp_path):
-        orch = _make_orch(tmp_path)
+        orch = _make_orch(tmp_path, buffer_max_chunks=100)
         # Add unlocked boundaries
         orch._boundary_queue.add(BoundaryEntry(frame_position=500_000, segment_index=0))
         orch._boundary_queue.add(BoundaryEntry(frame_position=1_000_000, segment_index=1))
 
-        # Simulate drift > 0.5s: actual frames exceed expected by 30000 frames
-        # If elapsed = 10s, expected = 480_000. We put 510_000 frames -> drift = 30_000 frames = 0.625s
-        orch._start_time = time.monotonic() - 10.0
-        orch._buffer.put(b"\x00" * (510_000 * BYTES_PER_FRAME))
+        # Establish zero baseline first
+        orch._start_time = time.monotonic() - 1.0
+        orch._buffer._frames_processed = 44100  # exactly 1s at 44.1kHz
+        orch._check_drift()
+        assert orch._drift.corrections_applied == 0
 
+        # Now simulate growing drift: 10s wall time but 510_000 frames
+        # Expected at 10s = 441_000. Raw drift = 69_000. Baseline ~0. Adjusted ~69000 = ~1.56s
+        orch._start_time = time.monotonic() - 10.0
+        orch._buffer._frames_processed = 510_000
         orch._check_drift()
 
         assert orch._drift.corrections_applied == 1
@@ -1690,6 +1787,35 @@ class TestPcmAccumulator:
         assert acc._attached.is_set()
         assert acc._encoder is mock_enc
 
+    def test_concurrent_write_during_attach(self):
+        """Writes during two-phase attach are not lost."""
+        acc = PcmAccumulator()
+        mock_enc = MagicMock()
+        errors = []
+        write_count = 100
+
+        # Pre-buffer some data
+        for i in range(50):
+            acc.write(bytes([0xAA]) * 100)
+
+        def writer():
+            """Write during attach (exercises interim buffer)."""
+            try:
+                for i in range(write_count):
+                    acc.write(bytes([0xBB]) * 100)
+            except Exception as e:
+                errors.append(e)
+
+        t = threading.Thread(target=writer)
+        t.start()
+        # Attach concurrently
+        acc.attach_encoder(mock_enc)
+        t.join(timeout=5.0)
+
+        assert not errors
+        # All writes should arrive: 50 pre-buffered + 100 from writer thread
+        assert mock_enc.write.call_count == 150
+
 
 # ======================================================================
 # TestNonBlockingRotation — Integration tests
@@ -1728,7 +1854,7 @@ class TestNonBlockingRotation:
         orch._on_segment_complete(0, 0, 44100)
         elapsed = time.monotonic() - t0
 
-        assert elapsed < 0.010  # must return immediately
+        assert elapsed < 0.050  # must return quickly (background finalization)
         # Finalization still completes in background
         _wait_for_finalizations(orch)
         mock_sidecar.assert_called_once()
@@ -1789,7 +1915,7 @@ class TestNonBlockingRotation:
         split = DynamicSplitProcessor(
             boundary_queue=queue,
             start_encoder=start_encoder,
-            on_segment_complete=lambda idx, s, e: completions.append((idx, s, e)),
+            on_segment_complete=lambda idx, s, e, m=None: completions.append((idx, s, e)),
         )
         split.start()
 

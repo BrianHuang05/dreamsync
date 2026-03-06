@@ -93,6 +93,68 @@ class TestMultipleUpdates:
         assert len(second_entries) >= 1
 
 
+class TestPerSongMetadata:
+    """Boundaries get per-song metadata from the songs list."""
+
+    def test_boundaries_get_per_song_metadata(self, queue):
+        integ = TimingIntegrator(
+            boundary_queue=queue,
+            get_current_frame=lambda: 0,
+            sample_rate=48000,
+        )
+        timing = {
+            "current_playback_time": 0.0,
+            "song_durations": [10.0, 20.0],
+            "current_song": {"song_title": "Fallback"},
+            "songs": [
+                {"song_title": "Song1", "artist": "A1"},
+                {"song_title": "Song2", "artist": "A2"},
+            ],
+        }
+        integ.update(timing)
+        entries = queue.entries()
+        assert len(entries) == 2
+        assert entries[0].metadata == {"song_title": "Song1", "artist": "A1"}
+        assert entries[1].metadata == {"song_title": "Song2", "artist": "A2"}
+
+    def test_fallback_when_songs_absent(self, queue):
+        integ = TimingIntegrator(
+            boundary_queue=queue,
+            get_current_frame=lambda: 0,
+            sample_rate=48000,
+        )
+        timing = {
+            "current_playback_time": 0.0,
+            "song_durations": [10.0],
+            "current_song": {"song_title": "Fallback"},
+        }
+        integ.update(timing)
+        entries = queue.entries()
+        assert entries[0].metadata == {"song_title": "Fallback"}
+
+    def test_partial_songs_list(self, queue):
+        integ = TimingIntegrator(
+            boundary_queue=queue,
+            get_current_frame=lambda: 0,
+            sample_rate=48000,
+        )
+        timing = {
+            "current_playback_time": 0.0,
+            "song_durations": [10.0, 20.0, 30.0],
+            "current_song": {"song_title": "Fallback"},
+            "songs": [
+                {"song_title": "Song1"},
+            ],
+        }
+        integ.update(timing)
+        entries = queue.entries()
+        assert len(entries) == 3
+        assert entries[0].metadata == {"song_title": "Song1"}
+        # Remaining fall back to current_song
+        assert entries[1].metadata == {"song_title": "Fallback"}
+        assert entries[2].metadata == {"song_title": "Fallback"}
+
+
 class TestPeriodicRefresh:
     def test_start_stop(self, queue):
         calls = []

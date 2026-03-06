@@ -37,6 +37,7 @@ class TimingIntegrator:
         get_current_frame: Callable[[], int],
         sample_rate: int = 48000,
         refresh_interval: float = 5.0,
+        logger: object | None = None,
     ) -> None:
         self._queue = boundary_queue
         self._get_current_frame = get_current_frame
@@ -46,6 +47,7 @@ class TimingIntegrator:
         self._fetch_fn: Callable[[], dict | None] | None = None
         self._running = False
         self._segment_counter = 0
+        self._logger = logger
 
     # ------------------------------------------------------------------
     # One-shot update
@@ -65,14 +67,21 @@ class TimingIntegrator:
         relative = compute_boundaries(durations, playback_time, self._sample_rate)
 
         current_frame = self._get_current_frame()
+        songs = timing_data.get("songs")
+        fallback_meta = timing_data.get("current_song")
         entries: list[BoundaryEntry] = []
         for i, rel_frame in enumerate(relative):
             abs_frame = current_frame + rel_frame
+            # Per-boundary metadata: use songs[i] if available, else fallback
+            if songs and i < len(songs):
+                meta = songs[i]
+            else:
+                meta = fallback_meta
             entries.append(
                 BoundaryEntry(
                     frame_position=abs_frame,
                     segment_index=self._segment_counter + i,
-                    metadata=timing_data.get("current_song"),
+                    metadata=meta,
                 )
             )
 
@@ -83,6 +92,14 @@ class TimingIntegrator:
             len(entries),
             current_frame,
         )
+        if self._logger is not None:
+            self._logger.timing_event(
+                "update",
+                frame_position=current_frame,
+                num_boundaries=len(entries),
+                durations_count=len(durations),
+                playback_time=playback_time,
+            )
         return len(entries)
 
     def on_track_change(self, timing_data: dict) -> int:
@@ -124,8 +141,15 @@ class TimingIntegrator:
         try:
             data = self._fetch_fn()
             if data is not None:
-                self.update(data)
+                count = self.update(data)
+                if self._logger is not None:
+                    self._logger.timing_event("tick.success", num_boundaries=count)
+            else:
+                if self._logger is not None:
+                    self._logger.timing_event("tick.skip")
         except Exception:
             logger.exception("Timing refresh failed — keeping existing boundaries")
+            if self._logger is not None:
+                self._logger.timing_event("tick.failure")
         finally:
             self._schedule_next()

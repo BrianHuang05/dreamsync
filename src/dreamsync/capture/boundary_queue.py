@@ -31,10 +31,11 @@ class BoundaryQueue:
         frames = 0.5 s at 48 kHz.
     """
 
-    def __init__(self, safety_margin_frames: int = 24_000) -> None:
+    def __init__(self, safety_margin_frames: int = 24_000, logger: object | None = None) -> None:
         self._entries: list[BoundaryEntry] = []
         self._lock = threading.Lock()
         self._safety_margin = safety_margin_frames
+        self._logger = logger
 
     @property
     def safety_margin_frames(self) -> int:
@@ -52,7 +53,17 @@ class BoundaryQueue:
     def pop_next(self) -> BoundaryEntry | None:
         """Return and remove the next boundary."""
         with self._lock:
-            return self._entries.pop(0) if self._entries else None
+            if not self._entries:
+                return None
+            entry = self._entries.pop(0)
+        if self._logger is not None:
+            self._logger.boundary_event(
+                "pop_next",
+                frame_position=entry.frame_position,
+                metadata_present=entry.metadata is not None,
+                remaining=len(self),
+            )
+        return entry
 
     def __len__(self) -> int:
         with self._lock:
@@ -118,6 +129,14 @@ class BoundaryQueue:
             merged = locked + list(new_boundaries)
             merged.sort()
             self._entries = merged
+        if self._logger is not None:
+            self._logger.boundary_event(
+                "replace_future",
+                frame_position=current_frame,
+                num_locked=len(locked),
+                num_new=len(new_boundaries),
+                num_merged=len(merged),
+            )
 
     def update_locks(self, current_frame: int) -> None:
         """Mark boundaries within safety margin as locked."""
