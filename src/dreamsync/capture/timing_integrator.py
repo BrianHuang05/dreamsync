@@ -103,8 +103,34 @@ class TimingIntegrator:
         return len(entries)
 
     def on_track_change(self, timing_data: dict) -> int:
-        """Handle track-change event with immediate refresh."""
+        """Handle track-change event with immediate split and refresh.
+
+        If *timing_data* contains ``previous_song``, an immediate boundary
+        is inserted at the current frame (with the old song's metadata)
+        so the pipeline splits right at the transition.
+        """
         logger.info("Track change detected — immediate boundary refresh")
+
+        previous_song = timing_data.get("previous_song")
+        if previous_song is not None:
+            current_frame = self._get_current_frame()
+            # Clear any stale boundaries near the split point
+            removed = self._queue.remove_near(current_frame, 2 * self._sample_rate)
+            if removed:
+                logger.debug("Removed %d near-boundaries before immediate split", removed)
+            # Insert immediate boundary with the OLD song's metadata
+            self._queue.add(BoundaryEntry(
+                frame_position=current_frame,
+                segment_index=self._segment_counter,
+                metadata=previous_song,
+            ))
+            self._segment_counter += 1
+            logger.info(
+                "Immediate boundary at frame %d for '%s'",
+                current_frame,
+                previous_song.get("song_title", "?"),
+            )
+
         return self.update(timing_data)
 
     # ------------------------------------------------------------------

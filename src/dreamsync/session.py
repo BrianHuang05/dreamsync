@@ -211,7 +211,7 @@ def run_session(
                     print(f"[{ts}] Capture: track changed -> '{name}' by {artist}")
                     # Critical path: notify orchestrator of track change
                     try:
-                        capture_orchestrator.on_track_change({
+                        timing_data = {
                             "song_durations": [new.duration_ms / 1000.0],
                             "current_playback_time": 0.0,
                             "current_song": {
@@ -222,7 +222,14 @@ def run_session(
                             "songs": [
                                 {"song_title": new.name, "artist": new.artist, "album": new.album},
                             ],
-                        })
+                        }
+                        if old is not None:
+                            timing_data["previous_song"] = {
+                                "song_title": old.name,
+                                "artist": old.artist,
+                                "album": old.album,
+                            }
+                        capture_orchestrator.on_track_change(timing_data)
                     except Exception:
                         pass
                     # Informational: display track change to user

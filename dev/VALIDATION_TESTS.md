@@ -454,8 +454,8 @@ python -m dreamsync cache-list
 - [x] **14b. Non-blocking rotation integration** (5 tests — timing, data continuity, finalization)
 - [x] **15. Basic capture** (5 min, timestamp naming, dummy device)
 - [x] **16. Captured file verification** (playable mp3s with correct content)
-- [x] **17. Capture with Spotify metadata** (artist-title naming + track splitting)
-- [ ] **18. Boundary accuracy** (5+ songs with Spotify, file count matches song count)
+- [x] **17. Capture with Spotify metadata** (artist-title naming + track splitting) — 4 bugs fixed: off-by-one naming, generic first filename, 5-10s silence at end, silence gaps (see `dev/NEXT_STEPS.md`)
+- [ ] **18. Boundary accuracy** (5+ songs with Spotify, file count matches song count) ← **NEXT**
 - [ ] **18a. Live split quality** (3+ songs, no static/clipping at split boundaries)
 - [ ] **19. Edge cases** (short track, long track, gapless/crossfade)
 - [ ] **20. Analyzer unit tests** (80 tests)
@@ -606,6 +606,8 @@ python -m dreamsync cache-clear --yes
 | Capture produces 0 mp3 files | Without `--spotify`, there are no song boundaries, so everything goes into one segment (flushed on Ctrl+C). Use `--spotify` for track-accurate splitting. |
 | Capture files have no song metadata (null artist/title) | `--spotify` flag was not passed. Add `--spotify` to enable Spotify track change detection and metadata. Fixed: `_fetch_timing()` now correctly accesses `queue.currently_playing` and gets `progress_ms` from `PlaybackState`. |
 | Metadata naming shows timestamps instead of artist-title | Pass `--spotify` along with `--capture-naming metadata`. Without Spotify, metadata naming falls back to timestamp. |
+| Files named after wrong (previous) song | Fixed: filenames are now determined at segment finalization using the popped boundary metadata, not at encoder start via `peek_next()`. |
+| 5-10s silence at end of captured files | Fixed: `on_track_change()` now inserts an immediate boundary at the transition point instead of relying on the periodic timer. |
 | `Spotify: no valid token found` | Run `python -m dreamsync spotify-auth` first to authorize. |
 | `dreamsync analyze` fails with DecodeError | Ensure ffmpeg is installed and on PATH. Run `ffmpeg -version` to verify. Check the audio file is a valid format. |
 | Analyzer BPM is wrong by exactly 2x | Harmonic aliasing — the analyzer should auto-resolve this for BPMs outside 80-160 range. If persistent, file an issue. |

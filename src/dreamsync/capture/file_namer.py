@@ -47,6 +47,36 @@ class FileNamer:
     def counter(self) -> int:
         return self._counter
 
+    def rename_to_metadata(self, old_path: str, metadata: dict | None) -> str:
+        """Rename an existing MP3 file using *metadata*.
+
+        Returns the new path, or *old_path* if rename is not applicable.
+        """
+        if (
+            self._pattern != "metadata"
+            or not metadata
+            or not metadata.get("artist")
+            or not metadata.get("song_title")
+        ):
+            return old_path
+
+        old = Path(old_path)
+        if not old.exists():
+            return old_path
+
+        with self._lock:
+            ts = old.stem.split("_segment_")[0] if "_segment_" in old.stem else old.stem[:19]
+            artist = sanitize(metadata["artist"])
+            title = sanitize(metadata["song_title"])
+            base = f"{ts}_{artist}_-_{title}"
+            new_path = self._resolve_collision(base)
+
+        try:
+            old.rename(new_path)
+        except OSError:
+            return old_path
+        return str(new_path)
+
     def next_filename(self, metadata: dict | None = None) -> str:
         """Return the full path for the next segment file."""
         with self._lock:

@@ -138,6 +138,19 @@ class BoundaryQueue:
                 num_merged=len(merged),
             )
 
+    def remove_near(self, frame_position: int, window_frames: int) -> int:
+        """Remove all boundaries within *window_frames* of *frame_position*.
+
+        Returns the number of entries removed.
+        """
+        with self._lock:
+            before = len(self._entries)
+            self._entries = [
+                e for e in self._entries
+                if abs(e.frame_position - frame_position) > window_frames
+            ]
+            return before - len(self._entries)
+
     def update_locks(self, current_frame: int) -> None:
         """Mark boundaries within safety margin as locked."""
         with self._lock:

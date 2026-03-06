@@ -630,6 +630,20 @@ class CaptureOrchestrator:
                     return
 
             mp3_path = encoder.output_path
+
+            # Rename temp file to metadata-based name if applicable
+            if mp3_path and boundary_meta:
+                new_path = self._file_namer.rename_to_metadata(mp3_path, boundary_meta)
+                if new_path != mp3_path:
+                    self._logger.log(
+                        "DEBUG", "output", "segment.renamed",
+                        data={
+                            "old_path": mp3_path,
+                            "new_path": new_path,
+                            "segment_index": segment_index,
+                        },
+                    )
+                    mp3_path = new_path
         else:
             mp3_path = ""
 
@@ -795,15 +809,16 @@ class CaptureOrchestrator:
 
         Returns immediately — the accumulator buffers writes until the real
         ``EncoderProcess`` is attached by the background spawn thread.
+
+        Uses a temporary (timestamp-based) filename.  The final metadata-based
+        rename happens in ``_finalize_segment`` once the correct metadata is
+        known from the popped boundary.
         """
         accumulator = PcmAccumulator()
         self._encoders[segment_index] = accumulator
 
-        # Capture metadata now (consumer thread) before the queue can change
-        metadata = self._get_segment_metadata(segment_index)
-
         def _spawn() -> None:
-            mp3_path = self._file_namer.next_filename(metadata)
+            mp3_path = self._file_namer.next_filename(None)
             encoder = EncoderProcess(
                 output_path=mp3_path,
                 sample_rate=self._config.sample_rate,
