@@ -1,33 +1,34 @@
 # DreamSync — Next Steps
 
-## Current: Phase 6-9 Validation (Tests 20, 23-41)
+## Current Priorities
 
-Song capture pipeline (component 3) is fully validated. Moving to analyzer, show player, compiler, and cache.
+### 1. Capture rotating buffer
+Cap the number of MP3s kept on disk during long capture sessions to prevent filling the drive. Oldest files are deleted once the buffer limit is reached.
 
-### Next up
+### 2. Directory-based analysis/compile/play pipeline
+The analysis → compile → play pipeline should read MP3 files from a capture directory on disk, not hold audio data in-process memory. Simpler, more stable (crash in analyzer doesn't lose captured audio, can re-run without re-capturing).
+
+### 3. Validation tests (scoped down)
 
 - [ ] **20. Analyzer unit tests** (80 tests) — `pytest dev/tests/test_analyzer_*.py -v`
 - [ ] **23. Batch analysis** (5+ songs in directory)
-- [ ] **24. Genre variety** (10 songs across genres, BPM + section accuracy)
 - [ ] **25. Show Player unit tests** (65 tests)
 - [ ] **26. Audio playback test** (no devices)
 - [ ] **27. Synchronized playback** (with real Govee devices)
-- [ ] **28. Show file round-trip**
+- [ ] **28. Show file round-trip** (optional)
 - [ ] **29. Compiler unit tests** (58 tests)
 - [ ] **30. Single file compile**
 - [ ] **31. Compile to JSON output**
-- [ ] **32. Seed determinism**
-- [ ] **33. Profile override**
 - [ ] **34. Compile-and-play** (full pipeline with devices)
-- [ ] **35. Compiler genre variety** (5+ songs)
-- [ ] **36. Cache unit tests** (36 tests)
-- [ ] **37. CLI cache commands** (no hardware)
-- [ ] **38. Compile with caching** (miss then hit)
-- [ ] **39. Compile-and-play with caching**
-- [ ] **40. Profile-aware caching**
-- [ ] **41. Per-track invalidation**
 
 See `dev/VALIDATION_TESTS.md` for full test details and commands.
+
+### Out of scope (deferred)
+- 24 (Genre variety — analyzer tuning, not correctness)
+- 32 (Seed determinism — no reproducibility requirement)
+- 33 (Profile override — not actively using multiple profiles)
+- 35 (Compiler genre variety — quality polish, not a gate)
+- 36-41 (Cache — premature optimization; add later if re-analysis latency is a problem)
 
 ## Previously Completed
 
@@ -75,8 +76,4 @@ All 9 implementation steps from `dev/plans/pcm-accumulator-buffer-fix.md` are co
 
 ## Remaining Validation Tests
 
-See `dev/VALIDATION_TESTS.md` for the full remaining test matrix (items 20-41), covering:
-- Song structure analyzer (component 4)
-- Show playback runtime (component 5)
-- Show compiler (feature 3)
-- Show cache (feature 4)
+See `dev/VALIDATION_TESTS.md` for the full test matrix. Active scope: tests 20, 23, 25-31, 34.
