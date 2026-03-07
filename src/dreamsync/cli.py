@@ -1207,7 +1207,7 @@ def main(argv: list[str] | None = None) -> int:
                 def _capture_track_changed(new, old, _orig=_orig_on_track):
                     # Critical path: notify orchestrator of track change
                     try:
-                        capture_orchestrator.on_track_change({
+                        timing_data = {
                             "song_durations": [new.duration_ms / 1000.0],
                             "current_playback_time": 0.0,
                             "current_song": {
@@ -1215,7 +1215,14 @@ def main(argv: list[str] | None = None) -> int:
                                 "artist": new.artist,
                                 "album": new.album,
                             },
-                        })
+                        }
+                        if old is not None:
+                            timing_data["previous_song"] = {
+                                "song_title": old.name,
+                                "artist": old.artist,
+                                "album": old.album,
+                            }
+                        capture_orchestrator.on_track_change(timing_data)
                     except Exception:
                         pass
                     # Informational: display track change to user

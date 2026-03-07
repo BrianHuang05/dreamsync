@@ -222,10 +222,10 @@ python -m dreamsync devices
 
 ```bash
 python -m pytest tests/ -v        # Core subsystems (569 tests)
-python -m pytest dev/tests/ -v    # Audio capture pipeline (1353 tests)
+python -m pytest dev/tests/ -v    # Dev tests
 ```
 
-1353 tests total covering all subsystems:
+Tests covering all subsystems:
 
 ### Core tests (`tests/`)
 
@@ -243,7 +243,7 @@ python -m pytest dev/tests/ -v    # Audio capture pipeline (1353 tests)
 | `test_spectral_template.py` | 6 | SpectralBeatTemplate bootstrap, similarity, adaptation, reset |
 | `test_dsp_features.py` | 21 | Feature extraction, spectral features, BPM autocorrelation confidence |
 
-### Audio capture pipeline tests (`dev/tests/`)
+### Dev tests (`dev/tests/`)
 
 | Test file | Tests | Scope |
 |---|---|---|
@@ -262,11 +262,154 @@ python -m pytest dev/tests/ -v    # Audio capture pipeline (1353 tests)
 | `test_drift_detector.py` | 12 | 4-level drift detection, boundary correction |
 | `test_recovery_manager.py` | 10 | Capture/encoder failure recovery cascade |
 | `test_orchestrator.py` | 87 | CaptureOrchestrator: config, lifecycle, threads, DynamicSplitProcessor, timing, drift, recovery, logging |
-| `test_cli_capture.py` | 13 | CLI integration: --mp3 args, govee-live --capture, session orchestrator config, Spotify wiring |
+| `test_cli_capture.py` | 17 | CLI integration: --mp3 args, govee-live --capture, session orchestrator config, Spotify wiring, previous_song boundary |
 | `test_capture_integration.py` | 30 | E2E: split accuracy, metadata sidecars, dynamic boundaries, drift, failure injection, logging, file naming |
 | `test_timing_debounce.py` | 5 | Tick debounce after track change: suppression, expiry, logging |
 | `test_min_segment_guard.py` | 6 | Min segment duration guard: discard short segments, delete temp files |
 | `test_outputfile_metadata.py` | 5 | outputFile sidecar shows renamed path, fallback to encoder path |
+| `test_capture_scanner.py` | 10 | Capture directory scanner, sidecar parsing, sort by index |
+| `test_cache_sidecar.py` | 5 | Sidecar-based cache keys, deterministic, case-insensitive |
+| `test_dir_pipeline.py` | 17 | Directory pipeline, cache hit/miss, progress, integration |
+| `test_analyzer_*.py` (5 files) | 80 | Audio decode, feature extraction, BPM, sections, models |
+| `test_show_*.py` (4 files) | 65 | Show timeline models, player, runtime, CLI |
+| `test_compiler_*.py` (5 files) | 58 | Arc planner, treatments, transitions, assembly, compile |
+| `test_cache*.py` (3 files) | 36 | Cache fingerprint, store, compile integration |
+
+### Validation tests
+
+End-to-end validation beyond unit tests. Prerequisites vary by section.
+
+> **Common prerequisites:** `.venv` activated, `ffmpeg` on PATH.
+> **Capture tests:** VB-Cable installed, Spotify authorized (`dreamsync spotify-auth`).
+> **Device tests:** `devices.yaml` in project root, Govee devices on LAN.
+
+#### Live capture (Spotify + VB-Cable)
+
+**Boundary accuracy (5+ songs):**
+
+```bash
+mkdir -p out/capture-boundary
+python -m dreamsync govee-live \
+  --device 10.0.0.1:7:primary:ptreal --duration 1800 \
+  --capture --capture-dir out/capture-boundary \
+  --capture-naming metadata --spotify --debug-mood \
+  2>&1 | tee out/capture-boundary/console.log
+```
+
+Pass: MP3 count ≈ song count (±1), no files <5s, boundary latency <2s, sidecar `outputFile` matches filename.
+
+**Split quality (no static at boundaries):**
+
+```bash
+mkdir -p out/capture-split-test
+python -m dreamsync govee-live \
+  --device 10.0.0.1:7:primary:ptreal --duration 600 \
+  --capture --capture-dir out/capture-split-test \
+  --capture-naming metadata --spotify --debug-mood
+```
+
+Pass: No static/clipping at split points, segment durations contiguous (sum ≈ session duration).
+
+**Edge cases:** Short track (<30s) → captured if >15s, else discarded with log. Long track (>10min) → captured whole. Gapless/crossfade → splits via Spotify events.
+
+**Rotating buffer:**
+
+```bash
+python -m dreamsync govee-live \
+  --device 10.0.0.1:7:primary:ptreal --duration 600 \
+  --capture --capture-dir out/buffer-test \
+  --capture-naming metadata --spotify --capture-buffer 5
+```
+
+Pass: ≤5 MP3 files on disk after 7+ songs, eviction events in logs.
+
+#### Analyzer (ffmpeg required)
+
+```bash
+# Single file
+python -m dreamsync analyze path/to/song.mp3 --summary
+
+# JSON round-trip
+python -m dreamsync analyze path/to/song.mp3 --output out/analysis/test.json
+
+# Batch (5+ songs)
+python -m dreamsync analyze-dir path/to/songs/ --output-dir out/analysis/
+```
+
+Pass: BPM ±5 of known tempo, ≥2 sections, reasonable labels, JSON round-trips, <30s per song.
+
+#### Show player (ffmpeg required, devices optional)
+
+```bash
+# Audio only (no devices)
+python -m dreamsync play path/to/song.mp3 --show path/to/show.json --config devices.yaml --debug
+
+# With Govee devices
+python -m dreamsync play path/to/song.mp3 --show path/to/show.json --config devices.yaml --debug
+```
+
+Pass: Audio plays without glitches, cue transitions in debug output, `ShowTimeline.from_json()` / `.to_json()` round-trips.
+
+#### Compiler (no hardware needed)
+
+```bash
+# Summary
+python -m dreamsync compile path/to/structure.json --summary
+
+# JSON output
+python -m dreamsync compile path/to/structure.json --output show.json
+
+# Full pipeline (requires mp3 + devices)
+python -m dreamsync compile-and-play path/to/song.mp3 --config devices.yaml --profile aurora --debug
+```
+
+Pass: Summary table with Duration/BPM/Sections/Cues, JSON round-trips, full pipeline runs analyze→compile→play.
+
+#### Cache (no hardware needed)
+
+```bash
+python -m dreamsync cache-list
+python -m dreamsync cache-info
+
+# First compile = miss, second = hit
+python -m dreamsync compile path/to/structure.json --cache-dir ~/.dreamsync/cache --summary
+python -m dreamsync compile path/to/structure.json --cache-dir ~/.dreamsync/cache --summary
+
+python -m dreamsync cache-clear --yes
+```
+
+Pass: First = "Cache miss", second = "Cache hit", `cache-list` shows entries, `cache-clear` removes them.
+
+#### Directory pipeline
+
+```bash
+python -m dreamsync pipeline --help
+python -m dreamsync pipeline out/capture-test/ --mode analyze --debug
+python -m dreamsync pipeline out/capture-test/ --mode compile --debug
+python -m dreamsync pipeline out/capture-test/ --config devices.yaml --debug
+```
+
+Pass: Analyze writes `.analysis.json` files, compile caches shows, play runs full playback.
+
+#### Capture troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `ffmpeg not found on PATH` | Install ffmpeg, verify with `ffmpeg -version` |
+| `No audio device matching 'CABLE Output'` | Install VB-Audio Virtual Cable, verify with `ffmpeg -list_devices true -f dshow -i dummy 2>&1` |
+| Capture files are silence | Set CABLE Input as default playback device, enable "Listen to this device" on CABLE Output |
+| Drift ~1s per 10s | Sample rate mismatch — set VB-Cable to 44100 Hz |
+| Static/glitches at boundaries | Sample rate mismatch, or pre-PcmAccumulator code — verify tests pass |
+| 0 mp3 files produced | Without `--spotify`, no boundaries → one segment flushed on Ctrl+C |
+| No song metadata (null artist/title) | Add `--spotify` flag |
+| Files named after wrong song | Fixed in current version (deferred naming at finalization) |
+| 5-10s silence at end of files | Fixed in current version (immediate boundary at transition) |
+| Fewer MP3s than songs (intermittent missed splits) | Fixed in current version (govee-live now passes `previous_song` for immediate boundaries) |
+| Tiny residual files (~0.7s) at boundaries | Fixed in current version (tick debounce + min segment guard) |
+| JSON `outputFile` wrong | Fixed in current version (post-rename path in sidecar) |
+| `Spotify: no valid token found` | Run `python -m dreamsync spotify-auth` first |
+| Analyzer BPM wrong by 2x | Harmonic aliasing — should auto-resolve; file an issue if persistent |
+| Analysis takes >30s | Expected for long songs or slow hardware |
 
 ## Architecture
 
@@ -364,7 +507,8 @@ The `main()` function in `cli.py` handles all subcommands. Capture pipeline inte
    ```python
    {"song_durations": [new.duration_ms / 1000.0],
     "current_playback_time": 0.0,
-    "current_song": {"song_title": new.name, "artist": new.artist, "album": new.album}}
+    "current_song": {"song_title": new.name, "artist": new.artist, "album": new.album},
+    "previous_song": {"song_title": old.name, "artist": old.artist, "album": old.album}}  # when old is not None
    ```
 
 3. **Segment metadata flow**: `BoundaryEntry.metadata` -> `_get_segment_metadata(segment_index)` -> `_build_segment_metadata()` -> `SegmentMetadata` dataclass -> `MetadataWriter.write_sidecar()` -> JSON file.
