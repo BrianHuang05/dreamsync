@@ -297,6 +297,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Filename scheme for captured songs (default: timestamp).",
     )
     govee_live.add_argument(
+        "--capture-buffer",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Max MP3 files to keep on disk during capture (0 = unlimited, default: 0). "
+             "Oldest files are deleted when the limit is exceeded.",
+    )
+    govee_live.add_argument(
         "--spotify",
         action="store_true",
         default=False,
@@ -486,6 +494,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["timestamp", "metadata"],
         default="timestamp",
         help="Filename scheme for captured songs (default: timestamp).",
+    )
+    session.add_argument(
+        "--capture-buffer",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Max MP3 files to keep on disk during capture (0 = unlimited, default: 0). "
+             "Oldest files are deleted when the limit is exceeded.",
     )
     session.add_argument(
         "--v3",
@@ -797,6 +813,7 @@ def main(argv: list[str] | None = None) -> int:
                 device_pattern=args.device_pattern,
                 output_dir=args.output_dir,
                 naming=args.naming,
+                max_capture_files=getattr(args, "capture_buffer", 0),
             )
             orchestrator = CaptureOrchestrator(
                 config=orch_cfg,
@@ -1133,6 +1150,7 @@ def main(argv: list[str] | None = None) -> int:
             orch_cfg = OrchestratorConfig(
                 output_dir=capture_dir,
                 naming=getattr(args, "capture_naming", "timestamp"),
+                max_capture_files=getattr(args, "capture_buffer", 0),
                 log_dir=str(Path(capture_dir) / "logs"),
             )
             def _safe_segment_msg(path, meta):
@@ -1324,6 +1342,7 @@ def main(argv: list[str] | None = None) -> int:
             capture=getattr(args, "capture", False),
             capture_dir=getattr(args, "capture_dir", "captured_songs"),
             capture_naming=getattr(args, "capture_naming", "timestamp"),
+            capture_buffer=getattr(args, "capture_buffer", 0),
             v3=getattr(args, "v3", False),
             cache_dir=getattr(args, "cache_dir", "~/.dreamsync/cache"),
             local=getattr(args, "local", None) is not None,

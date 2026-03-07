@@ -17,10 +17,12 @@ from dreamsync.capture.file_namer import FileNamer
 from dreamsync.capture.metadata_writer import MetadataWriter, SegmentMetadata
 from dreamsync.capture.orchestrator import (
     DRIFT_CHECK_INTERVAL_CHUNKS,
+    BufferEntry,
     CaptureOrchestrator,
     DynamicSplitProcessor,
     OrchestratorConfig,
     PcmAccumulator,
+    RotatingFileBuffer,
 )
 from dreamsync.capture.pcm_buffer import AudioBuffer
 from dreamsync.capture.pcm_reader import BYTES_PER_FRAME, chunk_bytes_for_ms
@@ -83,6 +85,7 @@ class TestOrchestratorConfig:
         assert cfg.drift_warning_threshold == 0.1
         assert cfg.drift_correction_threshold == 0.5
         assert cfg.drift_critical_threshold == 2.0
+        assert cfg.max_capture_files == 0
         assert cfg.capture_restart_delay == 0.2
         assert cfg.max_capture_retries == 5
         assert cfg.encoder_retry_count == 1
@@ -1953,3 +1956,267 @@ class TestNonBlockingRotation:
 
         # After stop, sidecar must have been written
         mock_sidecar.assert_called_once()
+
+
+# ======================================================================
+# RotatingFileBuffer unit tests
+# ======================================================================
+
+
+class TestRotatingFileBuffer:
+    def test_unlimited_no_eviction(self):
+        """max_files=0 means unlimited — add 100 entries, none evicted."""
+        buf = RotatingFileBuffer(max_files=0)
+        for i in range(100):
+            evicted = buf.add(f"/tmp/song{i}.mp3", f"/tmp/song{i}.json")
+            assert evicted == []
+        assert buf.current_count == 100
+        assert buf.total_evictions == 0
+
+    def test_under_limit_no_eviction(self):
+        """max_files=5, add 3 — none evicted."""
+        buf = RotatingFileBuffer(max_files=5)
+        for i in range(3):
+            evicted = buf.add(f"/tmp/song{i}.mp3", f"/tmp/song{i}.json")
+            assert evicted == []
+        assert buf.current_count == 3
+
+    def test_at_limit_no_eviction(self):
+        """max_files=3, add 3 — none evicted."""
+        buf = RotatingFileBuffer(max_files=3)
+        for i in range(3):
+            evicted = buf.add(f"/tmp/song{i}.mp3", f"/tmp/song{i}.json")
+            assert evicted == []
+        assert buf.current_count == 3
+
+    def test_over_limit_evicts_oldest(self):
+        """max_files=3, add 4 — first entry evicted."""
+        buf = RotatingFileBuffer(max_files=3)
+        for i in range(3):
+            buf.add(f"/tmp/song{i}.mp3", f"/tmp/song{i}.json")
+        evicted = buf.add("/tmp/song3.mp3", "/tmp/song3.json")
+        assert len(evicted) == 1
+        assert evicted[0].mp3_path == "/tmp/song0.mp3"
+        assert evicted[0].sidecar_path == "/tmp/song0.json"
+        assert buf.current_count == 3
+
+    def test_eviction_deletes_mp3_and_sidecar(self, tmp_path):
+        """Verify both files removed from disk."""
+        buf = RotatingFileBuffer(max_files=1)
+        mp3 = tmp_path / "old.mp3"
+        sidecar = tmp_path / "old.json"
+        mp3.write_bytes(b"fake mp3")
+        sidecar.write_text("{}")
+        assert mp3.exists() and sidecar.exists()
+
+        buf.add(str(mp3), str(sidecar))
+        assert mp3.exists()  # still within limit
+
+        # Adding a second file should evict the first
+        buf.add(str(tmp_path / "new.mp3"), str(tmp_path / "new.json"))
+        assert not mp3.exists()
+        assert not sidecar.exists()
+
+    def test_eviction_skips_missing_files(self):
+        """Evict entry whose files don't exist — no exception."""
+        buf = RotatingFileBuffer(max_files=1)
+        buf.add("/nonexistent/old.mp3", "/nonexistent/old.json")
+        # Should not raise
+        evicted = buf.add("/tmp/new.mp3", "/tmp/new.json")
+        assert len(evicted) == 1
+        assert buf.current_count == 1
+
+    def test_multiple_evictions(self):
+        """max_files=2, add 5 — verify only last 2 remain."""
+        buf = RotatingFileBuffer(max_files=2)
+        for i in range(5):
+            buf.add(f"/tmp/song{i}.mp3", f"/tmp/song{i}.json")
+        assert buf.current_count == 2
+        entries = buf.entries()
+        assert entries[0].mp3_path == "/tmp/song3.mp3"
+        assert entries[1].mp3_path == "/tmp/song4.mp3"
+        assert buf.total_evictions == 3
+
+    def test_entries_returns_snapshot(self):
+        """Snapshot is a copy, not a reference."""
+        buf = RotatingFileBuffer(max_files=0)
+        buf.add("/tmp/a.mp3", "/tmp/a.json")
+        snap1 = buf.entries()
+        buf.add("/tmp/b.mp3", "/tmp/b.json")
+        snap2 = buf.entries()
+        assert len(snap1) == 1
+        assert len(snap2) == 2
+
+    def test_thread_safety_concurrent_adds(self):
+        """10 threads each add 10 entries — no corruption."""
+        buf = RotatingFileBuffer(max_files=0)
+        barrier = threading.Barrier(10)
+
+        def worker(tid):
+            barrier.wait()
+            for i in range(10):
+                buf.add(f"/tmp/t{tid}_s{i}.mp3", f"/tmp/t{tid}_s{i}.json")
+
+        threads = [threading.Thread(target=worker, args=(t,)) for t in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert buf.current_count == 100
+
+    def test_add_returns_evicted_list(self):
+        """Return value contains exactly the evicted entries."""
+        buf = RotatingFileBuffer(max_files=2)
+        assert buf.add("a.mp3", "a.json") == []
+        assert buf.add("b.mp3", "b.json") == []
+        evicted = buf.add("c.mp3", "c.json")
+        assert len(evicted) == 1
+        assert evicted[0].mp3_path == "a.mp3"
+        assert evicted[0].sidecar_path == "a.json"
+
+
+# ======================================================================
+# RotatingFileBuffer — scan_existing tests
+# ======================================================================
+
+
+class TestRotatingBufferScanExisting:
+    def test_scan_existing_populates_buffer(self, tmp_path):
+        """Create 5 MP3+JSON files, scan, verify current_count == 5."""
+        for i in range(5):
+            (tmp_path / f"song{i}.mp3").write_bytes(b"mp3")
+            (tmp_path / f"song{i}.json").write_text("{}")
+        buf = RotatingFileBuffer(max_files=0)
+        registered = buf.scan_existing(str(tmp_path))
+        assert registered == 5
+        assert buf.current_count == 5
+
+    def test_scan_existing_evicts_over_limit(self, tmp_path):
+        """Create 5 files, max_files=3, scan — oldest 2 deleted."""
+        import time as _time
+        for i in range(5):
+            mp3 = tmp_path / f"song{i}.mp3"
+            mp3.write_bytes(b"mp3")
+            (tmp_path / f"song{i}.json").write_text("{}")
+            # Ensure distinct mtimes
+            _time.sleep(0.05)
+        buf = RotatingFileBuffer(max_files=3)
+        registered = buf.scan_existing(str(tmp_path))
+        assert registered == 5
+        assert buf.current_count == 3
+        assert buf.total_evictions == 2
+        # Oldest 2 should be deleted from disk
+        assert not (tmp_path / "song0.mp3").exists()
+        assert not (tmp_path / "song1.mp3").exists()
+        # Newest 3 should remain
+        assert (tmp_path / "song2.mp3").exists()
+        assert (tmp_path / "song3.mp3").exists()
+        assert (tmp_path / "song4.mp3").exists()
+
+    def test_scan_existing_empty_dir(self, tmp_path):
+        """Scan empty dir — current_count == 0."""
+        buf = RotatingFileBuffer(max_files=5)
+        registered = buf.scan_existing(str(tmp_path))
+        assert registered == 0
+        assert buf.current_count == 0
+
+
+# ======================================================================
+# RotatingBuffer integration with CaptureOrchestrator
+# ======================================================================
+
+
+class TestRotatingBufferIntegration:
+    @patch("dreamsync.capture.metadata_writer.MetadataWriter.write_sidecar")
+    def test_finalize_registers_files_in_buffer(self, mock_sidecar, tmp_path):
+        """Trigger segment completion, verify _rotating_buffer.current_count increments."""
+        orch = _make_orch(tmp_path)
+        orch._running = True
+        orch._start_time = time.monotonic()
+
+        mock_enc = MagicMock(spec=EncoderProcess)
+        mock_enc.wait.return_value = 0
+        mock_enc.output_path = str(tmp_path / "out" / "song.mp3")
+        mock_enc.stderr_output = []
+        orch._encoders[0] = mock_enc
+
+        orch._on_segment_complete(0, 0, 44100)
+        _wait_for_finalizations(orch)
+
+        assert orch._rotating_buffer.current_count == 1
+
+    @patch("dreamsync.capture.metadata_writer.MetadataWriter.write_sidecar")
+    def test_finalize_evicts_when_over_limit(self, mock_sidecar, tmp_path):
+        """Configure max_capture_files=2, finalize 3 segments, first MP3+sidecar deleted."""
+        out_dir = tmp_path / "out"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        orch = _make_orch(tmp_path, max_capture_files=2)
+        orch._running = True
+        orch._start_time = time.monotonic()
+
+        # Create 3 "encoder" outputs that produce real files on disk
+        paths = []
+        for i in range(3):
+            mp3 = out_dir / f"song{i}.mp3"
+            mp3.write_bytes(b"fake mp3 content")
+            mock_sidecar.return_value = str(mp3.with_suffix(".json"))
+            paths.append(str(mp3))
+
+        for i in range(3):
+            mock_enc = MagicMock(spec=EncoderProcess)
+            mock_enc.wait.return_value = 0
+            mock_enc.output_path = paths[i]
+            mock_enc.stderr_output = []
+            orch._encoders[i] = mock_enc
+            orch._on_segment_complete(i, i * 44100, (i + 1) * 44100)
+
+        _wait_for_finalizations(orch)
+
+        assert orch._rotating_buffer.current_count == 2
+        assert orch._rotating_buffer.total_evictions == 1
+        # First file should have been evicted (deleted)
+        assert not (out_dir / "song0.mp3").exists()
+
+    @patch("dreamsync.capture.metadata_writer.MetadataWriter.write_sidecar")
+    def test_discarded_segment_not_tracked_in_buffer(self, mock_sidecar, tmp_path):
+        """Discarded (too-short) segments should NOT be added to the rotating buffer."""
+        orch = _make_orch(tmp_path, min_segment_frames=220_500)
+        orch._running = True
+        orch._start_time = time.monotonic()
+
+        mock_enc = MagicMock(spec=EncoderProcess)
+        mock_enc.wait.return_value = 0
+        mock_enc.output_path = str(tmp_path / "out" / "short.mp3")
+        mock_enc.stderr_output = []
+        orch._encoders[0] = mock_enc
+
+        # Trigger segment completion with only 1000 frames (way below 220500)
+        orch._on_segment_complete(0, 0, 1000)
+        _wait_for_finalizations(orch)
+
+        assert orch._rotating_buffer.current_count == 0
+
+    @patch("dreamsync.capture.metadata_writer.MetadataWriter.write_sidecar")
+    def test_stats_includes_buffer_fields(self, mock_sidecar, tmp_path):
+        """Verify stats dict includes buffer fields after finalization."""
+        orch = _make_orch(tmp_path, max_capture_files=2)
+        orch._running = True
+        orch._start_time = time.monotonic()
+
+        mock_enc = MagicMock(spec=EncoderProcess)
+        mock_enc.wait.return_value = 0
+        mock_enc.output_path = str(tmp_path / "out" / "song.mp3")
+        mock_enc.stderr_output = []
+        orch._encoders[0] = mock_enc
+
+        orch._on_segment_complete(0, 0, 44100)
+        _wait_for_finalizations(orch)
+
+        stats = orch.stats
+        assert "buffer_current_files" in stats
+        assert "buffer_max_files" in stats
+        assert "buffer_evictions" in stats
+        assert stats["buffer_current_files"] == 1
+        assert stats["buffer_max_files"] == 2
+        assert stats["buffer_evictions"] == 0

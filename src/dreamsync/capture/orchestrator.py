@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import os
 import threading
 import time
@@ -46,6 +47,7 @@ class OrchestratorConfig:
     # --- Output paths (-> FileNamer, MetadataWriter) ---
     output_dir: str = "./captured_songs"
     naming: str = "timestamp"  # "timestamp" | "metadata"
+    max_capture_files: int = 0  # 0 = unlimited (no eviction)
     log_dir: str = "./logs"
 
     # --- Timing (-> BoundaryQueue, TimingIntegrator) ---
@@ -83,6 +85,82 @@ class OrchestratorConfig:
 
 
 DRIFT_CHECK_INTERVAL_CHUNKS = 100  # ~10 seconds at 100 ms chunks
+
+
+@dataclass
+class BufferEntry:
+    mp3_path: str
+    sidecar_path: str
+
+
+class RotatingFileBuffer:
+    """Track finalized segment files and enforce a maximum count on disk.
+
+    Thread-safe — called from background finalization threads.
+    ``max_files=0`` means unlimited (no eviction).
+    """
+
+    def __init__(self, max_files: int = 0) -> None:
+        self._max_files = max_files
+        self._entries: collections.deque[BufferEntry] = collections.deque()
+        self._lock = threading.Lock()
+        self._total_evictions: int = 0
+
+    @property
+    def max_files(self) -> int:
+        return self._max_files
+
+    @property
+    def current_count(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+    @property
+    def total_evictions(self) -> int:
+        return self._total_evictions
+
+    def add(self, mp3_path: str, sidecar_path: str) -> list[BufferEntry]:
+        """Register a new file pair. Evict oldest if over limit.
+        Returns list of evicted entries (empty if none)."""
+        evicted: list[BufferEntry] = []
+        with self._lock:
+            self._entries.append(BufferEntry(mp3_path=mp3_path, sidecar_path=sidecar_path))
+            while self._max_files > 0 and len(self._entries) > self._max_files:
+                oldest = self._entries.popleft()
+                evicted.append(oldest)
+                self._total_evictions += 1
+        for entry in evicted:
+            self._evict(entry)
+        return evicted
+
+    def _evict(self, entry: BufferEntry) -> None:
+        """Delete mp3 and sidecar from disk. Log and skip on OSError."""
+        for path in (entry.mp3_path, entry.sidecar_path):
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+    def entries(self) -> list[BufferEntry]:
+        """Return a snapshot of current entries."""
+        with self._lock:
+            return list(self._entries)
+
+    def scan_existing(self, output_dir: str) -> int:
+        """Scan output_dir for existing .mp3 files, register them oldest-first.
+        Returns the number of files registered."""
+        from pathlib import Path as _Path
+        dir_path = _Path(output_dir)
+        if not dir_path.is_dir():
+            return 0
+        mp3s = sorted(dir_path.glob("*.mp3"), key=lambda p: p.stat().st_mtime)
+        registered = 0
+        for mp3 in mp3s:
+            sidecar = mp3.with_suffix(".json")
+            self.add(str(mp3), str(sidecar) if sidecar.exists() else "")
+            registered += 1
+        return registered
 
 
 class PcmAccumulator:
@@ -355,6 +433,18 @@ class CaptureOrchestrator:
             output_dir=self._config.output_dir,
         )
 
+        # Rotating file buffer (cap on-disk MP3s during long captures)
+        self._rotating_buffer = RotatingFileBuffer(
+            max_files=self._config.max_capture_files,
+        )
+        if self._config.max_capture_files > 0:
+            scanned = self._rotating_buffer.scan_existing(self._config.output_dir)
+            if scanned > 0:
+                self._logger.log(
+                    "INFO", "buffer", "rotating_buffer.scan",
+                    data={"existing_files": scanned, "max_files": self._config.max_capture_files},
+                )
+
         # Drift detection and correction
         self._drift = DriftDetector(
             sample_rate=self._config.sample_rate,
@@ -414,6 +504,9 @@ class CaptureOrchestrator:
             "capture_restarts": self._recovery.total_capture_restarts,
             "encoder_failures": self._recovery.total_encoder_failures,
             "gaps": len(self._recovery.gaps),
+            "buffer_current_files": self._rotating_buffer.current_count,
+            "buffer_max_files": self._rotating_buffer.max_files,
+            "buffer_evictions": self._rotating_buffer.total_evictions,
         }
 
     # ------------------------------------------------------------------
@@ -682,6 +775,19 @@ class CaptureOrchestrator:
             self._logger.log(
                 "WARNING", "output", "sidecar.write_error",
                 data={"error": str(exc), "segment_index": segment_index},
+            )
+
+        # Rotating buffer: track file and evict oldest if over limit
+        evicted = self._rotating_buffer.add(mp3_path, sidecar_path)
+        for entry in evicted:
+            self._logger.log(
+                "INFO", "buffer", "rotating_buffer.evicted",
+                data={
+                    "evicted_mp3": entry.mp3_path,
+                    "evicted_sidecar": entry.sidecar_path,
+                    "current_count": self._rotating_buffer.current_count,
+                    "max_files": self._rotating_buffer.max_files,
+                },
             )
 
         # Log segment completion

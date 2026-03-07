@@ -140,7 +140,7 @@ python -m pytest dev/tests/test_orchestrator.py -v
 ```
 
 **Pass criteria:**
-- All tests pass (87 core + 12 PcmAccumulator + 5 non-blocking rotation = 104 total)
+- All tests pass (87 core + 12 PcmAccumulator + 5 non-blocking rotation + 17 rotating buffer = 125 total)
 - No regressions from async finalization changes
 - Tests using `_wait_for_finalizations()` helper correctly await background thread completion
 
@@ -181,6 +181,63 @@ done
 - Segment durations are contiguous (sum ≈ total session duration, no missing audio)
 - Console log shows non-blocking rotation messages (no "encoder wait" stalls on consumer thread)
 - All sidecar `.json` files written correctly (finalization completed in background)
+
+### 5.9 Capture rotating buffer
+
+Caps the number of MP3+sidecar pairs on disk during long capture sessions. Configurable via `--capture-buffer N` (0 = unlimited, default). When the limit is exceeded, the oldest files are deleted.
+
+#### 5.9.1 Rotating buffer unit tests (10 tests)
+
+```bash
+python -m pytest dev/tests/test_orchestrator.py -v -k "TestRotatingFileBuffer"
+```
+
+**Pass:** All 10 tests pass (unlimited, under/at/over limit, disk deletion, missing files, multiple evictions, snapshot copy, thread safety, return value).
+
+#### 5.9.2 Scan existing tests (3 tests)
+
+```bash
+python -m pytest dev/tests/test_orchestrator.py -v -k "TestRotatingBufferScanExisting"
+```
+
+**Pass:** All 3 tests pass (populate, evict over limit, empty dir).
+
+#### 5.9.3 Integration tests (4 tests)
+
+```bash
+python -m pytest dev/tests/test_orchestrator.py -v -k "TestRotatingBufferIntegration"
+```
+
+**Pass:** All 4 tests pass (finalize registers in buffer, eviction on over-limit, discarded segments not tracked, stats include buffer fields).
+
+#### 5.9.4 Live rotating buffer (requires Spotify + VB-Cable)
+
+```bash
+mkdir -p out/buffer-test
+python -m dreamsync govee-live \
+  --device 10.0.0.1:7:primary:ptreal \
+  --duration 600 \
+  --capture --capture-dir out/buffer-test \
+  --capture-naming metadata --spotify \
+  --capture-buffer 5
+```
+
+After 7+ songs, Ctrl+C.
+
+**Verify:**
+
+```bash
+# At most 5 MP3 files on disk at any time
+ls out/buffer-test/*.mp3 | wc -l   # should be <= 5
+
+# Verify oldest files were deleted (check logs)
+grep "rotating_buffer.evicted" out/buffer-test/logs/*.jsonl
+```
+
+**Pass criteria:**
+- At most 5 MP3 files remain on disk after 7+ songs
+- Eviction log events show deleted file paths
+- No crashes or errors during eviction
 
 ---
 
@@ -483,9 +540,10 @@ python -m dreamsync cache-list
 
 ## Quick Reference — Remaining Test Sequence
 
-- [x] **14. Capture unit tests** (104 orchestrator tests: 87 core + 12 PcmAccumulator + 5 non-blocking rotation integration)
+- [x] **14. Capture unit tests** (125 orchestrator tests: 87 core + 12 PcmAccumulator + 5 non-blocking rotation + 17 rotating buffer + 4 integration)
 - [x] **14a. PcmAccumulator unit tests** (12 tests — non-blocking buffer/pass-through/thread-safety)
 - [x] **14b. Non-blocking rotation integration** (5 tests — timing, data continuity, finalization)
+- [x] **14c. Rotating file buffer** (17 tests — unit, scan_existing, integration, stats)
 - [x] **15. Basic capture** (5 min, timestamp naming, dummy device)
 - [x] **16. Captured file verification** (playable mp3s with correct content)
 - [x] **17. Capture with Spotify metadata** (artist-title naming + track splitting) — 4 bugs fixed: off-by-one naming, generic first filename, 5-10s silence at end, silence gaps (see `dev/NEXT_STEPS.md`)
@@ -525,7 +583,7 @@ python -m pytest dev/tests/test_orchestrator.py -v -k "TestPcmAccumulator"
 # 14b. Non-blocking rotation integration tests (5 tests)
 python -m pytest dev/tests/test_orchestrator.py -v -k "TestNonBlockingRotation"
 
-# 14c. Full orchestrator regression (104 tests)
+# 14c. Full orchestrator regression (125 tests)
 python -m pytest dev/tests/test_orchestrator.py -v
 
 # 15+16. Basic capture (5 min, play music through VB-Cable)

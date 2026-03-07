@@ -2,8 +2,8 @@
 
 ## Current Priorities
 
-### 1. Capture rotating buffer
-Cap the number of MP3s kept on disk during long capture sessions to prevent filling the drive. Oldest files are deleted once the buffer limit is reached.
+### ~~1. Capture rotating buffer~~ ✅
+Cap the number of MP3s kept on disk during long capture sessions to prevent filling the drive. Oldest files are deleted once the buffer limit is reached. **Done:** `RotatingFileBuffer` class, `--capture-buffer N` CLI arg, startup scan, 17 new tests (1370 total).
 
 ### 2. Directory-based analysis/compile/play pipeline
 The analysis → compile → play pipeline should read MP3 files from a capture directory on disk, not hold audio data in-process memory. Simpler, more stable (crash in analyzer doesn't lose captured audio, can re-run without re-capturing).
@@ -32,6 +32,7 @@ See `dev/VALIDATION_TESTS.md` for full test details and commands.
 
 ## Previously Completed
 
+- [x] Capture rotating buffer (`--capture-buffer N`, `RotatingFileBuffer`, startup scan, 17 tests)
 - [x] Basic capture produces valid, playable MP3 (test 15-16)
 - [x] PcmAccumulator unit + integration tests (12 + 5 = 17 tests passing)
 - [x] Spotify metadata naming + track splitting (test 17) — 4 bugs fixed

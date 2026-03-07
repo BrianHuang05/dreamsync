@@ -59,6 +59,7 @@ def run_session(
     capture: bool = False,
     capture_dir: str = "captured_songs",
     capture_naming: str = "timestamp",
+    capture_buffer: int = 0,
     v3: bool = False,
     cache_dir: str = "~/.dreamsync/cache",
     local: bool = False,
@@ -184,6 +185,7 @@ def run_session(
             orch_cfg = OrchestratorConfig(
                 output_dir=capture_dir,
                 naming=capture_naming,
+                max_capture_files=capture_buffer,
                 log_dir=str(Path(capture_dir) / "logs"),
             )
             def _safe_segment_msg(path, meta):
