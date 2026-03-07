@@ -516,6 +516,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show cache directory (default: ~/.dreamsync/cache).",
     )
     session.add_argument(
+        "--pipeline",
+        action="store_true",
+        default=False,
+        help="Stream captured songs through analyze -> compile -> play concurrently.",
+    )
+    session.add_argument(
+        "--playback-device",
+        type=int,
+        default=None,
+        dest="playback_device",
+        help="Output audio device ID for show playback (must differ from capture device).",
+    )
+    session.add_argument(
+        "--purge",
+        action="store_true",
+        default=False,
+        help="Delete MP3 + sidecar after playback (use with --pipeline).",
+    )
+    session.add_argument(
         "--local",
         type=str,
         default=None,
@@ -595,7 +614,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     play_cmd.add_argument("audio_path", type=Path, help="Path to audio file, directory of audio files, or M3U playlist.")
     play_cmd.add_argument("--show", type=Path, default=None, help="Path to compiled show JSON. If omitted, compiles on-the-fly.")
-    play_cmd.add_argument("--config", type=Path, required=True, help="Path to YAML device config file.")
+    play_cmd.add_argument("--config", type=Path, default=None, help="Path to YAML device config file (required unless --dry-run).")
     play_cmd.add_argument("--profile", type=str, default=None, help="Profile name or path for on-the-fly compilation.")
     play_cmd.add_argument("--cache-dir", type=str, default="~/.dreamsync/cache", help="Show cache directory (default: ~/.dreamsync/cache).")
     play_cmd.add_argument("--sample-rate", type=int, default=44100, help="Audio sample rate.")
@@ -613,6 +632,8 @@ def build_parser() -> argparse.ArgumentParser:
     play_cmd.add_argument("--debug", action="store_true", help="Print cue changes, beat counts, position.")
     play_cmd.add_argument("--shuffle", action="store_true", default=False, help="Randomize playlist order (for directories and M3U files).")
     play_cmd.add_argument("--repeat", action="store_true", default=False, help="Loop playlist after last track.")
+    play_cmd.add_argument("--dry-run", action="store_true", default=False, dest="dry_run",
+                          help="Audio only, no device output (skips device detection).")
 
     # -- Compile command -------------------------------------------------------
     compile_cmd = sub.add_parser(
@@ -626,6 +647,20 @@ def build_parser() -> argparse.ArgumentParser:
     compile_cmd.add_argument("--summary", action="store_true", help="Print human-readable summary.")
     compile_cmd.add_argument("--cache-dir", type=str, default=None,
                              help="Enable caching — store result in this directory")
+
+    # -- Compile-dir command ---------------------------------------------------
+    compile_dir_cmd = sub.add_parser(
+        "compile-dir",
+        help="Batch-compile all .analysis.json files in a directory into show timelines.",
+    )
+    compile_dir_cmd.add_argument("input_dir", type=Path, help="Directory containing .analysis.json files.")
+    compile_dir_cmd.add_argument("--output-dir", type=Path, default=None,
+                                 help="Directory for show JSON files (default: alongside analysis files).")
+    compile_dir_cmd.add_argument("--profile", type=str, default=None, help="Profile name or path.")
+    compile_dir_cmd.add_argument("--seed", type=int, default=None, help="Random seed for determinism.")
+    compile_dir_cmd.add_argument("--summary", action="store_true", help="Print summary for each show.")
+    compile_dir_cmd.add_argument("--cache-dir", type=str, default=None,
+                                 help="Enable caching — store/check in this directory")
 
     # -- Compile-and-play command ----------------------------------------------
     cap_cmd = sub.add_parser(
@@ -1387,6 +1422,9 @@ def main(argv: list[str] | None = None) -> int:
             cache_dir=getattr(args, "cache_dir", "~/.dreamsync/cache"),
             local=getattr(args, "local", None) is not None,
             local_audio=getattr(args, "local", None),
+            pipeline=getattr(args, "pipeline", False),
+            playback_device=getattr(args, "playback_device", None),
+            purge=getattr(args, "purge", False),
         )
         print(json.dumps(summary, separators=(",", ":")))
         return 0
@@ -1508,20 +1546,31 @@ def main(argv: list[str] | None = None) -> int:
         import signal
         import threading
 
-        from .output.auto_detect import build_multi_adapter, detect_all_devices, load_device_config
-
         audio_path = args.audio_path
         show_path = args.show
         config_path = args.config
+        dry_run = getattr(args, "dry_run", False)
 
         if not audio_path.exists():
             print(f"Error: audio path not found: {audio_path}")
             return 1
-        if not config_path.exists():
+        if not dry_run and not config_path:
+            print("Error: --config is required (or use --dry-run for audio-only)")
+            return 1
+        if config_path and not config_path.exists():
             print(f"Error: config file not found: {config_path}")
             return 1
 
         brightness = max(0.0, min(1.0, float(args.brightness)))
+
+        def _build_play_adapter():
+            if dry_run:
+                from .output.null_adapter import NullMultiAdapter
+                return NullMultiAdapter()
+            from .output.auto_detect import build_multi_adapter, detect_all_devices, load_device_config
+            configs = load_device_config(config_path)
+            detected = detect_all_devices(configs)
+            return build_multi_adapter(detected, fps=args.fps, brightness=brightness, mirror=args.mirror)
 
         if show_path is not None:
             # Existing behavior: play pre-compiled show (single file only)
@@ -1530,14 +1579,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
 
             try:
-                configs = load_device_config(config_path)
-                detected = detect_all_devices(configs)
-                multi_adapter = build_multi_adapter(
-                    detected,
-                    fps=args.fps,
-                    brightness=brightness,
-                    mirror=args.mirror,
-                )
+                multi_adapter = _build_play_adapter()
             except Exception as exc:
                 print(f"Device setup failed: {exc}")
                 return 1
@@ -1571,14 +1613,7 @@ def main(argv: list[str] | None = None) -> int:
             from .playlist import PlaylistManager
 
             try:
-                configs = load_device_config(config_path)
-                detected = detect_all_devices(configs)
-                multi_adapter = build_multi_adapter(
-                    detected,
-                    fps=args.fps,
-                    brightness=brightness,
-                    mirror=args.mirror,
-                )
+                multi_adapter = _build_play_adapter()
             except Exception as exc:
                 print(f"Device setup failed: {exc}")
                 return 1
@@ -1658,6 +1693,60 @@ def main(argv: list[str] | None = None) -> int:
             print(format_summary(structure, timeline))
         if not args.output and not args.summary:
             print(json.dumps(timeline.to_dict(), indent=2))
+        return 0
+
+    if args.command == "compile-dir":
+        from .analyzer.models import SongStructure
+        from .compiler import compile_show
+        from .compiler.compile import format_summary
+
+        input_dir = args.input_dir
+        if not input_dir.is_dir():
+            print(f"Not a directory: {input_dir}")
+            return 1
+
+        output_dir = args.output_dir or input_dir
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        files = sorted(input_dir.glob("*.analysis.json"))
+        if not files:
+            print(f"No .analysis.json files found in {input_dir}")
+            return 0
+
+        profile = _resolve_profile_from_args(args) if args.profile else None
+        if profile == "error":
+            return 1
+
+        cache = None
+        if args.cache_dir:
+            from .cache import ShowCache, cached_compile_show, path_based_track_id
+            cache = ShowCache(args.cache_dir)
+
+        print(f"Compiling {len(files)} shows...")
+        for i, f in enumerate(files, 1):
+            # Derive show filename: foo.analysis.json -> foo.show.json
+            stem = f.name.removesuffix(".analysis.json")
+            out_path = output_dir / f"{stem}.show.json"
+            try:
+                structure = SongStructure.from_json(f)
+
+                if cache is not None:
+                    track_id = path_based_track_id(f)
+                    timeline, from_cache = cached_compile_show(
+                        structure, profile, cache=cache, track_id=track_id, seed=args.seed,
+                    )
+                    status = "cache hit" if from_cache else "compiled"
+                else:
+                    timeline = compile_show(structure, profile, seed=args.seed)
+                    status = "compiled"
+
+                timeline.to_json(out_path)
+                print(f"  [{i}/{len(files)}] {stem} → {out_path.name} ({len(timeline.cues)} cues, {status})")
+                if args.summary:
+                    print(format_summary(structure, timeline))
+            except Exception as exc:
+                print(f"  [{i}/{len(files)}] {stem} — FAILED: {exc}")
         return 0
 
     if args.command == "compile-and-play":

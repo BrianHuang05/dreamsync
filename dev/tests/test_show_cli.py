@@ -48,10 +48,11 @@ class TestPlayArgParsing:
         args = parser.parse_args(["play", "song.mp3", "--config", "dev.yaml"])
         assert args.show is None
 
-    def test_play_requires_config(self):
+    def test_play_config_defaults_to_none(self):
+        """--config is optional at parse time (validated at runtime unless --dry-run)."""
         parser = build_parser()
-        with pytest.raises(SystemExit):
-            parser.parse_args(["play", "song.mp3", "--show", "show.json"])
+        args = parser.parse_args(["play", "song.mp3", "--show", "show.json"])
+        assert args.config is None
 
     def test_play_parses_all_args(self):
         parser = build_parser()

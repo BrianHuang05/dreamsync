@@ -212,6 +212,100 @@ python -m dreamsync govee-live --device 10.0.0.1:7:primary:ptreal --duration 300
 
 With `--spotify`, song boundaries come from Spotify's queue API for frame-accurate splits. Without Spotify, the pipeline captures continuously without splitting.
 
+## Show pipeline: analyze → compile → play
+
+The show pipeline turns MP3 files into synchronized light shows. Each step produces a JSON file that feeds the next:
+
+```
+MP3 file ──analyze──▸ .analysis.json ──compile──▸ .show.json ──play──▸ audio + lights
+```
+
+### Step 1: Analyze
+
+Extract BPM, sections, beat grid, and energy features from an audio file.
+
+```bash
+# Single file
+python -m dreamsync analyze path/to/song.mp3 --summary
+python -m dreamsync analyze path/to/song.mp3 --output song.analysis.json
+
+# Batch — all audio files in a directory
+python -m dreamsync analyze-dir path/to/songs/ --output-dir out/analysis/
+```
+
+### Step 2: Compile
+
+Turn analysis into a show timeline (cue list with render modes, transitions, intensities).
+
+```bash
+# Single file
+python -m dreamsync compile song.analysis.json --summary
+python -m dreamsync compile song.analysis.json --output song.show.json
+
+# Batch — all .analysis.json files in a directory
+python -m dreamsync compile-dir out/analysis/ --summary
+python -m dreamsync compile-dir out/analysis/ --output-dir out/shows/
+```
+
+### Step 3: Play
+
+Play audio with synchronized lighting from a compiled show.
+
+```bash
+# Single file with pre-compiled show
+python -m dreamsync play path/to/song.mp3 --show song.show.json --config devices.yaml --debug
+
+# Single file — compile on-the-fly (no pre-compiled show needed)
+python -m dreamsync play path/to/song.mp3 --config devices.yaml --debug
+
+# Directory of MP3s — analyze, compile, and play all tracks
+python -m dreamsync play path/to/songs/ --config devices.yaml --debug
+
+# Audio only (no Govee devices needed)
+python -m dreamsync play path/to/song.mp3 --dry-run --debug
+```
+
+### Shortcut: compile-and-play
+
+Analyze, compile, and play a single file in one command:
+
+```bash
+python -m dreamsync compile-and-play path/to/song.mp3 --config devices.yaml --profile aurora --debug
+```
+
+### Shortcut: directory pipeline
+
+Run a capture directory through any stage of the pipeline:
+
+```bash
+python -m dreamsync pipeline out/captured-songs/ --mode analyze --debug
+python -m dreamsync pipeline out/captured-songs/ --mode compile --debug
+python -m dreamsync pipeline out/captured-songs/ --config devices.yaml --debug   # full play
+```
+
+### Streaming pipeline (capture + play concurrently)
+
+Stream captured songs through analyze, compile, and play as they arrive. While song N plays with its compiled show, song N+1 is being compiled, and song N+2 is being analyzed.
+
+```bash
+# Full streaming pipeline (Spotify + devices + aux audio output)
+python -m dreamsync session --config devices.yaml \
+  --pipeline --capture --capture-dir out/streaming \
+  --capture-naming metadata --spotify \
+  --playback-device 5 --purge --debug-mood
+
+# Dry-run streaming (no devices, just capture + analyze + compile)
+python -m dreamsync session --config devices.yaml \
+  --pipeline --capture --capture-dir out/streaming \
+  --capture-naming metadata --spotify --debug-mood
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--pipeline` | off | Enable concurrent capture + analyze + compile + play |
+| `--playback-device` | None | Output audio device ID for show playback (must differ from capture device) |
+| `--purge` | off | Delete MP3 + sidecar files after playback |
+
 ## List audio devices
 
 ```bash
@@ -274,6 +368,9 @@ Tests covering all subsystems:
 | `test_show_*.py` (4 files) | 65 | Show timeline models, player, runtime, CLI |
 | `test_compiler_*.py` (5 files) | 58 | Arc planner, treatments, transitions, assembly, compile |
 | `test_cache*.py` (3 files) | 36 | Cache fingerprint, store, compile integration |
+| `test_null_adapter.py` | 6 | NullMultiAdapter interface compliance, runtime + session compatibility |
+| `test_show_pipeline_worker.py` | 12 | Background analyze + compile worker, queue, error handling, concurrency |
+| `test_show_playback_consumer.py` | 10 | Playback consumer thread, purge, adapter lifecycle, ordering |
 
 ### Validation tests
 
@@ -341,8 +438,8 @@ Pass: BPM ±5 of known tempo, ≥2 sections, reasonable labels, JSON round-trips
 #### Show player (ffmpeg required, devices optional)
 
 ```bash
-# Audio only (no devices)
-python -m dreamsync play path/to/song.mp3 --show path/to/show.json --config devices.yaml --debug
+# Audio only (no devices, --dry-run skips device detection)
+python -m dreamsync play path/to/song.mp3 --dry-run --debug
 
 # With Govee devices
 python -m dreamsync play path/to/song.mp3 --show path/to/show.json --config devices.yaml --debug
@@ -353,17 +450,19 @@ Pass: Audio plays without glitches, cue transitions in debug output, `ShowTimeli
 #### Compiler (no hardware needed)
 
 ```bash
-# Summary
-python -m dreamsync compile path/to/structure.json --summary
+# Single file
+python -m dreamsync compile path/to/song.analysis.json --summary
+python -m dreamsync compile path/to/song.analysis.json --output song.show.json
 
-# JSON output
-python -m dreamsync compile path/to/structure.json --output show.json
+# Batch — all .analysis.json files in a directory
+python -m dreamsync compile-dir out/analysis/ --summary
+python -m dreamsync compile-dir out/analysis/ --output-dir out/shows/
 
 # Full pipeline (requires mp3 + devices)
 python -m dreamsync compile-and-play path/to/song.mp3 --config devices.yaml --profile aurora --debug
 ```
 
-Pass: Summary table with Duration/BPM/Sections/Cues, JSON round-trips, full pipeline runs analyze→compile→play.
+Pass: Summary table with Duration/BPM/Sections/Cues, JSON round-trips, batch compiles all files, full pipeline runs analyze→compile→play.
 
 #### Cache (no hardware needed)
 
@@ -372,8 +471,8 @@ python -m dreamsync cache-list
 python -m dreamsync cache-info
 
 # First compile = miss, second = hit
-python -m dreamsync compile path/to/structure.json --cache-dir ~/.dreamsync/cache --summary
-python -m dreamsync compile path/to/structure.json --cache-dir ~/.dreamsync/cache --summary
+python -m dreamsync compile path/to/song.analysis.json --cache-dir ~/.dreamsync/cache --summary
+python -m dreamsync compile path/to/song.analysis.json --cache-dir ~/.dreamsync/cache --summary
 
 python -m dreamsync cache-clear --yes
 ```
@@ -449,6 +548,9 @@ System Audio → LiveBpmEstimator → beat events + BPM
 | Per-song telemetry (JSONL per song, session summary) | `telemetry.py` | `TelemetryWriter` |
 | Hot-reload device config (mtime polling, diff, atomic swap) | `config_watcher.py` | `ConfigWatcher` |
 | Infinite session runner (YAML config + Ctrl+C shutdown) | `session.py` | `run_session()` |
+| Null adapter (dry-run / audio-only testing) | `output/null_adapter.py` | `NullMultiAdapter` |
+| Streaming pipeline worker (background analyze + compile) | `show_pipeline_worker.py` | `ShowPipelineWorker` |
+| Streaming playback consumer (play from ready queue) | `show_playback_consumer.py` | `ShowPlaybackConsumer` |
 | Spotify OAuth + API client | `spotify/auth.py`, `spotify/client.py` | `SpotifyAuth`, `SpotifyClient` |
 | Spotify queue watcher (track change detection) | `spotify/queue_watcher.py` | `SpotifyQueueWatcher` — polls playback, fires `on_track_changed(new, old)` |
 | Spotify data models | `spotify/models.py` | `PlaybackState`, `Track` (has `.name`, `.artist`, `.album`, `.duration_ms`, `.track_id`, `.progress_ms`) |
