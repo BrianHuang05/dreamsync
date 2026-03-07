@@ -533,6 +533,7 @@ class TestFailureInjection:
         cfg = OrchestratorConfig(
             output_dir=str(tmp_path / "out"),
             log_dir=str(tmp_path / "logs"),
+            min_segment_frames=0,
         )
         orch = CaptureOrchestrator(config=cfg)
 

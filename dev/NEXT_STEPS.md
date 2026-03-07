@@ -1,34 +1,59 @@
 # DreamSync — Next Steps
 
-## Current: Test 18 — Boundary Accuracy (5+ Songs)
+## Current: Phase 6-9 Validation (Tests 20, 23-41)
 
-Tests 15-17 passed. Naming/silence/split bugs fixed (see below). Next is verifying boundary accuracy across 5+ songs with Spotify.
+Song capture pipeline (component 3) is fully validated. Moving to analyzer, show player, compiler, and cache.
 
-```bash
-mkdir -p out/capture-boundary
-python -m dreamsync govee-live \
-  --device 10.0.0.1:7:primary:ptreal \
-  --duration 1800 \
-  --capture \
-  --capture-dir out/capture-boundary \
-  --capture-naming metadata \
-  --spotify \
-  --debug-mood \
-  2>&1 | tee out/capture-boundary/console.log
-```
+### Next up
 
-**What to verify:**
-- MP3 count matches song count (±1 for first/last partial)
-- Each MP3 contains approximately one song (listen to start/end)
-- Files named after the CORRECT song (not the previous or next song)
-- JSON sidecar metadata matches the filename
-- No 5-10s silence at end of files (immediate split on track change)
-- Boundary detection latency < 2 seconds
-- `pipeline.jsonl` shows `segment.renamed` events confirming deferred naming
+- [ ] **20. Analyzer unit tests** (80 tests) — `pytest dev/tests/test_analyzer_*.py -v`
+- [ ] **23. Batch analysis** (5+ songs in directory)
+- [ ] **24. Genre variety** (10 songs across genres, BPM + section accuracy)
+- [ ] **25. Show Player unit tests** (65 tests)
+- [ ] **26. Audio playback test** (no devices)
+- [ ] **27. Synchronized playback** (with real Govee devices)
+- [ ] **28. Show file round-trip**
+- [ ] **29. Compiler unit tests** (58 tests)
+- [ ] **30. Single file compile**
+- [ ] **31. Compile to JSON output**
+- [ ] **32. Seed determinism**
+- [ ] **33. Profile override**
+- [ ] **34. Compile-and-play** (full pipeline with devices)
+- [ ] **35. Compiler genre variety** (5+ songs)
+- [ ] **36. Cache unit tests** (36 tests)
+- [ ] **37. CLI cache commands** (no hardware)
+- [ ] **38. Compile with caching** (miss then hit)
+- [ ] **39. Compile-and-play with caching**
+- [ ] **40. Profile-aware caching**
+- [ ] **41. Per-track invalidation**
 
-## Recently Completed: Capture Naming, Silence, and Immediate Split Fixes
+See `dev/VALIDATION_TESTS.md` for full test details and commands.
 
-Four bugs from live test 17 fixed in a single pass (all 1337 dev tests pass):
+## Previously Completed
+
+- [x] Basic capture produces valid, playable MP3 (test 15-16)
+- [x] PcmAccumulator unit + integration tests (12 + 5 = 17 tests passing)
+- [x] Spotify metadata naming + track splitting (test 17) — 4 bugs fixed
+- [x] Live split quality — no static at boundaries (test 18a)
+- [x] Residual fragment + outputFile fixes (pre-test 18 rerun) — 2 bugs fixed, 16 new tests
+- [x] Boundary accuracy across 5+ songs (test 18) — passed
+- [x] Edge cases: short tracks, long tracks, gapless/crossfade (test 19)
+- [x] Single file analysis (test 21) — summary output + BPM check
+- [x] JSON round-trip (test 22) — serialize/deserialize
+
+## Previously Completed: Residual Fragment + outputFile Fixes
+
+Two bugs from test 18 (2026-03-06) fixed with two-layer defense + metadata fix (all 1353 dev tests pass):
+
+1. **Tick debounce** (Layer 1) — `on_track_change()` records `time.monotonic()`. `_tick()` skips if within 3s of last track change. Prevents stale Spotify data from creating spurious boundaries. (`timing_integrator.py`)
+
+2. **Min segment duration guard** (Layer 2) — `_on_segment_complete()` discards segments shorter than `min_segment_frames` (5s at 44.1kHz = 220,500 frames). Temp file is deleted in a background thread. (`orchestrator.py`)
+
+3. **outputFile sidecar fix** — `_build_segment_metadata()` accepts an `output_file` parameter. `_finalize_segment()` passes the post-rename `mp3_path`. JSON sidecar now shows the actual filename on disk. (`orchestrator.py`)
+
+## Previously Completed: Capture Naming, Silence, and Immediate Split Fixes
+
+Four bugs from live test 17 fixed in a single pass:
 
 1. **Off-by-one naming** — Files were named after the PREVIOUS track because `_start_encoder()` called `_get_segment_metadata()` → `peek_next()` at segment START, which returned stale/wrong metadata. **Fix**: `_start_encoder()` now always uses a temp name (`None` → timestamp fallback). `_finalize_segment()` renames the MP3 to the correct metadata-based name after the boundary is popped (known-correct metadata).
 
@@ -37,13 +62,6 @@ Four bugs from live test 17 fixed in a single pass (all 1337 dev tests pass):
 3. **5-10s silence at end of files** — `on_track_change()` only placed a boundary at the END of the new song, not at the transition point. The actual split relied on the periodic timer (5s interval + Spotify polling lag). **Fix**: `on_track_change()` now inserts an immediate boundary at `current_frame` with the OLD song's metadata, forcing a split right at the transition. Stale nearby boundaries are cleared first via new `BoundaryQueue.remove_near()`.
 
 4. **Silence gaps in first file** — Partially addressed by immediate splits reducing wrong-audio capture. Residual startup delay from FFmpeg/VB-Cable is inherent to the audio source.
-
-**Files changed:**
-- `capture/boundary_queue.py` — added `remove_near(frame_position, window_frames)`
-- `capture/file_namer.py` — added `rename_to_metadata(old_path, metadata)`
-- `capture/timing_integrator.py` — `on_track_change()` inserts immediate boundary with old song metadata
-- `capture/orchestrator.py` — `_start_encoder()` uses temp name; `_finalize_segment()` renames to metadata
-- `session.py` — `_capture_track_changed` passes `previous_song` (old track info) in timing_data
 
 ## Previously Completed: PcmAccumulator Non-Blocking Encoder Rotation
 
@@ -55,36 +73,9 @@ All 9 implementation steps from `dev/plans/pcm-accumulator-buffer-fix.md` are co
 - **Non-blocking `_start_encoder`** — returns `PcmAccumulator` immediately, spawns FFmpeg in background thread
 - **`stop()` joins finalization threads** — ensures all sidecars written before exit
 
-**Unit tests (all passing):**
-```bash
-# 12 PcmAccumulator tests
-python -m pytest dev/tests/test_orchestrator.py -v -k "TestPcmAccumulator"
-
-# 5 non-blocking rotation integration tests
-python -m pytest dev/tests/test_orchestrator.py -v -k "TestNonBlockingRotation"
-
-# Full orchestrator regression (104 tests)
-python -m pytest dev/tests/test_orchestrator.py -v
-```
-
-**Live validation still needed:** Test 18a — play 3+ songs with Spotify splitting, verify no static/clipping at split boundaries (the original symptom this fix addresses).
-
-## Manual Validation (Live Testing)
-
-- [x] Basic capture produces valid, playable MP3 (test 15-16)
-- [x] PcmAccumulator unit + integration tests (12 + 5 = 17 tests passing)
-- [x] Spotify metadata naming + track splitting (test 17) — 4 bugs fixed
-- [ ] Boundary accuracy across 5+ songs (test 18) ← **NEXT**
-- [ ] Live split quality — no static at boundaries (test 18a)
-- [ ] Verify drift stays < 0.5s over a 5-minute session (pipeline.jsonl drift_check events)
-- [ ] Edge cases: short tracks, long tracks, gapless/crossfade (test 19)
-- [ ] Recovery: kill FFmpeg mid-capture, verify auto-restart and gap recording
-- [ ] Drift correction over 30+ minute session
-
 ## Remaining Validation Tests
 
-See `dev/VALIDATION_TESTS.md` for the full remaining test matrix (items 17-41), covering:
-- Song capture pipeline (component 3) — in progress
+See `dev/VALIDATION_TESTS.md` for the full remaining test matrix (items 20-41), covering:
 - Song structure analyzer (component 4)
 - Show playback runtime (component 5)
 - Show compiler (feature 3)

@@ -43,6 +43,7 @@ def _make_orch(tmp_path, **cfg_overrides):
     defaults = {
         "output_dir": str(tmp_path / "out"),
         "log_dir": str(tmp_path / "logs"),
+        "min_segment_frames": 0,
     }
     defaults.update(cfg_overrides)
     cfg = OrchestratorConfig(**defaults)
@@ -53,6 +54,7 @@ def _make_orch_with_cb(tmp_path, on_segment_saved=None, **cfg_overrides):
     defaults = {
         "output_dir": str(tmp_path / "out"),
         "log_dir": str(tmp_path / "logs"),
+        "min_segment_frames": 0,
     }
     defaults.update(cfg_overrides)
     cfg = OrchestratorConfig(**defaults)

@@ -222,10 +222,10 @@ python -m dreamsync devices
 
 ```bash
 python -m pytest tests/ -v        # Core subsystems (569 tests)
-python -m pytest dev/tests/ -v    # Audio capture pipeline (315 tests)
+python -m pytest dev/tests/ -v    # Audio capture pipeline (1353 tests)
 ```
 
-884 tests total covering all subsystems:
+1353 tests total covering all subsystems:
 
 ### Core tests (`tests/`)
 
@@ -264,6 +264,9 @@ python -m pytest dev/tests/ -v    # Audio capture pipeline (315 tests)
 | `test_orchestrator.py` | 87 | CaptureOrchestrator: config, lifecycle, threads, DynamicSplitProcessor, timing, drift, recovery, logging |
 | `test_cli_capture.py` | 13 | CLI integration: --mp3 args, govee-live --capture, session orchestrator config, Spotify wiring |
 | `test_capture_integration.py` | 30 | E2E: split accuracy, metadata sidecars, dynamic boundaries, drift, failure injection, logging, file naming |
+| `test_timing_debounce.py` | 5 | Tick debounce after track change: suppression, expiry, logging |
+| `test_min_segment_guard.py` | 6 | Min segment duration guard: discard short segments, delete temp files |
+| `test_outputfile_metadata.py` | 5 | outputFile sidecar shows renamed path, fallback to encoder path |
 
 ## Architecture
 

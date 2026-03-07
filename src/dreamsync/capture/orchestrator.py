@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -55,6 +56,9 @@ class OrchestratorConfig:
     drift_warning_threshold: float = 0.1
     drift_correction_threshold: float = 0.5
     drift_critical_threshold: float = 2.0
+
+    # --- Segment filtering ---
+    min_segment_frames: int = 220_500  # 5s at 44.1kHz
 
     # --- Recovery (-> RecoveryManager) ---
     capture_restart_delay: float = 0.2
@@ -558,6 +562,22 @@ class CaptureOrchestrator:
         popped_meta: dict | None = None,
     ) -> None:
         """Handle segment completion — capture metadata, dispatch finalization to background."""
+        duration_frames = end_frame - start_frame
+
+        # Discard residual fragments below minimum duration
+        if duration_frames < self._config.min_segment_frames:
+            self._logger.log(
+                "INFO", "split", "segment_discarded.too_short",
+                data={
+                    "segment_index": segment_index,
+                    "duration_frames": duration_frames,
+                    "min_frames": self._config.min_segment_frames,
+                },
+                frame_position=end_frame,
+            )
+            self._discard_segment(segment_index)
+            return
+
         self._segments_completed += 1
 
         # Use popped boundary metadata if available, fall back to peek_next()
@@ -649,7 +669,9 @@ class CaptureOrchestrator:
 
         # Build segment metadata (using pre-captured boundary_meta)
         seg_meta = self._build_segment_metadata(
-            segment_index, start_frame, end_frame, boundary_meta=boundary_meta,
+            segment_index, start_frame, end_frame,
+            boundary_meta=boundary_meta,
+            output_file=mp3_path,
         )
 
         # Write JSON sidecar
@@ -684,6 +706,37 @@ class CaptureOrchestrator:
                     "WARNING", "output", "callback.error",
                     data={"error": str(exc), "segment_index": segment_index},
                 )
+
+    def _discard_segment(self, segment_index: int) -> None:
+        """Discard a too-short segment: wait for encoder, delete temp file."""
+        encoder = self._encoders.pop(segment_index, None)
+        if encoder is None:
+            return
+
+        def _cleanup() -> None:
+            try:
+                encoder.wait(timeout=30.0)
+                path = encoder.output_path
+                if path and os.path.exists(path):
+                    os.unlink(path)
+                    self._logger.log(
+                        "DEBUG", "output", "segment_discarded.file_deleted",
+                        data={"path": path, "segment_index": segment_index},
+                    )
+            except Exception as exc:
+                self._logger.log(
+                    "WARNING", "output", "segment_discard.error",
+                    data={"error": str(exc), "segment_index": segment_index},
+                )
+
+        t = threading.Thread(
+            target=_cleanup,
+            name=f"discard-segment-{segment_index}",
+            daemon=True,
+        )
+        t.start()
+        with self._finalize_lock:
+            self._finalize_threads.append(t)
 
     # ------------------------------------------------------------------
     # Thread loops
@@ -854,6 +907,7 @@ class CaptureOrchestrator:
     def _build_segment_metadata(
         self, segment_index: int, start_frame: int, end_frame: int,
         boundary_meta: dict | None = None,
+        output_file: str | None = None,
     ) -> SegmentMetadata:
         """Construct metadata for a completed segment."""
         if boundary_meta is None:
@@ -868,10 +922,10 @@ class CaptureOrchestrator:
             for g in self._recovery.gaps
         ]
 
-        output_file = None
-        enc = self._encoders.get(segment_index)
-        if enc is not None:
-            output_file = enc.output_path
+        if output_file is None:
+            enc = self._encoders.get(segment_index)
+            if enc is not None:
+                output_file = enc.output_path
 
         return SegmentMetadata(
             start_frame=start_frame,

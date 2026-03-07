@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Callable
 
 from dreamsync.capture.boundary_queue import BoundaryEntry, BoundaryQueue
@@ -48,6 +49,8 @@ class TimingIntegrator:
         self._running = False
         self._segment_counter = 0
         self._logger = logger
+        self._track_change_time: float = 0.0
+        self._track_change_debounce: float = 3.0
 
     # ------------------------------------------------------------------
     # One-shot update
@@ -109,6 +112,7 @@ class TimingIntegrator:
         is inserted at the current frame (with the old song's metadata)
         so the pipeline splits right at the transition.
         """
+        self._track_change_time = time.monotonic()
         logger.info("Track change detected — immediate boundary refresh")
 
         previous_song = timing_data.get("previous_song")
@@ -163,6 +167,11 @@ class TimingIntegrator:
 
     def _tick(self) -> None:
         if not self._running or self._fetch_fn is None:
+            return
+        if time.monotonic() - self._track_change_time < self._track_change_debounce:
+            if self._logger is not None:
+                self._logger.timing_event("tick.debounced")
+            self._schedule_next()
             return
         try:
             data = self._fetch_fn()

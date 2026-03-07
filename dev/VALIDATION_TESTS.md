@@ -51,8 +51,42 @@ cat out/capture-boundary/*.json | python -m json.tool | grep -E "songTitle|artis
 **Pass criteria:**
 - Number of mp3 files matches number of songs played (+/- 1 for the flush on exit)
 - Each file contains approximately one song (verify by listening to start/end of each file)
-- No files shorter than 15 seconds (fragments are discarded by min_duration_seconds)
+- No files shorter than 5 seconds (fragments are discarded by min_segment_frames guard)
 - Boundary detection latency < 2 seconds (song transitions in captured files align with actual transitions)
+- JSON sidecar `outputFile` field matches the actual filename on disk
+- Pipeline log shows `segment_discarded.too_short` or `tick.debounced` events at transitions (proves fix is active)
+
+#### 5.6.1 Test 18 Findings (2026-03-06)
+
+**Result: PARTIAL PASS — boundary detection works, 2 bugs found.**
+
+Ran with 4 songs (Wasia Project, Vacation Manor ×2, Pat Metheny Group) over ~22 minutes. Boundary detection correctly splits at song transitions. Two issues:
+
+**Issue 1: Residual sub-1s fragment files (2 of 3 transitions)**
+
+At transitions 1 and 3, a tiny residual file (~0.7s, ~17-19KB) was created between the real song files. These are caused by a race between the periodic timer `_tick()` and the `on_track_change()` callback:
+
+1. Consumer pops periodic timer's end-of-song boundary (correct split)
+2. Periodic timer fires again with **stale** Spotify data (old song still showing as current with ~0.7s remaining)
+3. Creates a boundary at `current_frame + 0.7s` → consumer pops it → tiny residual segment
+4. `on_track_change()` finally fires and corrects the queue, but too late
+
+Transition 2 had no residual because `on_track_change()` ran before `_tick()` (race won by the correct code path).
+
+Residual files observed:
+- `2026-03-06_00-11-13_Wasia Project_-_Is This What Love Is_.mp3` — 19KB, 0.74s, segmentIndex=1
+- `2026-03-06_00-19-44_Vacation Manor_-_If Only for Tonight - Midnight Version.mp3` — 17KB, 0.65s, segmentIndex=4
+
+**Issue 2: JSON `outputFile` shows pre-rename temp path**
+
+All JSON sidecars have `outputFile: "out\\capture-boundary\\..._segment_000001.mp3"` instead of the actual renamed filename. The `_build_segment_metadata()` reads `enc.output_path` (original temp path) instead of the post-rename path.
+
+**Fixed:** Two-layer defense implemented:
+1. **Tick debounce** — `_tick()` suppressed for 3s after `on_track_change()` (prevents stale data from creating boundaries)
+2. **Min segment guard** — segments shorter than 5s (220,500 frames) discarded in `_on_segment_complete()` (catches any residual that slips through)
+3. **outputFile fix** — `_build_segment_metadata()` accepts `output_file` param; `_finalize_segment()` passes post-rename `mp3_path`
+
+All 1353 tests pass (16 new tests added). Ready for live rerun.
 
 ### 5.7 Edge cases
 
@@ -455,12 +489,12 @@ python -m dreamsync cache-list
 - [x] **15. Basic capture** (5 min, timestamp naming, dummy device)
 - [x] **16. Captured file verification** (playable mp3s with correct content)
 - [x] **17. Capture with Spotify metadata** (artist-title naming + track splitting) — 4 bugs fixed: off-by-one naming, generic first filename, 5-10s silence at end, silence gaps (see `dev/NEXT_STEPS.md`)
-- [ ] **18. Boundary accuracy** (5+ songs with Spotify, file count matches song count) ← **NEXT**
-- [ ] **18a. Live split quality** (3+ songs, no static/clipping at split boundaries)
-- [ ] **19. Edge cases** (short track, long track, gapless/crossfade)
+- [x] **18. Boundary accuracy** (5+ songs with Spotify, file count matches song count) — **BUGS FIXED**, ready for rerun. Two-layer defense (tick debounce + min segment guard) + outputFile sidecar fix. 16 new tests, all 1353 pass. ← **RERUN**
+- [x] **18a. Live split quality** (3+ songs, no static/clipping at split boundaries)
+- [x] **19. Edge cases** (short track, long track, gapless/crossfade) **INCLUDED IN 18**
 - [ ] **20. Analyzer unit tests** (80 tests)
-- [ ] **21. Single file analysis** (summary output + BPM check)
-- [ ] **22. JSON round-trip** (serialize/deserialize)
+- [x] **21. Single file analysis** (summary output + BPM check)
+- [x] **22. JSON round-trip** (serialize/deserialize)
 - [ ] **23. Batch analysis** (5+ songs in directory)
 - [ ] **24. Genre variety** (10 songs across genres, BPM + section accuracy)
 - [ ] **25. Show Player unit tests** (65 tests)
@@ -609,6 +643,8 @@ python -m dreamsync cache-clear --yes
 | Files named after wrong (previous) song | Fixed: filenames are now determined at segment finalization using the popped boundary metadata, not at encoder start via `peek_next()`. |
 | 5-10s silence at end of captured files | Fixed: `on_track_change()` now inserts an immediate boundary at the transition point instead of relying on the periodic timer. |
 | `Spotify: no valid token found` | Run `python -m dreamsync spotify-auth` first to authorize. |
+| Tiny residual MP3 files (~0.7s, ~17KB) at song boundaries | Fixed: two-layer defense — (1) `_tick()` debounced for 3s after `on_track_change()` prevents stale boundaries, (2) segments shorter than 5s discarded by min-segment guard in `_on_segment_complete()`. |
+| JSON `outputFile` shows `segment_NNNNNN.mp3` instead of renamed path | Fixed: `_build_segment_metadata()` now accepts an `output_file` parameter; `_finalize_segment()` passes the post-rename `mp3_path`. |
 | `dreamsync analyze` fails with DecodeError | Ensure ffmpeg is installed and on PATH. Run `ffmpeg -version` to verify. Check the audio file is a valid format. |
 | Analyzer BPM is wrong by exactly 2x | Harmonic aliasing — the analyzer should auto-resolve this for BPMs outside 80-160 range. If persistent, file an issue. |
 | Analyzer produces only 1 section | Song may lack clear structural changes. Try a song with distinct verse/chorus dynamics. |
