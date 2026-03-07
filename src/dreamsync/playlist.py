@@ -96,6 +96,17 @@ class PlaylistManager:
         return cls(tracks, **kwargs)
 
     @classmethod
+    def from_tracks(cls, tracks: list[Path], **kwargs) -> PlaylistManager:
+        """Create a playlist from an explicit list of file paths.
+
+        Validates all paths exist. Raises FileNotFoundError for missing files.
+        """
+        missing = [t for t in tracks if not Path(t).is_file()]
+        if missing:
+            raise FileNotFoundError(f"Audio files not found: {missing}")
+        return cls([Path(t) for t in tracks], **kwargs)
+
+    @classmethod
     def from_path(cls, path: Path | str, **kwargs) -> PlaylistManager:
         """Auto-detect source type and create playlist."""
         path = Path(path)

@@ -256,6 +256,27 @@ def _sanitize_track_id(track_id: str) -> str:
     return sanitized
 
 
+def sidecar_track_id(song_title: str, artist: str) -> str:
+    """Cache-stable ID from sidecar metadata. Same song -> same ID across captures."""
+    title = song_title.strip().lower()
+    art = artist.strip().lower()
+    if not title and not art:
+        raise ValueError("Both song_title and artist are empty/whitespace")
+    key = f"{art}:{title}"
+    return f"sidecar_{hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]}"
+
+
+def track_id_for_capture(capture_track) -> str:
+    """Compute a cache track ID for a CaptureTrack.
+
+    Uses sidecar metadata (title+artist) when available for cross-capture
+    cache stability. Falls back to path-based ID otherwise.
+    """
+    if capture_track.song_title and capture_track.artist:
+        return sidecar_track_id(capture_track.song_title, capture_track.artist)
+    return path_based_track_id(capture_track.mp3_path)
+
+
 def path_based_track_id(file_path: Path | str) -> str:
     """Generate a cache-safe track ID from a file path.
 

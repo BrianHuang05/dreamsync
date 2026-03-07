@@ -241,6 +241,66 @@ grep "rotating_buffer.evicted" out/buffer-test/logs/*.jsonl
 
 ---
 
+## Phase 5b — Directory Pipeline (Capture → Analyze → Compile → Play)
+
+These tests validate the directory-based pipeline that reads MP3s from a capture directory, analyzes each song, compiles lighting shows (cached), and plays them back. **No hardware or audio files needed** — all tests use mocks.
+
+### 5b.1 Capture scanner unit tests (10 tests)
+
+```bash
+python -m pytest dev/tests/test_capture_scanner.py -v
+```
+
+**Pass:** All 10 tests pass (empty dir, single MP3 with/without sidecar, sort by index/filename, corrupt sidecar, non-MP3 ignored, directory not found, field extraction).
+
+### 5b.2 Sidecar cache key tests (5 tests)
+
+```bash
+python -m pytest dev/tests/test_cache_sidecar.py -v
+```
+
+**Pass:** All 5 tests pass (deterministic, case insensitive, whitespace stripping, with/without metadata fallback).
+
+### 5b.3 Directory pipeline unit tests (12 tests)
+
+```bash
+python -m pytest dev/tests/test_dir_pipeline.py -v -k "TestDirectoryPipeline"
+```
+
+**Pass:** All 12 tests pass (empty dir, single/multiple tracks, sidecar metadata, cache hit/miss, analysis failure continues, progress callback, playable tracks, analysis.json write).
+
+### 5b.4 Pipeline integration tests (5 tests)
+
+```bash
+python -m pytest dev/tests/test_dir_pipeline.py -v -k "TestPipelineIntegration"
+```
+
+**Pass:** All 5 tests pass (analysis file write, cache stores, playable order, sidecar cache reuse, mixed success/failure).
+
+### 5b.5 Pipeline CLI (manual verification)
+
+```bash
+# Verify CLI parses correctly
+python -m dreamsync pipeline --help
+
+# Analyze-only mode (no devices needed)
+python -m dreamsync pipeline out/capture-test/ --mode analyze --debug
+
+# Compile-only mode (no devices needed)
+python -m dreamsync pipeline out/capture-test/ --mode compile --debug
+
+# Full pipeline (requires devices)
+python -m dreamsync pipeline out/capture-test/ --config devices.yaml --debug
+```
+
+**Pass criteria:**
+- `--help` shows all arguments
+- `--mode analyze` scans and writes .analysis.json files
+- `--mode compile` scans, analyzes, and caches compiled shows
+- `--config` with no `--mode` (default: play) runs full playback
+
+---
+
 ## Phase 6 — Song Structure Analyzer (Component 4)
 
 These tests validate the offline analyzer pipeline. **Requires ffmpeg installed and on PATH.** No Govee hardware needed.
@@ -550,6 +610,7 @@ python -m dreamsync cache-list
 - [x] **18. Boundary accuracy** (5+ songs with Spotify, file count matches song count) — **BUGS FIXED**, ready for rerun. Two-layer defense (tick debounce + min segment guard) + outputFile sidecar fix. 16 new tests, all 1353 pass. ← **RERUN**
 - [x] **18a. Live split quality** (3+ songs, no static/clipping at split boundaries)
 - [x] **19. Edge cases** (short track, long track, gapless/crossfade) **INCLUDED IN 18**
+- [x] **19b. Directory pipeline** (scanner 10 tests + sidecar cache 5 tests + pipeline 12 tests + integration 5 tests = 32 tests, all pass)
 - [ ] **20. Analyzer unit tests** (80 tests)
 - [x] **21. Single file analysis** (summary output + BPM check)
 - [x] **22. JSON round-trip** (serialize/deserialize)
@@ -595,6 +656,9 @@ ffprobe -v error -show_format out/capture-test/*.mp3 2>&1 | grep -E "filename|du
 # 17. Capture with Spotify metadata (play music on Spotify)
 mkdir -p out/capture-meta
 python -m dreamsync govee-live --device 10.0.0.1:7:primary:ptreal --duration 600 --capture --capture-dir out/capture-meta --capture-naming metadata --spotify --debug-mood 2>&1 | tee out/capture-meta/console.log
+
+# 19b. Directory pipeline (32 tests)
+python -m pytest dev/tests/test_capture_scanner.py dev/tests/test_cache_sidecar.py dev/tests/test_dir_pipeline.py -v
 
 # 18. Boundary accuracy (5+ songs on Spotify)
 mkdir -p out/capture-boundary

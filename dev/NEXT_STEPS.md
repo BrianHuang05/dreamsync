@@ -5,8 +5,8 @@
 ### ~~1. Capture rotating buffer~~ ✅
 Cap the number of MP3s kept on disk during long capture sessions to prevent filling the drive. Oldest files are deleted once the buffer limit is reached. **Done:** `RotatingFileBuffer` class, `--capture-buffer N` CLI arg, startup scan, 17 new tests (1370 total).
 
-### 2. Directory-based analysis/compile/play pipeline
-The analysis → compile → play pipeline should read MP3 files from a capture directory on disk, not hold audio data in-process memory. Simpler, more stable (crash in analyzer doesn't lose captured audio, can re-run without re-capturing).
+### ~~2. Directory-based analysis/compile/play pipeline~~ ✅
+The analysis → compile → play pipeline reads MP3 files from a capture directory on disk. **Done:** `CaptureDirectoryScanner`, `CaptureTrack`, `DirectoryPipeline`, `sidecar_track_id()`, `track_id_for_capture()`, `PlaylistManager.from_tracks()`, `pipeline` CLI subcommand (`--mode analyze|compile|play`), 32 new tests (1402 total).
 
 ### 3. Validation tests (scoped down)
 
@@ -32,6 +32,7 @@ See `dev/VALIDATION_TESTS.md` for full test details and commands.
 
 ## Previously Completed
 
+- [x] Directory-based pipeline (`pipeline` CLI, `CaptureDirectoryScanner`, `DirectoryPipeline`, `sidecar_track_id`, 32 tests)
 - [x] Capture rotating buffer (`--capture-buffer N`, `RotatingFileBuffer`, startup scan, 17 tests)
 - [x] Basic capture produces valid, playable MP3 (test 15-16)
 - [x] PcmAccumulator unit + integration tests (12 + 5 = 17 tests passing)

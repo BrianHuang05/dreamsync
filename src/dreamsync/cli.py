@@ -664,6 +664,39 @@ def build_parser() -> argparse.ArgumentParser:
     cache_info_cmd.add_argument("--cache-dir", type=str, default="~/.dreamsync/cache",
                                 help="Cache directory (default: ~/.dreamsync/cache)")
 
+    # -- Pipeline subcommand ---------------------------------------------------
+    pipeline_cmd = sub.add_parser(
+        "pipeline",
+        help="Run the full pipeline on a capture directory: scan -> analyze -> compile -> play.",
+    )
+    pipeline_cmd.add_argument("capture_dir", type=Path, help="Path to capture output directory.")
+    pipeline_cmd.add_argument("--config", type=Path, default=None,
+                              help="Path to YAML device config file (required for play mode).")
+    pipeline_cmd.add_argument("--profile", type=str, default=None,
+                              help="Profile name or path.")
+    pipeline_cmd.add_argument("--cache-dir", type=str, default="~/.dreamsync/cache",
+                              help="Show cache directory (default: ~/.dreamsync/cache).")
+    pipeline_cmd.add_argument("--sample-rate", type=int, default=44100,
+                              help="Audio sample rate.")
+    pipeline_cmd.add_argument("--audio-device", type=int, default=None, dest="audio_device",
+                              help="Output audio device ID (None = system default).")
+    pipeline_cmd.add_argument("--mode", choices=["analyze", "compile", "play"], default="play",
+                              help="Pipeline mode: analyze, compile, or play (default: play).")
+    pipeline_cmd.add_argument("--shuffle", action="store_true", default=False,
+                              help="Randomize track order.")
+    pipeline_cmd.add_argument("--repeat", action="store_true", default=False,
+                              help="Loop playlist after last track.")
+    pipeline_cmd.add_argument("--debug", action="store_true",
+                              help="Verbose output.")
+    pipeline_cmd.add_argument("--fps", type=int, default=30,
+                              help="Device frame rate (default: 30).")
+    pipeline_cmd.add_argument("--brightness", type=float, default=1.0,
+                              help="Global brightness 0-1 (default: 1.0).")
+    pipeline_cmd.add_argument("--mirror", dest="mirror", action="store_true", default=True,
+                              help="Scroll from center outward (default).")
+    pipeline_cmd.add_argument("--no-mirror", dest="mirror", action="store_false",
+                              help="Scroll left-to-right.")
+
     return parser
 
 
@@ -1789,6 +1822,115 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  Tracks:      {s.track_count}")
         print(f"  Disk usage:  {_format_bytes(s.total_bytes)}")
 
+        return 0
+
+    if args.command == "pipeline":
+        import signal
+        import threading
+
+        from .cache import ShowCache
+        from .dir_pipeline import DirectoryPipeline
+
+        capture_dir = args.capture_dir
+        if not capture_dir.is_dir():
+            print(f"Error: capture directory not found: {capture_dir}")
+            return 1
+
+        if args.mode == "play" and not args.config:
+            print("Error: --config is required for play mode.")
+            return 1
+
+        profile = None
+        if getattr(args, "profile", None):
+            profile = _resolve_profile_from_args(args)
+            if profile == "error":
+                return 1
+
+        cache = ShowCache(args.cache_dir)
+
+        def on_progress(step, index, total, track):
+            label = track.song_title or track.mp3_path.name
+            print(f"  [{index + 1}/{total}] {step}: {label}")
+
+        pipeline = DirectoryPipeline(
+            capture_dir,
+            cache=cache,
+            profile=profile,
+            sample_rate=args.sample_rate,
+            on_progress=on_progress if args.debug else None,
+        )
+
+        print(f"Scanning {capture_dir}...")
+        result = pipeline.prepare()
+
+        print(f"\n{len(result.tracks)} tracks scanned, "
+              f"{result.analyzed} analyzed, "
+              f"{result.compiled} compiled "
+              f"({result.cache_hits} cache hits), "
+              f"{result.errors} errors")
+
+        for tr in result.tracks:
+            if tr.error:
+                label = tr.track.song_title or tr.track.mp3_path.name
+                print(f"  WARNING: {label}: {tr.error}")
+
+        if args.mode in ("analyze", "compile"):
+            return 0
+
+        # -- Play mode --
+        from .local_session import run_local_session
+        from .output.auto_detect import build_multi_adapter, detect_all_devices, load_device_config
+        from .playlist import PlaylistManager
+
+        if not args.config.exists():
+            print(f"Error: config file not found: {args.config}")
+            return 1
+
+        playable = pipeline.playable_tracks()
+        if not playable:
+            print("No playable tracks. Exiting.")
+            return 1
+
+        brightness = max(0.0, min(1.0, float(args.brightness)))
+        try:
+            configs = load_device_config(args.config)
+            detected = detect_all_devices(configs)
+            multi_adapter = build_multi_adapter(
+                detected,
+                fps=args.fps,
+                brightness=brightness,
+                mirror=args.mirror,
+            )
+        except Exception as exc:
+            print(f"Device setup failed: {exc}")
+            return 1
+
+        playlist = PlaylistManager(
+            playable,
+            shuffle=args.shuffle,
+            repeat=args.repeat,
+        )
+
+        stop_event = threading.Event()
+        signal.signal(signal.SIGINT, lambda *_: stop_event.set())
+
+        if len(playlist) > 1:
+            _start_keyboard_listener(None, stop_event, debug=args.debug)
+
+        print(f"\nPlaying {len(playable)} tracks...")
+        summary = run_local_session(
+            multi_adapter,
+            playable[0],
+            cache_dir=args.cache_dir,
+            profile=profile,
+            sample_rate=args.sample_rate,
+            audio_device=args.audio_device,
+            stop_event=stop_event,
+            debug=args.debug,
+            playlist=playlist if len(playlist) > 1 else None,
+        )
+
+        print(json.dumps(summary, separators=(",", ":")))
         return 0
 
     parser.print_help()
