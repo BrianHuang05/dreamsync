@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dreamsync.analyzer.features import FeatureRow
 from dreamsync.analyzer.models import SongStructure
 from dreamsync.compiler.arc import NarrativeArcPlanner
 from dreamsync.compiler.assemble import TimelineAssembler
@@ -23,6 +24,7 @@ def compile_show(
     bridge_reduction: float = 0.80,
     default_fade_beats: int = 4,
     max_fade_beats: int = 16,
+    features: list[FeatureRow] | None = None,
 ) -> ShowTimeline:
     """Compile a SongStructure into a ShowTimeline.
 
@@ -54,7 +56,7 @@ def compile_show(
 
     # 4. Assemble
     assembler = TimelineAssembler()
-    return assembler.assemble(structure, arc_weights, treatments, transition_plans)
+    return assembler.assemble(structure, arc_weights, treatments, transition_plans, features=features)
 
 
 def format_summary(structure: SongStructure, timeline: ShowTimeline) -> str:

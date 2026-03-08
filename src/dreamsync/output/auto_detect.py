@@ -24,7 +24,7 @@ from dreamsync.output.govee_lan import (
     TransportMode,
     build_ptreal_power_packet,
 )
-from dreamsync.output.roles import DeviceRole
+from dreamsync.output.roles import DeviceRole, default_device_config, infer_device_type
 from dreamsync.render import RenderMode, SegmentRenderer
 
 _logger = logging.getLogger(__name__)
@@ -64,6 +64,7 @@ class DeviceConfig:
     transport: str | None = None  # "razer", "ptreal", "colorwc"
     protocol: str | None = None   # "segment", "bulb" (BLE only)
     role: str | None = None       # "primary", "accent"
+    brightness_scale: float | None = None  # 0.0–1.0, None = use default
     max_fps: float = 5.0
 
 
@@ -346,6 +347,7 @@ def load_device_config(path: Path) -> list[DeviceConfig]:
             raise ValueError(f"Device entry {i} must be a mapping in {path}")
         if "address" not in entry:
             raise ValueError(f"Device entry {i} missing required 'address' field in {path}")
+        bs_raw = entry.get("brightness_scale")
         configs.append(DeviceConfig(
             name=entry.get("name", entry["address"]),
             address=entry["address"],
@@ -354,6 +356,7 @@ def load_device_config(path: Path) -> list[DeviceConfig]:
             transport=entry.get("transport"),
             protocol=entry.get("protocol"),
             role=entry.get("role"),
+            brightness_scale=float(bs_raw) if bs_raw is not None else None,
             max_fps=float(entry.get("max_fps", 5.0)),
         ))
 
@@ -588,7 +591,7 @@ def build_multi_adapter(
     BLE / follower devices get a GoveeBleAdapter.
     Unreachable devices are skipped with a warning.
     """
-    device_triples: list[tuple[GoveeLanAdapter, SegmentRenderer, DeviceRole]] = []
+    device_triples: list[tuple[GoveeLanAdapter, SegmentRenderer, DeviceRole, float]] = []
     ble_followers: list = []
 
     reachable_count = sum(1 for d in detected if d.role != "unreachable")
@@ -601,7 +604,12 @@ def build_multi_adapter(
             continue
 
         cfg = dev.config
-        device_role = DeviceRole(cfg.role) if cfg.role else DeviceRole.PRIMARY
+
+        # Resolve role and brightness_scale: explicit config wins, else defaults
+        device_type = infer_device_type(cfg.segments, cfg.name)
+        default_role, default_bs = default_device_config(device_type)
+        device_role = DeviceRole(cfg.role) if cfg.role else default_role
+        device_bs = cfg.brightness_scale if cfg.brightness_scale is not None else default_bs
 
         if dev.connection_type == "lan":
             transport = dev.transport or TransportMode.PTREAL
@@ -624,8 +632,9 @@ def build_multi_adapter(
                 segments=cfg.segments,
                 mode=render_mode,
                 mirror=mirror,
+                device_type=device_type.value,
             )
-            device_triples.append((adapter, renderer, device_role))
+            device_triples.append((adapter, renderer, device_role, device_bs))
 
         elif dev.connection_type == "ble":
             from dreamsync.output.govee_ble import (

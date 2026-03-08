@@ -30,6 +30,25 @@ class TreatmentSelector:
         self._last_effect: dict[str, str] = {}
         self._last_palette: dict[str, str] = {}
         self._prev_mood: str | None = None
+        self._song_primary_palette: str | None = None
+        self._song_accent_palette: str | None = None
+
+    def select_song_palettes(self, dominant_mood: str, all_moods: list[str]) -> None:
+        """Pick 1-2 palettes for the entire song. Call once before per-section select()."""
+        mood_enum = Mood(dominant_mood)
+        pool = list(self._resolve_palette_pool(mood_enum))
+
+        self._song_primary_palette = self._rng.choice(pool)
+
+        unique_moods = set(all_moods) - {dominant_mood}
+        if unique_moods:
+            accent_mood = self._rng.choice(list(unique_moods))
+            accent_pool = list(self._resolve_palette_pool(Mood(accent_mood)))
+            candidates = [p for p in accent_pool if p != self._song_primary_palette]
+            self._song_accent_palette = self._rng.choice(candidates) if candidates else accent_pool[0]
+        else:
+            candidates = [p for p in pool if p != self._song_primary_palette]
+            self._song_accent_palette = self._rng.choice(candidates) if candidates else self._song_primary_palette
 
     def select(
         self,
@@ -52,12 +71,18 @@ class TreatmentSelector:
             if effect_name == self._last_effect.get(mood) and len(pool) > 1:
                 effect_name = self._rng.choices(names, weights=weights, k=1)[0]
 
-        # 2. Palette selection
-        palette_pool = self._resolve_palette_pool(mood_enum)
-        palette_name = self._rng.choice(palette_pool)
-        # Re-roll once if repeat and pool > 1
-        if palette_name == self._last_palette.get(mood) and len(palette_pool) > 1:
+        # 2. Palette selection — use song palette if set
+        if self._song_primary_palette is not None:
+            if section_label in ("bridge", "breakdown", "outro"):
+                palette_name = self._song_accent_palette or self._song_primary_palette
+            else:
+                palette_name = self._song_primary_palette
+        else:
+            palette_pool = self._resolve_palette_pool(mood_enum)
             palette_name = self._rng.choice(palette_pool)
+            # Re-roll once if repeat and pool > 1
+            if palette_name == self._last_palette.get(mood) and len(palette_pool) > 1:
+                palette_name = self._rng.choice(palette_pool)
 
         # 3. Transition rule check
         if self._prev_mood is not None and self._prev_mood != mood and self._profile is not None:
@@ -100,6 +125,8 @@ class TreatmentSelector:
         self._last_effect.clear()
         self._last_palette.clear()
         self._prev_mood = None
+        self._song_primary_palette = None
+        self._song_accent_palette = None
 
     def _resolve_effect_pool(self, mood_enum: Mood) -> list[tuple[str, float]]:
         """Get effect pool: profile first, then built-in."""

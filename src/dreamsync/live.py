@@ -1562,7 +1562,7 @@ def run_live_to_govee(
                     bpm_estimator.last_bpm, director.energy,
                 )
                 # Swap render mode on all devices
-                for _, renderer, _ in multi_adapter.devices:
+                for _, renderer, *_ in multi_adapter.devices:
                     renderer.mode = preset.render_mode
                 # Swap director palette
                 director.set_colors(preset.color_palette)

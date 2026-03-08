@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dreamsync.analyzer.bpm import BeatGrid, TempoRegion
+from dreamsync.analyzer.phrases import InstrumentEvent, Phrase
 from dreamsync.analyzer.sections import Section
 
 
@@ -20,6 +21,8 @@ class SongStructure:
     tempo_regions: tuple[TempoRegion, ...]  # BPM over time
     sections: tuple[Section, ...]       # structural sections in order
     metadata: dict                      # track_name, artist (if available)
+    phrases: tuple[Phrase, ...] = ()    # sub-section phrases
+    instrument_events: tuple[InstrumentEvent, ...] = ()  # instrument entrance/exit
 
     def to_dict(self) -> dict:
         """Serialise to a JSON-compatible dict."""
@@ -56,6 +59,25 @@ class SongStructure:
                 for s in self.sections
             ],
             "metadata": self.metadata,
+            "phrases": [
+                {
+                    "start_t": round(p.start_t, 4),
+                    "end_t": round(p.end_t, 4),
+                    "parent_section_index": p.parent_section_index,
+                    "phrase_type": p.phrase_type,
+                    "energy_delta": round(p.energy_delta, 4),
+                    "has_kick": p.has_kick,
+                }
+                for p in self.phrases
+            ],
+            "instrument_events": [
+                {
+                    "t": round(e.t, 4),
+                    "event_type": e.event_type,
+                    "confidence": round(e.confidence, 4),
+                }
+                for e in self.instrument_events
+            ],
         }
 
     def to_json(self, path: Path) -> None:
@@ -104,6 +126,25 @@ class SongStructure:
             )
             for s in data["sections"]
         )
+        phrases = tuple(
+            Phrase(
+                start_t=p["start_t"],
+                end_t=p["end_t"],
+                parent_section_index=p["parent_section_index"],
+                phrase_type=p["phrase_type"],
+                energy_delta=p["energy_delta"],
+                has_kick=p["has_kick"],
+            )
+            for p in data.get("phrases", [])
+        )
+        instrument_events = tuple(
+            InstrumentEvent(
+                t=e["t"],
+                event_type=e["event_type"],
+                confidence=e["confidence"],
+            )
+            for e in data.get("instrument_events", [])
+        )
         return cls(
             path=data["path"],
             duration=data["duration"],
@@ -113,4 +154,6 @@ class SongStructure:
             tempo_regions=tempo_regions,
             sections=sections,
             metadata=data.get("metadata", {}),
+            phrases=phrases,
+            instrument_events=instrument_events,
         )

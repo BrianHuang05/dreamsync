@@ -273,3 +273,17 @@ class TestBeatDetection:
         )
         assert not tl.is_beat(0.0)
         assert not tl.is_downbeat(0.0)
+
+    def test_beat_tolerance_40ms_catches_nearby(self):
+        """Default 40ms tolerance catches beats that 25ms would miss."""
+        tl = _make_timeline(bpm=120.0)
+        # Beat at t=0.0, tick at t=0.035 → within 40ms, outside 25ms
+        assert tl.is_beat(0.035)  # default tolerance=0.040
+        assert not tl.is_beat(0.035, tolerance=0.025)
+
+    def test_downbeat_tolerance_40ms_catches_nearby(self):
+        """Default 40ms tolerance catches downbeats that 25ms would miss."""
+        tl = _make_timeline(bpm=120.0)
+        # Downbeat at t=0.0, tick at t=0.035 → within 40ms
+        assert tl.is_downbeat(0.035)
+        assert not tl.is_downbeat(0.035, tolerance=0.025)

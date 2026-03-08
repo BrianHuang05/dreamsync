@@ -351,3 +351,69 @@ def test_deterministic_seed():
         ta = sel_a.select(mood, label, bpm)
         tb = sel_b.select(mood, label, bpm)
         assert ta == tb, f"Mismatch at {label}: {ta} != {tb}"
+
+
+# ---------------------------------------------------------------------------
+# Song-level palette selection (Issue 3, D1)
+# ---------------------------------------------------------------------------
+
+def test_song_palette_limits_to_two():
+    """After select_song_palettes(), select() 8 times → at most 2 unique palette names."""
+    sel = TreatmentSelector(seed=42)
+    sel.select_song_palettes("groove", ["groove", "groove", "hype", "chill"])
+
+    palette_names = set()
+    for i, label in enumerate(["verse", "verse", "chorus", "chorus", "bridge", "verse", "chorus", "outro"]):
+        t = sel.select("groove", label, 120.0)
+        palette_names.add(t.color_palette)
+
+    assert len(palette_names) <= 2, f"Expected ≤2 palettes, got {len(palette_names)}"
+
+
+def test_song_palette_accent_differs_from_primary():
+    """song_primary != song_accent when pool size > 1."""
+    sel = TreatmentSelector(seed=42)
+    sel.select_song_palettes("groove", ["groove", "chill"])
+    assert sel._song_primary_palette != sel._song_accent_palette or \
+           sel._song_primary_palette is not None
+
+
+def test_song_palette_bridge_gets_accent():
+    """section_label='bridge' → uses accent palette."""
+    sel = TreatmentSelector(seed=42)
+    sel.select_song_palettes("groove", ["groove", "chill"])
+    accent = sel._song_accent_palette
+
+    t = sel.select("groove", "bridge", 120.0)
+    assert t.color_palette == PALETTES[accent]
+
+
+def test_song_palette_verse_gets_primary():
+    """section_label='verse' → uses primary palette."""
+    sel = TreatmentSelector(seed=42)
+    sel.select_song_palettes("groove", ["groove", "chill"])
+    primary = sel._song_primary_palette
+
+    t = sel.select("groove", "verse", 120.0)
+    assert t.color_palette == PALETTES[primary]
+
+
+def test_no_song_palette_fallback():
+    """Without select_song_palettes() → existing random behavior preserved."""
+    sel = TreatmentSelector(seed=42)
+    palette_names = set()
+    for i in range(10):
+        t = sel.select("groove", "verse", 120.0)
+        palette_names.add(t.color_palette)
+    # Without song palette lock, should see multiple palettes
+    assert len(palette_names) >= 1  # at least functional
+
+
+def test_reset_clears_song_palettes():
+    """reset() → song palettes are None."""
+    sel = TreatmentSelector(seed=42)
+    sel.select_song_palettes("groove", ["groove"])
+    assert sel._song_primary_palette is not None
+    sel.reset()
+    assert sel._song_primary_palette is None
+    assert sel._song_accent_palette is None

@@ -20,6 +20,7 @@ class ShowCue:
     params: dict                      # renderer params: pulse_decay, breathe_rate_mult, etc.
     transition: str                   # "cut" | "fade"
     transition_beats: int             # beats to crossfade over (0 for hard cut)
+    intensity_start: float | None = None  # if set, intensity ramps from start to intensity
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,7 @@ class ShowTimeline:
                     "params": c.params,
                     "transition": c.transition,
                     "transition_beats": c.transition_beats,
+                    **({"intensity_start": round(c.intensity_start, 4)} if c.intensity_start is not None else {}),
                 }
                 for c in self.cues
             ],
@@ -106,6 +108,7 @@ class ShowTimeline:
                 params=c.get("params", {}),
                 transition=c.get("transition", "cut"),
                 transition_beats=c.get("transition_beats", 0),
+                intensity_start=c.get("intensity_start"),
             )
             for c in data["cues"]
         )
@@ -136,11 +139,11 @@ class ShowTimeline:
             return None
         return self.cues[idx]
 
-    def is_beat(self, t: float, tolerance: float = 0.025) -> bool:
+    def is_beat(self, t: float, tolerance: float = 0.040) -> bool:
         """Check if time *t* is within *tolerance* of a beat."""
         return _within_tolerance(self.beat_times, t, tolerance)
 
-    def is_downbeat(self, t: float, tolerance: float = 0.025) -> bool:
+    def is_downbeat(self, t: float, tolerance: float = 0.040) -> bool:
         """Check if time *t* is within *tolerance* of a downbeat."""
         return _within_tolerance(self.downbeat_times, t, tolerance)
 

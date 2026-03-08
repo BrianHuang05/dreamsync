@@ -246,5 +246,15 @@ class EffectCyclerIntegrationTests(unittest.TestCase):
             cycler = EffectCycler(seed=42)
 
 
+class EffectDecayTests(unittest.TestCase):
+    """Test updated pulse decay values (Issue 4)."""
+
+    def test_beat_pulse_decay_12(self) -> None:
+        assert EFFECTS["beat_pulse"].params["pulse_decay"] == 12.0
+
+    def test_drop_blast_decay_10(self) -> None:
+        assert EFFECTS["drop_blast"].params["pulse_decay"] == 10.0
+
+
 if __name__ == "__main__":
     unittest.main()

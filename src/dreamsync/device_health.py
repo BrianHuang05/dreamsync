@@ -124,7 +124,7 @@ class DeviceHealthMonitor:
         # Initialize health state from current adapter list
         self._health: dict[str, DeviceHealth] = {}
         now = time.monotonic()
-        for adapter, _renderer, role in multi_adapter.devices:
+        for adapter, _renderer, role, *_ in multi_adapter.devices:
             addr = adapter.config.device_ip
             self._health[addr] = DeviceHealth(
                 address=addr,
@@ -182,7 +182,7 @@ class DeviceHealthMonitor:
 
             # Sync health dict with current adapter list (LAN + BLE)
             current_addrs = set()
-            for adapter, _renderer, role in self._multi.devices:
+            for adapter, _renderer, role, *_ in self._multi.devices:
                 addr = adapter.config.device_ip
                 current_addrs.add(addr)
                 if addr not in self._health:
@@ -354,7 +354,7 @@ class DeviceHealthMonitor:
     def _set_adapter_paused(self, addr: str, paused: bool) -> None:
         """Set the paused flag on the adapter matching the given address."""
         # Check LAN adapters
-        for adapter, _renderer, _role in self._multi.devices:
+        for adapter, _renderer, _role, *_ in self._multi.devices:
             if adapter.config.device_ip == addr:
                 adapter.paused = paused
                 return

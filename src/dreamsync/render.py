@@ -31,10 +31,12 @@ class SegmentRenderer:
     segments: int
     mode: RenderMode = RenderMode.SOLID
     mirror: bool = True
+    device_type: str | None = None
+    pulse_decay_override: float | None = None
 
     # Pulse state
     _pulse_brightness: float = field(default=0.0, init=False, repr=False)
-    _pulse_decay: float = field(default=6.0, init=False, repr=False)
+    _pulse_decay: float = field(default=12.0, init=False, repr=False)
 
     # Scroll state — half-buffer (center-to-edge), mirrored on output
     _scroll_buf: list[tuple[float, float, float]] = field(
@@ -57,6 +59,8 @@ class SegmentRenderer:
     def __post_init__(self) -> None:
         half = (self.segments + 1) // 2
         self._scroll_buf = [(0.0, 0.0, 0.0)] * half
+        if self.pulse_decay_override is not None:
+            self._pulse_decay = self.pulse_decay_override
 
     def render(
         self, t: float, intent: LightingIntent, beat: bool = False,

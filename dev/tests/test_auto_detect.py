@@ -234,7 +234,7 @@ class BuildMultiAdapterTests(unittest.TestCase):
         multi = build_multi_adapter(detected)
         self.assertIsInstance(multi, MultiGoveeLanAdapter)
         self.assertEqual(len(multi.devices), 1)
-        adapter, renderer, role = multi.devices[0]
+        adapter, renderer, role, _bs = multi.devices[0]
         self.assertEqual(adapter.config.device_ip, "192.168.1.10")
         self.assertEqual(adapter.config.segments, 15)
         self.assertEqual(role, DeviceRole.PRIMARY)
@@ -316,7 +316,7 @@ class BuildMultiAdapterTests(unittest.TestCase):
             ),
         ]
         multi = build_multi_adapter(detected)
-        _, _, role = multi.devices[0]
+        _, _, role, _bs = multi.devices[0]
         self.assertEqual(role, DeviceRole.ACCENT)
 
     def test_render_mode_propagated(self) -> None:
@@ -332,7 +332,7 @@ class BuildMultiAdapterTests(unittest.TestCase):
             ),
         ]
         multi = build_multi_adapter(detected, render_mode=RenderMode.PULSE, mirror=False)
-        _, renderer, _ = multi.devices[0]
+        _, renderer, _, _bs = multi.devices[0]
         self.assertEqual(renderer.mode, RenderMode.PULSE)
         self.assertFalse(renderer.mirror)
 

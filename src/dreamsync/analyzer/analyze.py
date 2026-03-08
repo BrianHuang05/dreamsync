@@ -8,6 +8,7 @@ from dreamsync.analyzer.bpm import GlobalBpmEstimator
 from dreamsync.analyzer.decode import decode_mp3
 from dreamsync.analyzer.features import OfflineFeaturePipeline
 from dreamsync.analyzer.models import SongStructure
+from dreamsync.analyzer.phrases import InstrumentEventDetector, PhraseSegmenter
 from dreamsync.analyzer.sections import SectionSegmenter
 
 
@@ -26,7 +27,8 @@ def analyze_song(
     2. Run offline feature pipeline
     3. Estimate global BPM + beat grid
     4. Segment into sections
-    5. Return SongStructure
+    5. Detect phrases and instrument events
+    6. Return SongStructure
     """
     mp3_path = Path(mp3_path)
 
@@ -49,7 +51,14 @@ def analyze_song(
     segmenter = SectionSegmenter()
     sections = segmenter.segment(features, beat_grid, tempo_regions)
 
-    # 5. Assemble
+    # 5. Phrases and instrument events
+    phrase_segmenter = PhraseSegmenter()
+    phrases = phrase_segmenter.segment(sections, features, beat_grid)
+
+    event_detector = InstrumentEventDetector()
+    instrument_events = event_detector.detect(phrases, features)
+
+    # 6. Assemble
     return SongStructure(
         path=str(mp3_path),
         duration=audio.duration,
@@ -59,4 +68,6 @@ def analyze_song(
         tempo_regions=tuple(tempo_regions),
         sections=tuple(sections),
         metadata=metadata or {},
+        phrases=tuple(phrases),
+        instrument_events=tuple(instrument_events),
     )

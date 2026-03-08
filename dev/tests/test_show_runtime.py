@@ -13,7 +13,9 @@ import pytest
 from dreamsync.director import EffectMode, LightingIntent
 from dreamsync.render import RenderMode
 from dreamsync.show.models import ShowCue, ShowTimeline
-from dreamsync.show.runtime import ShowPlaybackRuntime, _lerp, run_show_playback
+from dreamsync.show.runtime import (
+    ShowPlaybackRuntime, _interpolate_hex, _lerp, run_show_playback,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +260,108 @@ class TestBeatAndColor:
         call_kwargs = adapter.send_frame.call_args[1]
         assert call_kwargs["beat"] is True
 
+    def test_beat_tolerance_40ms_catches_nearby(self):
+        """At default 40ms tolerance, beat at t=0.0, tick at t=0.035 → beat=True."""
+        tl = _make_timeline(bpm=120.0)
+        adapter = _mock_multi_adapter()
+        runtime = ShowPlaybackRuntime(tl, adapter)
+        runtime.tick(0.035)
+        call_kwargs = adapter.send_frame.call_args[1]
+        assert call_kwargs["beat"] is True
+
+    def test_beat_tolerance_parameterized(self):
+        """Construct runtime with custom beat_tolerance."""
+        tl = _make_timeline(bpm=120.0)
+        adapter = _mock_multi_adapter()
+        runtime = ShowPlaybackRuntime(tl, adapter, beat_tolerance=0.050)
+        assert runtime._beat_tolerance == 0.050
+
+
+# ---------------------------------------------------------------------------
+# Color cycling modes (Issue 3, D2)
+# ---------------------------------------------------------------------------
+
+class TestColorCycling:
+    def test_color_cycles_on_downbeat_not_beat(self):
+        """Default mode: tick through 8 beats in 4/4 → color advances twice (not 8)."""
+        tl = _make_timeline(bpm=120.0)
+        adapter = _mock_multi_adapter()
+        runtime = ShowPlaybackRuntime(tl, adapter)  # default: downbeat mode
+
+        # At 120 BPM 4/4: beats at 0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5
+        # Downbeats at 0.0, 2.0
+        initial = runtime._color_index
+        beat_times = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5]
+        for bt in beat_times:
+            runtime.tick(bt)
+            # tick between to reset debounce
+            runtime.tick(bt + 0.1)
+
+        # Should advance on downbeats (0.0, 2.0) = 2 advances
+        assert runtime._color_index == (initial + 2) % 3
+
+    def test_color_cycle_mode_beat_preserves_old_behavior(self):
+        """color_cycle_mode='beat' → color changes on every beat."""
+        tl = _make_timeline(bpm=120.0)
+        adapter = _mock_multi_adapter()
+        runtime = ShowPlaybackRuntime(tl, adapter, color_cycle_mode="beat")
+
+        initial = runtime._color_index
+        # Tick on 4 beats
+        for bt in [0.0, 0.5, 1.0, 1.5]:
+            runtime.tick(bt)
+            runtime.tick(bt + 0.1)
+
+        assert runtime._color_index == (initial + 4) % 3
+
+    def test_beat_flag_still_fires_for_effects(self):
+        """Even in downbeat mode, beat flag is passed to send_frame on every beat."""
+        tl = _make_timeline(bpm=120.0)
+        adapter = _mock_multi_adapter()
+        runtime = ShowPlaybackRuntime(tl, adapter)  # downbeat mode
+
+        runtime.tick(0.5)  # beat but not downbeat
+        call_kwargs = adapter.send_frame.call_args[1]
+        assert call_kwargs["beat"] is True
+
+    def test_color_cycle_mode_downbeat_default(self):
+        """Default construction → downbeat mode."""
+        tl = _make_timeline(bpm=120.0)
+        adapter = _mock_multi_adapter()
+        runtime = ShowPlaybackRuntime(tl, adapter)
+        assert runtime._color_cycle_mode == "downbeat"
+
+
+# ---------------------------------------------------------------------------
+# Color interpolation (Issue 3, D3)
+# ---------------------------------------------------------------------------
+
+class TestColorInterpolation:
+    def test_interpolate_hex_basic(self):
+        result = _interpolate_hex("#ff0000", "#0000ff", 0.5)
+        # Midpoint: R=127, G=0, B=127
+        assert result == "#800080" or result == "#7f007f"
+
+    def test_interpolate_hex_at_zero(self):
+        assert _interpolate_hex("#ff0000", "#0000ff", 0.0) == "#ff0000"
+
+    def test_interpolate_hex_at_one(self):
+        assert _interpolate_hex("#ff0000", "#0000ff", 1.0) == "#0000ff"
+
+    def test_color_interpolation_complete(self):
+        """After blend duration, color is fully at current index."""
+        tl = _make_timeline(bpm=120.0)
+        adapter = _mock_multi_adapter()
+        runtime = ShowPlaybackRuntime(tl, adapter, color_cycle_mode="beat")
+
+        runtime.tick(0.0)  # beat, triggers color change
+        # After blend duration (2 beats = 1s at 120 BPM)
+        runtime.tick(0.1)
+        runtime.tick(1.5)
+        intent = adapter.send_frame.call_args[0][1]
+        # Should be at the current color, not interpolated
+        assert intent.color in ("#ff0000", "#00ff00", "#0000ff")
+
 
 # ---------------------------------------------------------------------------
 # Render mode switching
@@ -355,3 +459,72 @@ class TestRunShowPlayback:
 
         mock_player.stop.assert_called_once()
         adapter.deactivate.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Intensity ramp tests (Issue 6, D2)
+# ---------------------------------------------------------------------------
+
+class TestIntensityRamp:
+    def test_intensity_ramp_midway(self) -> None:
+        """Cue with intensity_start=0.8, intensity=0.2, query at 50% → ~0.5."""
+        cues = (
+            _make_cue(0.0, intensity=0.2, intensity_start=0.8),
+            _make_cue(30.0, intensity=0.5),
+        )
+        tl = _make_timeline(duration=60.0, cues=cues)
+        adapter = _mock_multi_adapter()
+        runtime = ShowPlaybackRuntime(tl, adapter)
+
+        # Tick at t=15 (50% through first 30s cue)
+        runtime.tick(15.0)
+        call_args = adapter.send_frame.call_args
+        intent = call_args[0][1]
+        # Should be ~0.5 (lerp from 0.8 to 0.2 at 50%)
+        assert abs(intent.intensity - 0.5) < 0.05
+
+    def test_intensity_ramp_start(self) -> None:
+        """At cue start, intensity = intensity_start."""
+        cues = (
+            _make_cue(0.0, intensity=0.1, intensity_start=0.8),
+            _make_cue(30.0, intensity=0.5),
+        )
+        tl = _make_timeline(duration=60.0, cues=cues)
+        adapter = _mock_multi_adapter()
+        runtime = ShowPlaybackRuntime(tl, adapter)
+
+        runtime.tick(0.0)
+        call_args = adapter.send_frame.call_args
+        intent = call_args[0][1]
+        assert abs(intent.intensity - 0.8) < 0.05
+
+    def test_intensity_ramp_end(self) -> None:
+        """At cue end, intensity = cue.intensity."""
+        cues = (
+            _make_cue(0.0, intensity=0.1, intensity_start=0.8),
+            _make_cue(30.0, intensity=0.5),
+        )
+        tl = _make_timeline(duration=60.0, cues=cues)
+        adapter = _mock_multi_adapter()
+        runtime = ShowPlaybackRuntime(tl, adapter)
+
+        # Tick at t=29.9 (near end of 30s cue)
+        runtime.tick(29.9)
+        call_args = adapter.send_frame.call_args
+        intent = call_args[0][1]
+        assert abs(intent.intensity - 0.1) < 0.05
+
+    def test_no_ramp_when_intensity_start_none(self) -> None:
+        """Cue without intensity_start → flat intensity."""
+        cues = (
+            _make_cue(0.0, intensity=0.5),
+            _make_cue(30.0, intensity=0.5),
+        )
+        tl = _make_timeline(duration=60.0, cues=cues)
+        adapter = _mock_multi_adapter()
+        runtime = ShowPlaybackRuntime(tl, adapter)
+
+        runtime.tick(15.0)
+        call_args = adapter.send_frame.call_args
+        intent = call_args[0][1]
+        assert abs(intent.intensity - 0.5) < 0.01

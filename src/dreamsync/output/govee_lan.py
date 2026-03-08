@@ -363,10 +363,13 @@ class MultiGoveeLanAdapter:
 
     def __init__(
         self,
-        devices: list[tuple[GoveeLanAdapter, SegmentRenderer, DeviceRole]],
+        devices: list[tuple],  # (adapter, renderer, role) or (adapter, renderer, role, brightness_scale)
         ble_followers: list | None = None,
     ) -> None:
-        self.devices = devices
+        # Normalize to 4-tuples: (adapter, renderer, role, brightness_scale)
+        self.devices: list[tuple[GoveeLanAdapter, SegmentRenderer, DeviceRole, float]] = [
+            d if len(d) == 4 else (d[0], d[1], d[2], 1.0) for d in devices
+        ]
         # list of GoveeBleAdapter instances (imported lazily to avoid hard dep)
         self._ble_followers: list = ble_followers or []
 
@@ -377,10 +380,10 @@ class MultiGoveeLanAdapter:
         power-on before receiving brightness and color data.
         BLE followers are started (background threads launched).
         """
-        for adapter, _renderer, _role in self.devices:
+        for adapter, _renderer, _role, _bs in self.devices:
             adapter.turn_on()
         time.sleep(0.8)
-        for adapter, _renderer, _role in self.devices:
+        for adapter, _renderer, _role, _bs in self.devices:
             adapter.set_brightness(brightness)
         time.sleep(0.3)
         # Start BLE follower threads
@@ -394,10 +397,12 @@ class MultiGoveeLanAdapter:
 
     def replace_devices(
         self,
-        new_devices: list[tuple[GoveeLanAdapter, SegmentRenderer, DeviceRole]],
+        new_devices: list[tuple],
     ) -> None:
         """Atomically replace the device list (GIL-safe reference swap)."""
-        self.devices = new_devices
+        self.devices = [
+            d if len(d) == 4 else (d[0], d[1], d[2], 1.0) for d in new_devices
+        ]
 
     def replace_ble_followers(self, new_followers: list) -> None:
         """Atomically replace the BLE follower list (GIL-safe reference swap)."""
@@ -405,7 +410,7 @@ class MultiGoveeLanAdapter:
 
     def get_device_addresses(self) -> list[str]:
         """Return the IP/address of every LAN device currently in the list."""
-        return [adapter.config.device_ip for adapter, _, _ in self.devices]
+        return [adapter.config.device_ip for adapter, _, _, _ in self.devices]
 
     def send_frame(
         self, t: float, intent: LightingIntent, beat: bool = False,
@@ -416,8 +421,8 @@ class MultiGoveeLanAdapter:
         BLE mood followers receive the intent's color + intensity directly.
         """
         any_sent = False
-        for adapter, renderer, role in self.devices:
-            device_intent = transform_intent(intent, role)
+        for adapter, renderer, role, bs in self.devices:
+            device_intent = transform_intent(intent, role, brightness_scale=bs)
             colors = renderer.render(t, device_intent, beat=beat, params=params)
             if adapter.send_frame(colors):
                 any_sent = True

@@ -201,7 +201,7 @@ class ConfigWatcher:
 
         # Turn off LAN adapters being removed or changed (fire-and-forget)
         old_devices = self._multi.devices
-        for adapter, _renderer, _role in old_devices:
+        for adapter, _renderer, _role, *_ in old_devices:
             addr = _normalize_address(adapter.config.device_ip)
             if addr in teardown_addrs:
                 try:
@@ -233,7 +233,7 @@ class ConfigWatcher:
 
         # Activate new devices
         brightness_pct = max(0, min(100, int(self._brightness * 100)))
-        for adapter, _renderer, _role in new_adapter.devices:
+        for adapter, _renderer, _role, *_ in new_adapter.devices:
             addr = _normalize_address(adapter.config.device_ip)
             # Only activate newly added or changed devices
             if addr in {_normalize_address(c.address) for c in added} | changed_addrs:

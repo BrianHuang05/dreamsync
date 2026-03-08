@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from dreamsync.director import EffectMode, LightingIntent
+from dreamsync.output.roles import adapt_render_mode, DeviceType
 from dreamsync.render import RenderMode
 from dreamsync.show.models import ShowCue, ShowTimeline
 
@@ -29,22 +30,34 @@ class ShowPlaybackRuntime:
         self,
         timeline: ShowTimeline,
         multi_adapter,  # MultiGoveeLanAdapter (duck-typed for testability)
+        *,
+        beat_tolerance: float | None = None,
+        color_cycle_mode: str = "downbeat",
     ) -> None:
         self._timeline = timeline
         self._multi_adapter = multi_adapter
 
         self._current_cue: ShowCue | None = None
         self._color_index: int = 0
+        self._prev_color_index: int = 0
         self._beat_fired: bool = False
+        self._color_cycle_mode = color_cycle_mode
 
         # Fade state
         self._fade_start_t: float = 0.0
         self._fade_end_t: float = 0.0
         self._fade_from_cue: ShowCue | None = None
 
-        # Beat tolerance: half a beat-interval's worth, capped at 25ms
-        beat_interval = 60.0 / timeline.bpm
-        self._beat_tolerance = min(0.025, beat_interval * 0.25)
+        # Color blend state
+        self._color_blend_start_t: float = 0.0
+        self._color_blend_duration: float = 2 * (60.0 / timeline.bpm)  # blend over 2 beats
+
+        # Beat tolerance: 30% of beat interval, capped at 40ms
+        if beat_tolerance is not None:
+            self._beat_tolerance = beat_tolerance
+        else:
+            beat_interval = 60.0 / timeline.bpm
+            self._beat_tolerance = min(0.040, beat_interval * 0.30)
 
         # Stats
         self._frames_sent: int = 0
@@ -67,15 +80,25 @@ class ShowPlaybackRuntime:
         # Build LightingIntent
         intent = self._build_intent(cue, t)
 
-        # Check beat grid
+        # Check beat and downbeat grids
         beat = self._timeline.is_beat(t, tolerance=self._beat_tolerance)
+        downbeat = self._timeline.is_downbeat(t, tolerance=self._beat_tolerance)
 
-        # Advance color on beat (debounced)
-        if beat and not self._beat_fired:
+        # Determine if color should cycle based on mode
+        if self._color_cycle_mode == "beat":
+            should_cycle = beat and not self._beat_fired
+            cycle_reset = not beat
+        else:  # "downbeat" (default)
+            should_cycle = downbeat and not self._beat_fired
+            cycle_reset = not downbeat
+
+        if should_cycle:
+            self._prev_color_index = self._color_index
             self._color_index = (self._color_index + 1) % len(cue.color_palette)
+            self._color_blend_start_t = t
             self._beat_fired = True
             self._beats_hit += 1
-        elif not beat:
+        elif cycle_reset:
             self._beat_fired = False
 
         # Render + send
@@ -114,19 +137,45 @@ class ShowPlaybackRuntime:
         else:
             self._fade_from_cue = None
 
-        # Switch render mode on all device renderers
-        _, render_mode = _MODE_MAP.get(cue.render_mode, (EffectMode.AMBIENT, RenderMode.SOLID))
+        # Switch render mode on all device renderers (device-type aware)
         if hasattr(self._multi_adapter, "devices"):
-            for _adapter, renderer, _role in self._multi_adapter.devices:
-                renderer.mode = render_mode
+            for _adapter, renderer, _role, *_ in self._multi_adapter.devices:
+                dev_type = getattr(renderer, "device_type", None)
+                if dev_type is not None:
+                    try:
+                        dt = DeviceType(dev_type)
+                    except ValueError:
+                        dt = None
+                    if dt is not None:
+                        adapted = adapt_render_mode(cue.render_mode, dt)
+                        _, rm = _MODE_MAP.get(adapted, (EffectMode.AMBIENT, RenderMode.SOLID))
+                        renderer.mode = rm
+                        continue
+                _, rm = _MODE_MAP.get(cue.render_mode, (EffectMode.AMBIENT, RenderMode.SOLID))
+                renderer.mode = rm
 
         self._current_cue = cue
         self._cues_played += 1
+
+    def _cue_duration(self, cue: ShowCue) -> float:
+        """Duration of this cue (time until next cue or song end)."""
+        cue_times = [c.t for c in self._timeline.cues]
+        idx = cue_times.index(cue.t)
+        if idx + 1 < len(cue_times):
+            return cue_times[idx + 1] - cue.t
+        return self._timeline.duration - cue.t
 
     def _build_intent(self, cue: ShowCue, t: float) -> LightingIntent:
         """Construct a LightingIntent from the active cue and current time."""
         intensity = cue.intensity
         speed = cue.speed
+
+        # Apply intensity_start ramp if set
+        if cue.intensity_start is not None:
+            cue_dur = self._cue_duration(cue)
+            if cue_dur > 0:
+                progress = min(1.0, (t - cue.t) / cue_dur)
+                intensity = _lerp(cue.intensity_start, cue.intensity, progress)
 
         # Interpolate during fade window
         if (
@@ -143,7 +192,19 @@ class ShowPlaybackRuntime:
             self._fade_from_cue = None
 
         effect_mode, _ = _MODE_MAP.get(cue.render_mode, (EffectMode.AMBIENT, RenderMode.SOLID))
-        color = cue.color_palette[self._color_index % len(cue.color_palette)]
+
+        # Interpolate between previous and current palette color
+        blend_progress = 1.0
+        if self._color_blend_duration > 0:
+            elapsed = t - self._color_blend_start_t
+            blend_progress = min(1.0, elapsed / self._color_blend_duration)
+
+        if blend_progress < 1.0 and len(cue.color_palette) > 1:
+            prev_color = cue.color_palette[self._prev_color_index % len(cue.color_palette)]
+            curr_color = cue.color_palette[self._color_index % len(cue.color_palette)]
+            color = _interpolate_hex(prev_color, curr_color, blend_progress)
+        else:
+            color = cue.color_palette[self._color_index % len(cue.color_palette)]
 
         return LightingIntent(
             mode=effect_mode,
@@ -157,6 +218,22 @@ class ShowPlaybackRuntime:
 def _lerp(a: float, b: float, t: float) -> float:
     """Linear interpolation from *a* to *b* at fraction *t* ∈ [0, 1]."""
     return a + (b - a) * t
+
+
+def _parse_hex(h: str) -> tuple[int, int, int]:
+    """Parse a hex color string to (r, g, b)."""
+    h = h.lstrip("#")
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
+def _interpolate_hex(a: str, b: str, t: float) -> str:
+    """Linear RGB interpolation between two hex colors."""
+    ra, ga, ba = _parse_hex(a)
+    rb, gb, bb = _parse_hex(b)
+    r = int(ra + (rb - ra) * t)
+    g = int(ga + (gb - ga) * t)
+    b_val = int(ba + (bb - ba) * t)
+    return f"#{r:02x}{g:02x}{b_val:02x}"
 
 
 # ---------------------------------------------------------------------------

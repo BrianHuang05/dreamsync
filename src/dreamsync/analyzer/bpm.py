@@ -67,7 +67,8 @@ class GlobalBpmEstimator:
         global_bpm = self._histogram_peak(bpm_values)
 
         # 3. Resolve harmonic aliasing
-        global_bpm = self._resolve_harmonic_alias(global_bpm, bpm_values)
+        detected_beats = [f.t for f in features if f.beat and f.t > self.warmup_skip_seconds]
+        global_bpm = self._resolve_harmonic_alias(global_bpm, bpm_values, detected_beats)
 
         # 4. Detect tempo regions
         tempo_regions = self._detect_tempo_regions(features, global_bpm)
@@ -96,11 +97,33 @@ class GlobalBpmEstimator:
         peak_bpm = float((edges[peak_idx] + edges[peak_idx + 1]) / 2)
         return peak_bpm
 
-    def _resolve_harmonic_alias(self, peak_bpm: float, bpm_values: list[float]) -> float:
+    def _resolve_harmonic_alias(
+        self,
+        peak_bpm: float,
+        bpm_values: list[float],
+        onset_times: list[float] | None = None,
+    ) -> float:
         """Check x0.5 and x2.0 of the peak; prefer the musically correct range."""
         lo, hi = self.preferred_bpm_range
 
-        # If already in preferred range, keep it
+        # If in preferred range, check if onset density suggests half-tempo
+        if lo <= peak_bpm <= hi and onset_times and len(onset_times) >= 8:
+            beat_period = 60.0 / peak_bpm
+            even_count = 0
+            odd_count = 0
+            for t in onset_times:
+                n = round(t / beat_period)
+                if n % 2 == 0:
+                    even_count += 1
+                else:
+                    odd_count += 1
+            total = even_count + odd_count
+            if total > 0 and odd_count / total < 0.35:
+                half_bpm = peak_bpm * 0.5
+                if half_bpm >= 40:
+                    return half_bpm
+
+        # If already in preferred range (and no halving needed), keep it
         if lo <= peak_bpm <= hi:
             return peak_bpm
 
@@ -196,29 +219,50 @@ class GlobalBpmEstimator:
 
         return regions
 
-    def _build_beat_grid(
-        self, features: list[FeatureRow], bpm: float,
-    ) -> BeatGrid:
-        """Build a phase-aligned beat grid at the global BPM."""
-        if bpm <= 0 or not features:
-            return BeatGrid(bpm=0.0, beat_times=(), downbeat_times=(), time_signature=4)
+    def _scan_offsets(
+        self,
+        beat_period: float,
+        detected_beats: list[float],
+        duration: float,
+        n: int,
+        lo: float,
+        hi: float,
+    ) -> tuple[float, float]:
+        """Scan *n* candidate offsets in [lo, hi) and return (best_offset, best_score)."""
+        best_offset = lo
+        best_score = -1.0
+        span = hi - lo
+        for i in range(n):
+            offset = lo + i * span / n
+            score = self._beat_alignment_score(offset, beat_period, detected_beats, duration)
+            if score > best_score:
+                best_score = score
+                best_offset = offset
+        return best_offset, best_score
 
+    def _build_even_grid(
+        self, features: list[FeatureRow], bpm: float,
+    ) -> tuple[list[float], list[float]]:
+        """Build a phase-aligned even beat grid. Returns (beat_times, detected_beats)."""
         duration = features[-1].t
         beat_period = 60.0 / bpm
 
         # Collect detected beat times from features
         detected_beats = [f.t for f in features if f.beat and f.t > self.warmup_skip_seconds]
 
-        # Find optimal phase offset
-        best_offset = 0.0
-        best_score = -1.0
-        n_candidates = 100
-        for i in range(n_candidates):
-            offset = i * beat_period / n_candidates
-            score = self._beat_alignment_score(offset, beat_period, detected_beats, duration)
-            if score > best_score:
-                best_score = score
-                best_offset = offset
+        # Two-pass phase search
+        # Pass 1: coarse scan
+        coarse_offset, _ = self._scan_offsets(
+            beat_period, detected_beats, duration, n=100, lo=0.0, hi=beat_period,
+        )
+
+        # Pass 2: fine scan — ±10% of beat_period around coarse result
+        fine_window = beat_period * 0.10
+        fine_lo = max(0.0, coarse_offset - fine_window)
+        fine_hi = coarse_offset + fine_window
+        best_offset, _ = self._scan_offsets(
+            beat_period, detected_beats, duration, n=50, lo=fine_lo, hi=fine_hi,
+        )
 
         # Generate evenly-spaced beats
         beat_times: list[float] = []
@@ -226,6 +270,53 @@ class GlobalBpmEstimator:
         while t <= duration:
             beat_times.append(round(t, 4))
             t += beat_period
+
+        return beat_times, detected_beats
+
+    def _build_hybrid_beat_grid(
+        self,
+        even_beats: list[float],
+        detected_onsets: list[float],
+        bpm: float,
+    ) -> list[float]:
+        """Snap even-grid beats to nearby detected onsets where available."""
+        if not detected_onsets:
+            return even_beats
+
+        snap_tolerance = (60.0 / bpm) * 0.20  # 20% of beat period
+        hybrid_beats: list[float] = []
+
+        for grid_t in even_beats:
+            best_onset = None
+            best_dist = float("inf")
+            for onset_t in detected_onsets:
+                dist = abs(onset_t - grid_t)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_onset = onset_t
+            if best_onset is not None and best_dist <= snap_tolerance:
+                hybrid_beats.append(round(best_onset, 4))
+            else:
+                hybrid_beats.append(grid_t)
+
+        # Monotonicity enforcement — ensure beats are strictly increasing
+        for i in range(1, len(hybrid_beats)):
+            if hybrid_beats[i] <= hybrid_beats[i - 1]:
+                hybrid_beats[i] = round(hybrid_beats[i - 1] + 0.001, 4)
+
+        return hybrid_beats
+
+    def _build_beat_grid(
+        self, features: list[FeatureRow], bpm: float,
+    ) -> BeatGrid:
+        """Build a phase-aligned beat grid at the global BPM, snapped to onsets."""
+        if bpm <= 0 or not features:
+            return BeatGrid(bpm=0.0, beat_times=(), downbeat_times=(), time_signature=4)
+
+        even_beats, detected_beats = self._build_even_grid(features, bpm)
+
+        # Snap to detected onsets
+        beat_times = self._build_hybrid_beat_grid(even_beats, detected_beats, bpm)
 
         # Estimate time signature
         time_sig = self._estimate_time_signature(detected_beats, beat_times)

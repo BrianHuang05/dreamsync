@@ -5,7 +5,9 @@ from __future__ import annotations
 import pytest
 
 from dreamsync.analyzer.bpm import BeatGrid, TempoRegion
+from dreamsync.analyzer.features import FeatureRow
 from dreamsync.analyzer.models import SongStructure
+from dreamsync.analyzer.phrases import InstrumentEvent, Phrase
 from dreamsync.analyzer.sections import Section
 from dreamsync.compiler.arc import ArcWeight
 from dreamsync.compiler.assemble import TimelineAssembler
@@ -288,3 +290,374 @@ def test_single_section():
     assert tl.cues[0].transition_beats == 0
     assert tl.song_path == "/tmp/test.mp3"
     assert tl.duration == 30.0
+
+
+# ---------------------------------------------------------------------------
+# 9-14. Micro-cue tests (Issue 2, D3)
+# ---------------------------------------------------------------------------
+
+def _make_structure_with_phrases(
+    sections: tuple[Section, ...],
+    phrases: tuple[Phrase, ...],
+    events: tuple[InstrumentEvent, ...] = (),
+    bpm: float = 120.0,
+    duration: float = 120.0,
+) -> SongStructure:
+    bg = make_beat_grid(bpm=bpm, duration=duration)
+    return SongStructure(
+        path="/tmp/test.mp3",
+        duration=duration,
+        bpm=bpm,
+        time_signature=4,
+        beat_grid=bg,
+        tempo_regions=(TempoRegion(0.0, duration, bpm, 1.0),),
+        sections=sections,
+        metadata={},
+        phrases=phrases,
+        instrument_events=events,
+    )
+
+
+def test_micro_cues_inserted_at_phrase_boundaries():
+    """Structure with 2 sections, 4 phrases each → 8+ cues (was 2)."""
+    sections = (
+        make_section(start_t=0.0, end_t=32.0, label="verse", section_id="A"),
+        make_section(start_t=32.0, end_t=64.0, label="chorus", section_id="B"),
+    )
+    phrases = tuple([
+        Phrase(0.0, 8.0, 0, "steady", 0.0, True),
+        Phrase(8.0, 16.0, 0, "steady", 0.0, True),
+        Phrase(16.0, 24.0, 0, "build", 0.2, True),
+        Phrase(24.0, 32.0, 0, "steady", 0.0, True),
+        Phrase(32.0, 40.0, 1, "steady", 0.0, True),
+        Phrase(40.0, 48.0, 1, "steady", 0.0, True),
+        Phrase(48.0, 56.0, 1, "drop", -0.1, True),
+        Phrase(56.0, 64.0, 1, "breakdown", -0.2, False),
+    ])
+    structure = _make_structure_with_phrases(sections, phrases, duration=64.0)
+
+    arcs = [make_arc(0, 0.5), make_arc(1, 0.8)]
+    treats = [make_treatment(render_mode="scroll"), make_treatment(render_mode="pulse")]
+    trans = [make_transition(0), make_transition(1, "fade", 2)]
+
+    tl = TimelineAssembler().assemble(structure, arcs, treats, trans)
+
+    # 2 section cues + 6 micro-cues (3 per section, skip first phrase each)
+    assert len(tl.cues) == 8
+
+
+def test_micro_cues_sorted_by_time():
+    """Cue t values should be monotonically non-decreasing."""
+    sections = (
+        make_section(start_t=0.0, end_t=16.0, label="verse"),
+        make_section(start_t=16.0, end_t=32.0, label="chorus"),
+    )
+    phrases = tuple([
+        Phrase(0.0, 8.0, 0, "steady", 0.0, True),
+        Phrase(8.0, 16.0, 0, "build", 0.2, True),
+        Phrase(16.0, 24.0, 1, "steady", 0.0, True),
+        Phrase(24.0, 32.0, 1, "drop", -0.1, True),
+    ])
+    structure = _make_structure_with_phrases(sections, phrases, duration=32.0)
+
+    arcs = [make_arc(0, 0.5), make_arc(1, 0.8)]
+    treats = [make_treatment(), make_treatment()]
+    trans = [make_transition(0), make_transition(1)]
+
+    tl = TimelineAssembler().assemble(structure, arcs, treats, trans)
+
+    for i in range(1, len(tl.cues)):
+        assert tl.cues[i].t >= tl.cues[i - 1].t
+
+
+def test_kick_enter_micro_cue_boosts_intensity():
+    """Phrase with kick_enter event → micro-cue intensity > section base."""
+    sections = (make_section(start_t=0.0, end_t=16.0, label="verse"),)
+    phrases = tuple([
+        Phrase(0.0, 8.0, 0, "breakdown", 0.0, False),
+        Phrase(8.0, 16.0, 0, "steady", 0.0, True),
+    ])
+    events = (InstrumentEvent(8.0, "kick_enter", 0.9),)
+    structure = _make_structure_with_phrases(sections, phrases, events, duration=16.0)
+
+    arcs = [make_arc(0, 0.5)]
+    treats = [make_treatment(render_mode="breathe")]
+    trans = [make_transition(0)]
+
+    tl = TimelineAssembler().assemble(structure, arcs, treats, trans)
+
+    # Find the micro-cue at t=8.0
+    micro = [c for c in tl.cues if c.t == 8.0]
+    assert len(micro) == 1
+    assert micro[0].intensity > 0.5  # boosted above base
+    assert micro[0].render_mode == "pulse"  # kick_enter → pulse
+
+
+def test_backward_compat_no_phrases():
+    """Structure with empty phrases → same output as before (1 cue per section)."""
+    sections = (
+        make_section(start_t=0.0, end_t=30.0, label="verse"),
+        make_section(start_t=30.0, end_t=60.0, label="chorus"),
+    )
+    structure = make_structure(sections, duration=60.0)
+
+    arcs = [make_arc(0, 0.5), make_arc(1, 0.8)]
+    treats = [make_treatment(), make_treatment()]
+    trans = [make_transition(0), make_transition(1)]
+
+    tl = TimelineAssembler().assemble(structure, arcs, treats, trans)
+
+    assert len(tl.cues) == 2
+
+
+def test_micro_cue_inherits_section_palette():
+    """Micro-cues use the same palette as their parent section cue."""
+    sections = (make_section(start_t=0.0, end_t=16.0),)
+    phrases = tuple([
+        Phrase(0.0, 8.0, 0, "steady", 0.0, True),
+        Phrase(8.0, 16.0, 0, "build", 0.2, True),
+    ])
+    structure = _make_structure_with_phrases(sections, phrases, duration=16.0)
+
+    palette = ("#aabbcc", "#112233")
+    treats = [make_treatment(color_palette=palette)]
+    tl = TimelineAssembler().assemble(
+        structure, [make_arc(0)], treats, [make_transition(0)]
+    )
+
+    for cue in tl.cues:
+        assert cue.color_palette == palette
+
+
+def test_breakdown_micro_cue_reduces_intensity():
+    """Breakdown phrase → micro-cue intensity < section base."""
+    sections = (make_section(start_t=0.0, end_t=16.0),)
+    phrases = tuple([
+        Phrase(0.0, 8.0, 0, "steady", 0.0, True),
+        Phrase(8.0, 16.0, 0, "breakdown", -0.2, False),
+    ])
+    structure = _make_structure_with_phrases(sections, phrases, duration=16.0)
+
+    arcs = [make_arc(0, 0.6)]
+    treats = [make_treatment(render_mode="scroll")]
+    trans = [make_transition(0)]
+
+    tl = TimelineAssembler().assemble(structure, arcs, treats, trans)
+
+    micro = [c for c in tl.cues if c.t == 8.0]
+    assert len(micro) == 1
+    assert micro[0].intensity < 0.6
+    assert micro[0].render_mode == "breathe"
+
+
+# ---------------------------------------------------------------------------
+# 15-20. Fade-to-black and outro ramp tests (Issue 6)
+# ---------------------------------------------------------------------------
+
+def _make_feature(t: float, energy: float) -> FeatureRow:
+    return FeatureRow(
+        t=t, rms=0.0, zcr=0.0, centroid=0.0, bass_ratio=0.0,
+        spectral_flux=0.0, kick_spectral_flux=0.0, onset_strength=0.0,
+        energy=energy, bpm=120.0, beat=False, mood="groove",
+    )
+
+
+def test_fade_to_black_inserted_after_last_beat():
+    """Song with 10s silence at end → fade cue inserted at last energetic beat."""
+    sections = (make_section(start_t=0.0, end_t=120.0, label="verse"),)
+    structure = make_structure(sections, duration=120.0, bpm=120.0)
+
+    # Energy high up to t=110, then silent
+    features = [_make_feature(t, 0.5) for t in range(0, 110)]
+    features += [_make_feature(t, 0.01) for t in range(110, 121)]
+
+    tl = TimelineAssembler().assemble(
+        structure,
+        [make_arc(0, 0.5)],
+        [make_treatment()],
+        [make_transition(0)],
+        features=features,
+    )
+
+    # Should have section cue + fade-to-black cue
+    assert len(tl.cues) == 2
+    fade_cue = tl.cues[-1]
+    assert fade_cue.intensity == 0.0
+    assert fade_cue.transition == "fade"
+
+
+def test_fade_to_black_intensity_is_zero():
+    """The fade cue has intensity=0.0."""
+    sections = (make_section(start_t=0.0, end_t=60.0, label="verse"),)
+    structure = make_structure(sections, duration=60.0, bpm=120.0)
+
+    features = [_make_feature(t, 0.5) for t in range(0, 50)]
+    features += [_make_feature(t, 0.01) for t in range(50, 61)]
+
+    tl = TimelineAssembler().assemble(
+        structure,
+        [make_arc(0, 0.5)],
+        [make_treatment()],
+        [make_transition(0)],
+        features=features,
+    )
+
+    fade_cue = [c for c in tl.cues if c.intensity == 0.0]
+    assert len(fade_cue) == 1
+    assert fade_cue[0].render_mode == "solid"
+
+
+def test_fade_to_black_transition_is_fade():
+    """The fade cue has transition='fade' with transition_beats > 0."""
+    sections = (make_section(start_t=0.0, end_t=60.0, label="verse"),)
+    structure = make_structure(sections, duration=60.0, bpm=120.0)
+
+    features = [_make_feature(t, 0.5) for t in range(0, 50)]
+    features += [_make_feature(t, 0.01) for t in range(50, 61)]
+
+    tl = TimelineAssembler().assemble(
+        structure,
+        [make_arc(0, 0.5)],
+        [make_treatment()],
+        [make_transition(0)],
+        features=features,
+    )
+
+    fade_cue = [c for c in tl.cues if c.intensity == 0.0][0]
+    assert fade_cue.transition == "fade"
+    assert fade_cue.transition_beats > 0
+
+
+def test_no_fade_cue_if_song_ends_abruptly():
+    """Song where last beat is within 0.5s of duration → no fade cue."""
+    sections = (make_section(start_t=0.0, end_t=30.0, label="verse"),)
+    structure = make_structure(sections, duration=30.0, bpm=120.0)
+
+    # Energy high right to the end
+    features = [_make_feature(t * 0.5, 0.5) for t in range(0, 61)]
+
+    tl = TimelineAssembler().assemble(
+        structure,
+        [make_arc(0, 0.5)],
+        [make_treatment()],
+        [make_transition(0)],
+        features=features,
+    )
+
+    # Only section cue, no fade
+    assert len(tl.cues) == 1
+    assert tl.cues[0].intensity == 0.5
+
+
+def test_fade_cue_sorted_correctly():
+    """Fade cue appears after all section cues in timeline order."""
+    sections = (
+        make_section(start_t=0.0, end_t=50.0, label="verse"),
+        make_section(start_t=50.0, end_t=100.0, label="chorus"),
+    )
+    structure = make_structure(sections, duration=100.0, bpm=120.0)
+
+    features = [_make_feature(t, 0.5) for t in range(0, 90)]
+    features += [_make_feature(t, 0.01) for t in range(90, 101)]
+
+    tl = TimelineAssembler().assemble(
+        structure,
+        [make_arc(0, 0.5), make_arc(1, 0.8)],
+        [make_treatment(), make_treatment()],
+        [make_transition(0), make_transition(1)],
+        features=features,
+    )
+
+    # Verify sorted
+    for i in range(1, len(tl.cues)):
+        assert tl.cues[i].t >= tl.cues[i - 1].t
+
+    # Last cue should be the fade-to-black
+    assert tl.cues[-1].intensity == 0.0
+
+
+def test_fade_duration_capped_at_4s():
+    """20s of silence after last beat → fade transition_beats reflects 4s cap."""
+    sections = (make_section(start_t=0.0, end_t=120.0, label="verse"),)
+    structure = make_structure(sections, duration=120.0, bpm=120.0)
+
+    # Energy high up to t=95, then 25s of silence
+    features = [_make_feature(t, 0.5) for t in range(0, 95)]
+    features += [_make_feature(t, 0.01) for t in range(95, 121)]
+
+    tl = TimelineAssembler().assemble(
+        structure,
+        [make_arc(0, 0.5)],
+        [make_treatment()],
+        [make_transition(0)],
+        features=features,
+    )
+
+    fade_cue = [c for c in tl.cues if c.intensity == 0.0][0]
+    # 4s at 120 BPM = 8 beats, capped at 8
+    assert fade_cue.transition_beats <= 8
+
+
+# ---------------------------------------------------------------------------
+# 21-23. Outro intensity ramp tests (Issue 6, D2)
+# ---------------------------------------------------------------------------
+
+def test_outro_cue_has_intensity_start():
+    """Assemble with outro section → outro cue has intensity_start from previous section."""
+    sections = (
+        make_section(start_t=0.0, end_t=60.0, label="verse", section_id="A"),
+        make_section(start_t=60.0, end_t=90.0, label="outro", section_id="B"),
+    )
+    structure = make_structure(sections, duration=90.0)
+
+    arcs = [make_arc(0, 0.7), make_arc(1, 0.10)]
+    treats = [make_treatment(), make_treatment(render_mode="breathe")]
+    trans = [make_transition(0), make_transition(1, "fade", 4)]
+
+    tl = TimelineAssembler().assemble(structure, arcs, treats, trans)
+
+    # Verse cue: no intensity_start
+    assert tl.cues[0].intensity_start is None
+    # Outro cue: intensity_start = previous section's intensity (0.7)
+    outro_cue = [c for c in tl.cues if c.t == 60.0][0]
+    assert outro_cue.intensity_start == pytest.approx(0.7)
+    assert outro_cue.intensity == pytest.approx(0.10)
+
+
+def test_no_ramp_on_non_outro():
+    """Non-outro sections have intensity_start=None."""
+    sections = (
+        make_section(start_t=0.0, end_t=30.0, label="verse"),
+        make_section(start_t=30.0, end_t=60.0, label="chorus"),
+    )
+    structure = make_structure(sections, duration=60.0)
+
+    arcs = [make_arc(0, 0.5), make_arc(1, 0.8)]
+    treats = [make_treatment(), make_treatment()]
+    trans = [make_transition(0), make_transition(1)]
+
+    tl = TimelineAssembler().assemble(structure, arcs, treats, trans)
+
+    for cue in tl.cues:
+        assert cue.intensity_start is None
+
+
+def test_show_cue_roundtrip_with_intensity_start():
+    """Serialize/deserialize ShowCue with intensity_start."""
+    sections = (
+        make_section(start_t=0.0, end_t=60.0, label="verse"),
+        make_section(start_t=60.0, end_t=90.0, label="outro"),
+    )
+    structure = make_structure(sections, duration=90.0)
+
+    arcs = [make_arc(0, 0.7), make_arc(1, 0.10)]
+    treats = [make_treatment(), make_treatment()]
+    trans = [make_transition(0), make_transition(1)]
+
+    tl = TimelineAssembler().assemble(structure, arcs, treats, trans)
+
+    d = tl.to_dict()
+    tl2 = ShowTimeline.from_dict(d)
+
+    for c1, c2 in zip(tl.cues, tl2.cues):
+        assert c1.intensity_start == c2.intensity_start
