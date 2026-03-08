@@ -33,6 +33,95 @@ class FeatureRow:
     bpm: float              # frame-level BPM estimate
     beat: bool
     mood: str               # "chill" | "groove" | "hype" | "drop"
+    mfcc: tuple[float, ...] = (0.0,) * 13    # 13 MFCC coefficients
+    chroma: tuple[float, ...] = (1/12,) * 12  # 12 chroma pitch-class bins
+
+
+# ---------------------------------------------------------------------------
+# DSP helpers for MFCC and chroma (numpy-only, no librosa)
+# ---------------------------------------------------------------------------
+
+def _hz_to_mel(f: float) -> float:
+    return 2595.0 * np.log10(1.0 + f / 700.0)
+
+
+def _mel_to_hz(m: float) -> float:
+    return 700.0 * (10.0 ** (m / 2595.0) - 1.0)
+
+
+def _mel_filterbank(
+    n_mels: int = 40,
+    n_fft: int = 2048,
+    sr: int = 44100,
+    fmin: float = 20.0,
+    fmax: float | None = None,
+) -> np.ndarray:
+    """Build a mel-scale triangular filterbank matrix: (n_mels, n_fft//2+1)."""
+    if fmax is None:
+        fmax = sr / 2.0
+    n_bins = n_fft // 2 + 1
+
+    mel_min = _hz_to_mel(fmin)
+    mel_max = _hz_to_mel(fmax)
+    mel_points = np.linspace(mel_min, mel_max, n_mels + 2)
+    hz_points = np.array([_mel_to_hz(m) for m in mel_points])
+    bin_indices = np.floor((n_fft + 1) * hz_points / sr).astype(int)
+
+    filterbank = np.zeros((n_mels, n_bins), dtype=np.float64)
+    for i in range(n_mels):
+        left = bin_indices[i]
+        center = bin_indices[i + 1]
+        right = bin_indices[i + 2]
+        # Rising slope
+        for j in range(left, center):
+            if center != left:
+                filterbank[i, j] = (j - left) / (center - left)
+        # Falling slope
+        for j in range(center, right):
+            if right != center:
+                filterbank[i, j] = (right - j) / (right - center)
+
+    return filterbank
+
+
+def _dct_matrix(n_mfcc: int, n_mels: int) -> np.ndarray:
+    """Precompute DCT-II matrix for MFCC: (n_mfcc, n_mels)."""
+    basis = np.zeros((n_mfcc, n_mels), dtype=np.float64)
+    for k in range(n_mfcc):
+        for n in range(n_mels):
+            basis[k, n] = np.cos(np.pi * k * (2 * n + 1) / (2 * n_mels))
+    return basis
+
+
+def _compute_mfcc(
+    mag: np.ndarray,
+    mel_fb: np.ndarray,
+    dct_mat: np.ndarray,
+) -> tuple[float, ...]:
+    """Compute 13 MFCC coefficients from a magnitude spectrum."""
+    mel_power = mel_fb @ (mag ** 2)
+    log_mel = np.log(mel_power + 1e-10)
+    mfcc = dct_mat @ log_mel
+    return tuple(float(c) for c in mfcc)
+
+
+def _compute_chroma(
+    mag: np.ndarray,
+    freqs: np.ndarray,
+) -> tuple[float, ...]:
+    """Compute 12 chroma bins from a magnitude spectrum."""
+    chroma_bins = np.zeros(12, dtype=np.float64)
+    for i in range(len(freqs)):
+        f = freqs[i]
+        if f < 20.0:
+            continue
+        pitch_class = int(round(12.0 * np.log2(f / 440.0))) % 12
+        chroma_bins[pitch_class] += mag[i]
+
+    mx = chroma_bins.max()
+    if mx > 1e-10:
+        chroma_bins /= mx
+    return tuple(float(c) for c in chroma_bins)
 
 
 class OfflineFeaturePipeline:
@@ -65,6 +154,10 @@ class OfflineFeaturePipeline:
         window, bass_mask, kick_mask, freqs = _prepare_bass_window(frame_size, sr)
         n_bins = frame_size // 2 + 1
         perc_freq_mask = freqs <= 300.0
+
+        # Pre-compute mel filterbank and DCT matrix for MFCC/chroma
+        mel_fb = _mel_filterbank(n_mels=40, n_fft=frame_size, sr=sr)
+        dct_mat = _dct_matrix(n_mfcc=13, n_mels=40)
 
         # Instantiate fresh analysis objects
         bpm_estimator = LiveBpmEstimator(sample_rate=sr, hop_size=hop_size)
@@ -142,6 +235,10 @@ class OfflineFeaturePipeline:
                 director.effective_bpm, stream_t,
             )
 
+            # MFCC and chroma from magnitude spectrum
+            mfcc = _compute_mfcc(sf.mag, mel_fb, dct_mat)
+            chroma = _compute_chroma(sf.mag, freqs)
+
             rows.append(FeatureRow(
                 t=stream_t,
                 rms=rms,
@@ -155,6 +252,8 @@ class OfflineFeaturePipeline:
                 bpm=bpm,
                 beat=beat,
                 mood=mood.value,
+                mfcc=mfcc,
+                chroma=chroma,
             ))
 
             stream_t += hop_size / sr

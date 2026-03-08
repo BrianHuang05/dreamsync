@@ -25,12 +25,15 @@ def _make_feature_row(
     onset_strength: float = 0.2,
     bpm: float = 120.0,
     beat: bool = False,
+    mfcc: tuple[float, ...] = (0.0,) * 13,
+    chroma: tuple[float, ...] = (1/12,) * 12,
 ) -> FeatureRow:
     return FeatureRow(
         t=t, rms=rms, zcr=0.05, centroid=centroid,
         bass_ratio=bass_ratio, spectral_flux=spectral_flux,
         kick_spectral_flux=0.1, onset_strength=onset_strength,
         energy=energy, bpm=bpm, beat=beat, mood=mood,
+        mfcc=mfcc, chroma=chroma,
     )
 
 
@@ -38,12 +41,19 @@ def _make_structured_features(
     sections: list[tuple[float, float, float, float, str]],
     dt: float = 0.012,
 ) -> list[FeatureRow]:
-    """Generate features with distinct energy/spectral profiles per section.
+    """Generate features with distinct energy/spectral/timbral profiles per section.
 
     sections: list of (start_t, end_t, energy, centroid, mood)
+    Each section type gets a unique MFCC/chroma signature based on energy+centroid.
     """
     rows = []
     for start, end, energy, centroid, mood in sections:
+        # Generate distinct MFCC pattern per section profile
+        mfcc = tuple(float(energy * (1.0 - 0.05 * i) + centroid / 10000.0 * (0.5 + 0.03 * i))
+                     for i in range(13))
+        # Generate distinct chroma pattern (higher energy → different pitch-class emphasis)
+        chroma = tuple(float(0.3 + 0.5 * ((i + int(centroid / 500)) % 12 < 4))
+                       for i in range(12))
         t = start
         while t < end:
             rows.append(_make_feature_row(
@@ -51,6 +61,7 @@ def _make_structured_features(
                 rms=energy * 0.5, bass_ratio=0.2 + energy * 0.3,
                 spectral_flux=energy * 0.8,
                 onset_strength=energy * 0.4,
+                mfcc=mfcc, chroma=chroma,
             ))
             t += dt
     return rows

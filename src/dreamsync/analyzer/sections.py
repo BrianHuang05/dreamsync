@@ -29,7 +29,7 @@ class SectionSegmenter:
         kernel_size: int = 64,
         min_section_seconds: float = 8.0,
         peak_threshold: float = 0.3,
-        similarity_threshold: float = 0.7,
+        similarity_threshold: float = 0.96,
         feature_weights: dict[str, float] | None = None,
     ) -> None:
         self.kernel_size = kernel_size
@@ -42,6 +42,12 @@ class SectionSegmenter:
             "spectral_flux": 0.25,
             "rms": 0.1,
             "onset_strength": 0.1,
+        }
+        # Group weights for section vector clustering (spectral vs MFCC vs chroma)
+        self.feature_group_weights = {
+            "spectral": 0.4,
+            "mfcc": 0.3,
+            "chroma": 0.3,
         }
 
     def segment(
@@ -91,8 +97,10 @@ class SectionSegmenter:
         if not sections_raw:
             return [self._make_section(features, 0.0, duration, "A", tempo_regions)]
 
-        # 7. Assign structural IDs via clustering
-        section_vectors = [self._section_vector(sf) for _, _, sf in sections_raw]
+        # 7. Assign structural IDs via clustering (use normalized feature matrix)
+        section_vectors = self._section_vectors_from_matrix(
+            feat_matrix, features, sections_raw,
+        )
         ids = self._assign_structural_ids(section_vectors)
 
         # 8. Label sections
@@ -108,17 +116,33 @@ class SectionSegmenter:
         return sections
 
     def _build_feature_matrix(self, features: list[FeatureRow]) -> np.ndarray:
-        """Build normalized feature matrix from FeatureRows."""
+        """Build normalized feature matrix from FeatureRows.
+
+        Columns: 5 spectral + 13 MFCC + 12 chroma = 30 dimensions.
+        Each group is normalized independently, then weighted by group weight.
+        """
         n = len(features)
+        n_spectral = len(self.feature_weights)
+        n_mfcc = 13
+        n_chroma = 12
+        n_cols = n_spectral + n_mfcc + n_chroma
+        matrix = np.zeros((n, n_cols), dtype=np.float64)
+
         keys = list(self.feature_weights.keys())
-        matrix = np.zeros((n, len(keys)), dtype=np.float64)
 
         for i, f in enumerate(features):
+            # Spectral features
             for j, key in enumerate(keys):
                 matrix[i, j] = getattr(f, key, 0.0)
+            # MFCC features
+            for j, val in enumerate(f.mfcc[:n_mfcc]):
+                matrix[i, n_spectral + j] = val
+            # Chroma features
+            for j, val in enumerate(f.chroma[:n_chroma]):
+                matrix[i, n_spectral + n_mfcc + j] = val
 
         # Normalize each dimension to [0, 1]
-        for j in range(matrix.shape[1]):
+        for j in range(n_cols):
             col = matrix[:, j]
             mn, mx = col.min(), col.max()
             span = mx - mn
@@ -127,9 +151,22 @@ class SectionSegmenter:
             else:
                 matrix[:, j] = 0.0
 
-        # Apply weights
-        weights = np.array([self.feature_weights[k] for k in keys])
-        matrix *= weights[np.newaxis, :]
+        # Apply group weights
+        gw = self.feature_group_weights
+        spectral_weights = np.array([self.feature_weights[k] for k in keys])
+        # Normalize spectral weights to sum to spectral group weight
+        sw_sum = spectral_weights.sum()
+        if sw_sum > 0:
+            spectral_weights *= gw["spectral"] / sw_sum
+        matrix[:, :n_spectral] *= spectral_weights[np.newaxis, :]
+
+        # MFCC: equal weight per coefficient within group
+        mfcc_w = gw["mfcc"] / n_mfcc
+        matrix[:, n_spectral:n_spectral + n_mfcc] *= mfcc_w
+
+        # Chroma: equal weight per bin within group
+        chroma_w = gw["chroma"] / n_chroma
+        matrix[:, n_spectral + n_mfcc:] *= chroma_w
 
         return matrix
 
@@ -235,15 +272,47 @@ class SectionSegmenter:
         snapped = sorted(set(snapped))
         return snapped
 
+    def _section_vectors_from_matrix(
+        self,
+        feat_matrix: np.ndarray,
+        features: list[FeatureRow],
+        sections_raw: list[tuple[float, float, list[FeatureRow]]],
+    ) -> list[np.ndarray]:
+        """Compute section vectors by averaging rows of the normalized feature matrix."""
+        # Build a time → matrix-row-index mapping
+        # feat_matrix may have been downsampled in _self_similarity, but it was
+        # built from all features so row i corresponds to features[i].
+        n = len(features)
+        vectors = []
+        for start, end, _ in sections_raw:
+            # Find frame indices in this section
+            row_indices = [i for i in range(n) if start <= features[i].t < end]
+            if row_indices and max(row_indices) < feat_matrix.shape[0]:
+                section_rows = feat_matrix[row_indices]
+                vectors.append(section_rows.mean(axis=0))
+            else:
+                vectors.append(np.zeros(feat_matrix.shape[1]))
+        return vectors
+
     def _section_vector(self, features: list[FeatureRow]) -> np.ndarray:
-        """Compute a representative feature vector for a section."""
+        """Compute a representative 30-dim feature vector for a section (raw, unnormalized)."""
         keys = list(self.feature_weights.keys())
-        values = np.zeros(len(keys))
+        n_spectral = len(keys)
+        n_mfcc = 13
+        n_chroma = 12
+        values = np.zeros(n_spectral + n_mfcc + n_chroma)
         if not features:
             return values
+        # Spectral means
         for j, key in enumerate(keys):
             vals = [getattr(f, key, 0.0) for f in features]
             values[j] = float(np.mean(vals))
+        # MFCC means
+        mfcc_stack = np.array([f.mfcc[:n_mfcc] for f in features])
+        values[n_spectral:n_spectral + n_mfcc] = mfcc_stack.mean(axis=0)
+        # Chroma means
+        chroma_stack = np.array([f.chroma[:n_chroma] for f in features])
+        values[n_spectral + n_mfcc:] = chroma_stack.mean(axis=0)
         return values
 
     def _assign_structural_ids(self, vectors: list[np.ndarray]) -> list[str]:
@@ -332,7 +401,11 @@ class SectionSegmenter:
         )
 
     def _label_sections(self, sections: list[Section]) -> list[Section]:
-        """Apply labelling heuristics to assign musical names."""
+        """Apply labelling heuristics to assign musical names.
+
+        Uses rank-based energy comparison so that sections are labelled
+        relative to each other rather than against an absolute threshold.
+        """
         if not sections:
             return sections
 
@@ -340,64 +413,64 @@ class SectionSegmenter:
         energies = [s.energy_mean for s in sections]
         max_energy = max(energies) if energies else 0.0
 
-        # First pass: identify highest-energy sections
         labels: list[str] = ["unknown"] * n
-        id_labels: dict[str, str] = {}  # section_id → label
 
-        for i, s in enumerate(sections):
-            energy_ratio = s.energy_mean / max_energy if max_energy > 0 else 0
+        # --- 1. Positional labels: intro / outro ---
+        if n >= 2:
+            first_ratio = energies[0] / max_energy if max_energy > 0 else 0
+            median_energy = sorted(energies)[n // 2]
+            if first_ratio < 0.5 and energies[0] < median_energy and (sections[0].end_t - sections[0].start_t) < 30.0:
+                labels[0] = "intro"
 
-            # Intro: first section, low energy, short
-            if i == 0 and energy_ratio < 0.5 and (s.end_t - s.start_t) < 30.0:
-                labels[i] = "intro"
+        if n >= 2 and energies[-1] <= energies[-2]:
+            labels[-1] = "outro"
+        elif n >= 2:
+            last_ratio = energies[-1] / max_energy if max_energy > 0 else 0
+            if last_ratio < 0.5:
+                labels[-1] = "outro"
+
+        # --- 2. Drop detection (EDM-specific) ---
+        for i in range(n):
+            if labels[i] != "unknown":
                 continue
-
-            # Outro: last section, energy declining
-            if i == n - 1:
-                if n > 1 and s.energy_mean <= sections[i - 1].energy_mean:
-                    labels[i] = "outro"
-                    continue
-
-            # Drop: high energy spike + BPM > 120
-            if energy_ratio > 0.8 and s.mood == "drop":
+            ratio = energies[i] / max_energy if max_energy > 0 else 0
+            if ratio > 0.8 and sections[i].mood == "drop":
                 labels[i] = "drop"
+
+        # --- 3. Breakdown / bridge: low energy between high-energy neighbours ---
+        for i in range(1, n - 1):
+            if labels[i] != "unknown":
                 continue
+            ratio = energies[i] / max_energy if max_energy > 0 else 0
+            if ratio < 0.4:
+                left_ratio = energies[i - 1] / max_energy if max_energy > 0 else 0
+                right_ratio = energies[i + 1] / max_energy if max_energy > 0 else 0
+                if left_ratio > 0.5 and right_ratio > 0.5:
+                    labels[i] = "bridge" if ratio > 0.2 else "breakdown"
 
-            # Chorus: highest energy sections
-            if energy_ratio > 0.7:
-                labels[i] = "chorus"
-                continue
+        # --- 4. Rank-based chorus / verse split for remaining body sections ---
+        body_indices = [i for i in range(n) if labels[i] == "unknown"]
 
-            # Breakdown: low energy between high-energy sections
-            if i > 0 and i < n - 1 and energy_ratio < 0.4:
-                left_energy = energies[i - 1] / max_energy if max_energy > 0 else 0
-                right_energy = energies[i + 1] / max_energy if max_energy > 0 else 0
-                if left_energy > 0.5 and right_energy > 0.5:
-                    labels[i] = "bridge" if energy_ratio > 0.2 else "breakdown"
-                    continue
+        if body_indices:
+            # Rank body sections by energy (descending); top half → chorus
+            ranked = sorted(body_indices, key=lambda i: energies[i], reverse=True)
+            n_chorus = max(1, len(ranked) // 2)
+            chorus_set = set(ranked[:n_chorus])
 
-            # Verse: moderate energy
-            if energy_ratio >= 0.3:
-                labels[i] = "verse"
-            else:
-                labels[i] = "verse"
+            for idx in body_indices:
+                labels[idx] = "chorus" if idx in chorus_set else "verse"
 
-        # Second pass: use structural IDs for consistency
+        # --- 5. Structural ID consistency ---
+        id_labels: dict[str, str] = {}
+        for i, s in enumerate(sections):
+            sid = s.section_id
+            if labels[i] not in ("unknown",) and sid not in id_labels:
+                id_labels[sid] = labels[i]
+
         for i, s in enumerate(sections):
             sid = s.section_id
             if sid in id_labels and labels[i] == "unknown":
                 labels[i] = id_labels[sid]
-            elif labels[i] != "unknown":
-                if sid not in id_labels:
-                    id_labels[sid] = labels[i]
-
-        # Apply consistent labels for same structural IDs
-        for i, s in enumerate(sections):
-            sid = s.section_id
-            if sid in id_labels and labels[i] in ("unknown", "verse"):
-                # Only override generic labels, not specific ones
-                if labels[i] == "unknown":
-                    labels[i] = id_labels[sid]
 
         # Build final sections with labels
         result = []
