@@ -6,7 +6,7 @@
 - [x] **23. Batch analysis** (5+ songs in directory)
 - [x] **25. Show Player unit tests** (65 tests)
 - [x] **26. Audio playback test** (no devices) — `play --dry-run` with NullMultiAdapter
-- [ ] **27. Synchronized playback** (with real Govee devices)
+- [x] **27. Synchronized playback** (with real Govee devices)
 - [x] **28. Show file round-trip** (optional)
 - [x] **29. Compiler unit tests** (58 tests)
 - [x] **30. Single file compile**
@@ -14,6 +14,19 @@
 - [ ] **34. Compile-and-play** (full pipeline with devices)
 
 See the **Validation tests** section in `README.md` for full test details and commands.
+
+## Show Quality Improvements (Issues 1-6) — Complete
+
+All six show quality issues implemented and tested (69 new tests, 1508 total passing):
+
+- [x] **Issue 1 — Beat Alignment**: Two-pass phase search, hybrid beat grid (snap to onsets), harmonic alias octave detection
+- [x] **Issue 2 — Sub-Section Granularity**: Phrase segmenter (4-bar phrases), instrument event detector (kick/bass), micro-cue insertion
+- [x] **Issue 3 — Palette Coherence**: Song-level primary/accent palette, downbeat-only color cycling, smooth hex interpolation
+- [x] **Issue 4 — Bulb vs Strip Behavior**: Device-type render mode mapping, faster pulse decay for single-color devices
+- [x] **Issue 5 — Brightness Calibration**: Per-device `brightness_scale` in config, auto-role/brightness defaults by device type
+- [x] **Issue 6 — Show End Fadeout**: Fade-to-black after last energetic beat, outro intensity ramp (`intensity_start`)
+
+Plans: `dev/plans/issue1-beat-alignment.md` through `dev/plans/issue6-show-end-fadeout.md`
 
 ## Streaming Pipeline (session --pipeline)
 

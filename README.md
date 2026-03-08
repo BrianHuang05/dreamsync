@@ -116,6 +116,33 @@ For production use with a device config file. Runs until Ctrl+C, auto-detects de
 python -m dreamsync session --config devices.yaml --debug-mood
 ```
 
+### Device config
+
+```yaml
+# devices.yaml
+devices:
+  - name: "Desk Strip"
+    address: "192.168.1.100"
+    segments: 15
+    role: primary            # "primary" or "accent" (optional, auto-assigned by device type)
+    brightness_scale: 0.4    # 0.0–1.0, physical brightness calibration (optional)
+  - name: "Ceiling Bulb"
+    address: "192.168.1.101"
+    segments: 1
+    role: primary
+    brightness_scale: 1.0
+```
+
+**Auto-defaults** when `role` or `brightness_scale` are omitted:
+
+| Device type | Default role | Default brightness_scale |
+|---|---|---|
+| Bulb (1 segment + "bulb"/"light" in name) | primary | 1.0 |
+| Single-segment strip | accent | 0.5 |
+| Multi-segment strip | primary | 0.4 |
+
+Explicit config always overrides defaults. `brightness_scale` stacks multiplicatively with role-based scaling (accent = 0.6x intensity).
+
 ### Color profiles
 
 8 built-in color profiles control palette selection and effect pools per mood. Use `--profile` to load one, or `--profile-rotation` to cycle through several:
@@ -364,9 +391,9 @@ Tests covering all subsystems:
 | `test_capture_scanner.py` | 10 | Capture directory scanner, sidecar parsing, sort by index |
 | `test_cache_sidecar.py` | 5 | Sidecar-based cache keys, deterministic, case-insensitive |
 | `test_dir_pipeline.py` | 17 | Directory pipeline, cache hit/miss, progress, integration |
-| `test_analyzer_*.py` (5 files) | 80 | Audio decode, feature extraction, BPM, sections, models |
-| `test_show_*.py` (4 files) | 65 | Show timeline models, player, runtime, CLI |
-| `test_compiler_*.py` (5 files) | 58 | Arc planner, treatments, transitions, assembly, compile |
+| `test_analyzer_*.py` (6 files) | 101 | Audio decode, feature extraction, BPM, sections, models, phrases |
+| `test_show_*.py` (4 files) | 81 | Show timeline models, player, runtime (intensity ramp, color cycling), CLI |
+| `test_compiler_*.py` (5 files) | 79 | Arc planner, treatments (song palettes), transitions, assembly (micro-cues, fade-to-black), compile |
 | `test_cache*.py` (3 files) | 36 | Cache fingerprint, store, compile integration |
 | `test_null_adapter.py` | 6 | NullMultiAdapter interface compliance, runtime + session compatibility |
 | `test_show_pipeline_worker.py` | 12 | Background analyze + compile worker, queue, error handling, concurrency |
@@ -542,7 +569,9 @@ System Audio → LiveBpmEstimator → beat events + BPM
 | Segment rendering (SOLID, PULSE, SCROLL, BREATHE, STROBE, WAVE, GRADIENT) | `render.py` | `SegmentRenderer` |
 | LAN output (ptreal, razer, colorwc over UDP) | `output/govee_lan.py` | `GoveeLanAdapter` |
 | BLE output (bleak GATT, mood-follower mode) | `output/govee_ble.py` | `GoveeBleAdapter` |
+| Device roles, types, brightness scaling | `output/roles.py` | `DeviceRole`, `DeviceType`, `transform_intent()`, `adapt_render_mode()`, `default_device_config()` |
 | Auto-detect device roles (latency-based classification) | `output/auto_detect.py` | `auto_detect_roles()` |
+| Phrase segmentation + instrument events | `analyzer/phrases.py` | `PhraseSegmenter`, `InstrumentEventDetector`, `Phrase`, `InstrumentEvent` |
 | Device health monitor (probe loop, offline/online, role reclass) | `device_health.py` | `DeviceHealthMonitor` |
 | Song boundary detection (silence-gap + crossfade voting) | `live.py` | `SongBoundaryDetector`, `CrossfadeBoundaryDetector` |
 | Per-song telemetry (JSONL per song, session summary) | `telemetry.py` | `TelemetryWriter` |
