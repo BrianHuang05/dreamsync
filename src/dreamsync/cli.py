@@ -1526,6 +1526,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"No audio files found in {input_dir}")
             return 0
 
+        import sys
+        _enc = sys.stdout.encoding or "utf-8"
+        def _safe(s: str) -> str:
+            return s.encode(_enc, errors="replace").decode(_enc)
+
         print(f"Analyzing {len(files)} files...")
         for i, f in enumerate(files, 1):
             out_path = output_dir / f"{f.stem}.analysis.json"
@@ -1537,9 +1542,9 @@ def main(argv: list[str] | None = None) -> int:
                     hop_size=args.hop_size,
                 )
                 structure.to_json(out_path)
-                print(f"  [{i}/{len(files)}] {f.name} → {out_path.name} (BPM={structure.bpm:.0f}, {len(structure.sections)} sections)")
+                print(_safe(f"  [{i}/{len(files)}] {f.name} -> {out_path.name} (BPM={structure.bpm:.0f}, {len(structure.sections)} sections)"))
             except Exception as exc:
-                print(f"  [{i}/{len(files)}] {f.name} — FAILED: {exc}")
+                print(_safe(f"  [{i}/{len(files)}] {f.name} - FAILED: {exc}"))
         return 0
 
     if args.command == "play":
@@ -1680,9 +1685,9 @@ def main(argv: list[str] | None = None) -> int:
                 structure, profile, cache=cache, track_id=track_id, seed=args.seed,
             )
             if from_cache:
-                print("Cache hit — loaded from cache")
+                print("Cache hit - loaded from cache")
             else:
-                print("Cache miss — compiled and cached")
+                print("Cache miss - compiled and cached")
         else:
             timeline = compile_show(structure, profile, seed=args.seed)
 
@@ -1723,6 +1728,11 @@ def main(argv: list[str] | None = None) -> int:
             from .cache import ShowCache, cached_compile_show, path_based_track_id
             cache = ShowCache(args.cache_dir)
 
+        import sys
+        _enc = sys.stdout.encoding or "utf-8"
+        def _safe(s: str) -> str:
+            return s.encode(_enc, errors="replace").decode(_enc)
+
         print(f"Compiling {len(files)} shows...")
         for i, f in enumerate(files, 1):
             # Derive show filename: foo.analysis.json -> foo.show.json
@@ -1742,11 +1752,11 @@ def main(argv: list[str] | None = None) -> int:
                     status = "compiled"
 
                 timeline.to_json(out_path)
-                print(f"  [{i}/{len(files)}] {stem} → {out_path.name} ({len(timeline.cues)} cues, {status})")
+                print(_safe(f"  [{i}/{len(files)}] {stem} -> {out_path.name} ({len(timeline.cues)} cues, {status})"))
                 if args.summary:
                     print(format_summary(structure, timeline))
             except Exception as exc:
-                print(f"  [{i}/{len(files)}] {stem} — FAILED: {exc}")
+                print(_safe(f"  [{i}/{len(files)}] {stem} - FAILED: {exc}"))
         return 0
 
     if args.command == "compile-and-play":
@@ -1776,7 +1786,7 @@ def main(argv: list[str] | None = None) -> int:
 
             if cache.has(track_id, profile):
                 timeline = cache.get(track_id, profile)
-                print("Cache hit — skipping analysis and compilation")
+                print("Cache hit - skipping analysis and compilation")
             else:
                 print(f"Analyzing {args.mp3_path}...")
                 try:
@@ -1785,7 +1795,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"Analysis failed: {exc}")
                     return 1
 
-                print("Cache miss — analyzing and compiling...")
+                print("Cache miss - analyzing and compiling...")
                 timeline, _ = cached_compile_show(
                     structure, profile, cache=cache, track_id=track_id, seed=args.seed,
                 )

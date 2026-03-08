@@ -61,19 +61,23 @@ def compile_show(
 
 def format_summary(structure: SongStructure, timeline: ShowTimeline) -> str:
     """Build a human-readable summary of a compiled show."""
+    import sys
+    _enc = sys.stdout.encoding or "utf-8"
+
     minutes = int(structure.duration // 60)
     seconds = int(structure.duration % 60)
     duration_str = f"{minutes}:{seconds:02d}"
 
+    safe_path = structure.path.encode(_enc, errors="replace").decode(_enc)
     lines = [
-        f"Show compiled: {structure.path}",
+        f"Show compiled: {safe_path}",
         f"  Duration:  {duration_str}",
         f"  BPM:       {structure.bpm:.1f}",
         f"  Sections:  {len(structure.sections)}",
         f"  Cues:      {len(timeline.cues)}",
         "",
         "  Time     Label     Mood    Effect         Transition  Beats  Intensity",
-        "  ──────── ───────── ─────── ────────────── ────────── ─────── ─────────",
+        "  -------- --------- ------- -------------- ---------- ------- ---------",
     ]
 
     for i, cue in enumerate(timeline.cues):
