@@ -26,6 +26,7 @@ python -m dreamsync play out/capture-boundary/2026-03-06_00-19-45_Pat\ Metheny\ 
 
 ```bash
 # Dry-run auto-palette: watch mood-aware profile switching + cross-fade
+# uses realtime reactive govee-live (no audio playback)
 python -m dreamsync govee-live \
     --device 192.168.0.99:7:primary:ptreal \
     --duration 300 --auto-palette --debug-mood
@@ -74,7 +75,9 @@ python -m dreamsync profiles --generate 12 --seed 42 --chain-preview 10
 - [x] **29. Compiler unit tests** (79 tests)
 - [x] **30. Single file compile**
 - [x] **31. Compile to JSON output**
-- [ ] **34. Compile-and-play** (full pipeline with devices) — see command in section 3 above
+- [x] **33. Auto-palette live test** (profile chaining + cross-fade) — see command in section 7 above
+- [x] **34. Profile generation preview** (deterministic generation + chain preview) — see command in section 8 above
+- [ ] **35. Compile-and-play** (full pipeline with devices) — see command in section 3 above
 
 See the **Validation tests** section in `README.md` for full test details and commands.
 
@@ -109,6 +112,12 @@ Capture + analyze + compile + play concurrently. Implemented in:
 - `ShowPipelineWorker` (`src/dreamsync/show_pipeline_worker.py`) — 12 tests
 - `ShowPlaybackConsumer` (`src/dreamsync/show_playback_consumer.py`) — 10 tests
 - CLI: `play --dry-run`, `session --pipeline --playback-device N --purge`
+
+## Tagged Profile Chaining — Up Next
+
+ROYGBIVW semantic tagging, profile persistence, seed-based regeneration, and YAML export for discovered palettes.
+
+Plan: `dev/plans/tagged-profile-chaining.md`
 
 ## Out of Scope (deferred)
 
