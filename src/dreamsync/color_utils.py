@@ -153,6 +153,71 @@ def generate_palette(
 
 
 # ---------------------------------------------------------------------------
+# ROYGBIVW color classification
+# ---------------------------------------------------------------------------
+
+# Perceptual hue boundaries for ROYGBIVW classification
+HUE_BUCKETS: list[tuple[str, float, float]] = [
+    ("R", 345.0, 15.0),   # Red: 345-360, 0-15 (wraps)
+    ("O", 15.0, 45.0),    # Orange: 15-45
+    ("Y", 45.0, 70.0),    # Yellow: 45-70
+    ("G", 70.0, 165.0),   # Green: 70-165
+    ("B", 165.0, 255.0),  # Blue: 165-255
+    ("I", 255.0, 285.0),  # Indigo: 255-285
+    ("V", 285.0, 345.0),  # Violet: 285-345
+]
+
+
+def hue_to_color_name(hue: float, saturation: float | None = None) -> str:
+    """Map a hue (0-360) to a ROYGBIVW letter.
+
+    Achromatic colors (saturation < 0.1) return 'W' (white/neutral).
+    """
+    if saturation is not None and saturation < 0.1:
+        return "W"
+    hue = hue % 360.0
+    for letter, lo, hi in HUE_BUCKETS:
+        if letter == "R":
+            # Red wraps around 0
+            if hue >= lo or hue < hi:
+                return letter
+        else:
+            if lo <= hue < hi:
+                return letter
+    return "R"  # fallback (shouldn't happen)
+
+
+def classify_palette_colors(colors: tuple[str, ...]) -> tuple[str, str]:
+    """Return (primary, secondary) ROYGBIVW letters for a palette.
+
+    Primary = most frequent hue bucket across all colors.
+    Secondary = second most frequent (or same as primary if monochromatic).
+    Achromatic colors (very low saturation) are excluded from counting
+    unless all colors are achromatic, in which case both return 'W'.
+    """
+    from collections import Counter
+
+    counts: Counter[str] = Counter()
+    for c in colors:
+        h, s, _l = hex_to_hsl(c)
+        letter = hue_to_color_name(h, s)
+        counts[letter] += 1
+
+    if not counts:
+        return ("W", "W")
+
+    # If all achromatic, return W
+    non_w = {k: v for k, v in counts.items() if k != "W"}
+    if not non_w:
+        return ("W", "W")
+
+    ranked = sorted(non_w.items(), key=lambda kv: kv[1], reverse=True)
+    primary = ranked[0][0]
+    secondary = ranked[1][0] if len(ranked) > 1 else primary
+    return (primary, secondary)
+
+
+# ---------------------------------------------------------------------------
 # Distance
 # ---------------------------------------------------------------------------
 

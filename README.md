@@ -166,8 +166,14 @@ python -m dreamsync govee-live --device 10.0.0.1:7:primary:ptreal --duration 300
 python -m dreamsync govee-live --device 10.0.0.1:7:primary:ptreal --duration 300 \
     --smart-rotation --profile-rotation aurora,neon_city,ocean_deep,warm_sunset --debug-mood
 
-# Preview generated profiles and chain sequence
+# Preview generated profiles with ROYGBIVW color tags
+python -m dreamsync profiles --generate 12 --seed 42
+
+# Preview chain sequence with tag-based scoring
 python -m dreamsync profiles --generate 12 --seed 42 --chain-preview 10
+
+# Export a discovered palette to a reusable YAML file
+python -m dreamsync profile-export --seed 42 --index 3 --output my_palette.yaml
 
 # Validate a profile's YAML structure
 python -m dreamsync profile-validate aurora
@@ -391,7 +397,7 @@ Common device IDs (run `dreamsync devices` to confirm yours):
 
 ```bash
 python -m pytest tests/ -v        # Core subsystems (569 tests)
-python -m pytest dev/tests/ -v    # Dev tests
+python -m pytest dev/tests/ -v    # Dev tests (1660+ tests)
 ```
 
 Tests covering all subsystems:
@@ -450,6 +456,9 @@ Tests covering all subsystems:
 | `test_profile_generator.py` | 14 | Procedural profile generation, validation, determinism, harmony/temp/saturation |
 | `test_profile_chain.py` | 30 | Distance matrix, neighbor selection, cross-fade blending, chain controller state machine |
 | `test_cli_auto_palette.py` | 12 | CLI flag parsing, mutual exclusivity, chain wiring |
+| `test_color_tags.py` | 31 | ROYGBIVW hue classification, palette color classification, profile tag generation |
+| `test_tag_chaining.py` | 25 | Tag parsing, tag scoring, tag-aware profile selection, mood preferences, backward compat |
+| `test_profile_export.py` | 9 | YAML export, round-trip, name override, tag preservation, CLI export |
 
 ### Validation tests
 
@@ -618,9 +627,9 @@ System Audio → LiveBpmEstimator → beat events + BPM
 | Composite energy metric (RMS + spectral flux + bass + onset) | `director.py` | `Director`, `DirectorConfig` |
 | Mood classification (CHILL / GROOVE / HYPE / DROP) | `mood.py` | `MoodClassifier`, `MoodConfig` |
 | Effect cycling + color profiles | `effects.py`, `profile.py` | `EffectCycler`, `ProfileLoader`, `ProfileWatcher` |
-| Procedural profile generation | `profile_generator.py` | `generate_profile()`, `generate_profile_set()`, `GeneratorParams` |
-| Smart profile chaining + cross-fade | `profile_chain.py` | `ProfileChain`, `ChainConfig`, `blend_profiles()`, `pick_next_profile()` |
-| HSL color utilities | `color_utils.py` | `hex_to_hsl()`, `interpolate_hex_hsl()`, `generate_palette()`, harmony generators |
+| Procedural profile generation + export | `profile_generator.py` | `generate_profile()`, `generate_profile_set()`, `GeneratorParams`, `compute_profile_tags()`, `export_profile_yaml()` |
+| Smart profile chaining + cross-fade | `profile_chain.py` | `ProfileChain`, `ChainConfig`, `blend_profiles()`, `pick_next_profile()`, `_tag_score()` |
+| HSL color utilities + ROYGBIVW classification | `color_utils.py` | `hex_to_hsl()`, `interpolate_hex_hsl()`, `generate_palette()`, `hue_to_color_name()`, `classify_palette_colors()`, harmony generators |
 | Segment rendering (SOLID, PULSE, SCROLL, BREATHE, STROBE, WAVE, GRADIENT) | `render.py` | `SegmentRenderer` |
 | LAN output (ptreal, razer, colorwc over UDP) | `output/govee_lan.py` | `GoveeLanAdapter` |
 | BLE output (bleak GATT, mood-follower mode) | `output/govee_ble.py` | `GoveeBleAdapter` |

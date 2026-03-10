@@ -1551,8 +1551,20 @@ def run_live_to_govee(
                 if new_profile is not None:
                     effect_cycler.set_profile(new_profile)
                     if debug_mood:
-                        blending = " (blending)" if profile_chain.is_blending else ""
-                        print(f"[chain] profile: {new_profile.name}{blending}")
+                        from dreamsync.profile_chain import _get_tag
+                        _p = new_profile
+                        _pri = _get_tag(_p, "primary:") or ""
+                        _sec = _get_tag(_p, "secondary:") or ""
+                        _tmp = next((t for t in ("warm", "cool", "neutral") if t in _p.tags), "")
+                        _sat = next((t for t in ("muted", "medium", "vivid") if t in _p.tags), "")
+                        _tag_info = f" [primary:{_pri} secondary:{_sec} {_tmp}/{_sat}]" if _pri else ""
+                        _seed_str = f" (seed={profile_chain.seed}" if profile_chain.seed is not None else " ("
+                        _idx = profile_chain.pool_index_of(_p)
+                        _idx_str = f" index={_idx})" if _idx is not None else ")"
+                        if profile_chain.is_blending:
+                            print(f"[chain] blend -> {_p.name}{_tag_info}{_seed_str}{_idx_str}")
+                        else:
+                            print(f"[chain] profile: {_p.name}{_tag_info}{_seed_str}{_idx_str}")
             elif profile_rotation is not None and effect_cycler is not None:
                 new_profile = profile_rotation.update(stream_t)
                 if new_profile is not None:

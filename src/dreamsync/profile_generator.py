@@ -13,6 +13,7 @@ from typing import Any
 
 from dreamsync.color_utils import (
     analogous,
+    classify_palette_colors,
     complementary,
     generate_palette,
     split_complementary,
@@ -95,6 +96,39 @@ _DROP_EFFECTS = (
 
 
 # ---------------------------------------------------------------------------
+# Tag computation
+# ---------------------------------------------------------------------------
+
+def compute_profile_tags(
+    params: GeneratorParams,
+    palettes: dict[str, tuple[str, ...]],
+) -> tuple[str, ...]:
+    """Compute semantic tags from generator params and actual palette colors.
+
+    Analyzes the 'energy' palette (middle tier) for primary/secondary color
+    since it best represents the profile's overall character.
+    """
+    # Use energy palette for color classification; fall back to first available
+    representative = palettes.get("energy")
+    if representative is None:
+        representative = next(iter(palettes.values()), ())
+
+    if representative:
+        primary, secondary = classify_palette_colors(representative)
+    else:
+        primary, secondary = "W", "W"
+
+    return (
+        "generated",
+        f"primary:{primary}",
+        f"secondary:{secondary}",
+        params.temperature,
+        params.saturation,
+        params.harmony,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Generator
 # ---------------------------------------------------------------------------
 
@@ -160,13 +194,15 @@ def generate_profile(params: GeneratorParams) -> ProfileConfig:
     cycle_interval = _CYCLE_INTERVALS.get(params.harmony, 20.0)
     name = f"{params.harmony}_{int(params.base_hue)}_{params.temperature}"
 
+    tags = compute_profile_tags(params, palettes)
+
     return ProfileConfig(
         name=name,
         palettes=palettes,
         moods=moods,
         description=f"Generated {params.harmony} profile at hue {int(params.base_hue)} ({params.temperature}/{params.saturation})",
         author="dreamsync-generator",
-        tags=(params.harmony, params.temperature, params.saturation, "generated"),
+        tags=tags,
         version=1,
         source_path=None,
         transitions=transitions,
@@ -216,3 +252,64 @@ def generate_profile_set(count: int, seed: int | None = None) -> list[ProfileCon
         profiles.append(generate_profile(params))
 
     return profiles
+
+
+# ---------------------------------------------------------------------------
+# YAML export
+# ---------------------------------------------------------------------------
+
+def export_profile_yaml(
+    profile: ProfileConfig,
+    path: "Path",
+    name_override: str | None = None,
+    seed: int | None = None,
+    index: int | None = None,
+) -> None:
+    """Write a ProfileConfig to a YAML file in the same format as hand-crafted profiles.
+
+    The exported file is a valid profile YAML that can be loaded with
+    --profile or included in --profile-rotation.
+    """
+    import yaml
+    from pathlib import Path as _Path
+
+    path = _Path(path)
+
+    name = name_override if name_override else profile.name
+
+    desc = profile.description or f"Generated profile"
+    if seed is not None and index is not None:
+        desc += f" — exported from seed {seed} index {index}"
+
+    data: dict = {
+        "name": name,
+        "description": desc,
+        "author": profile.author or "dreamsync-generator",
+        "tags": list(profile.tags),
+        "version": profile.version,
+        "palettes": {k: list(v) for k, v in profile.palettes.items()},
+        "moods": {},
+        "transitions": [],
+        "cycle_interval": profile.cycle_interval or 24.0,
+    }
+
+    for mood_name, mc in profile.moods.items():
+        mood_data: dict = {"palettes": list(mc.palettes)}
+        if mc.effects:
+            mood_data["effects"] = [
+                {"name": e.name, "weight": e.weight} for e in mc.effects
+            ]
+        if mc.params:
+            mood_data["params"] = dict(mc.params)
+        data["moods"][mood_name] = mood_data
+
+    for t in profile.transitions:
+        data["transitions"].append({
+            "from": t.from_mood,
+            "to": t.to_mood,
+            "palette": t.palette,
+        })
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)

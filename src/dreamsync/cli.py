@@ -670,6 +670,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate_cmd.add_argument("path", type=str, help="Profile name or path to validate.")
 
+    export_cmd = sub.add_parser(
+        "profile-export",
+        help="Export a generated profile to a reusable YAML file.",
+    )
+    export_cmd.add_argument("--seed", type=int, required=True, help="Seed used to generate the pool.")
+    export_cmd.add_argument("--index", type=int, required=True, help="Profile index in the pool (0-based).")
+    export_cmd.add_argument("--count", type=int, default=12, help="Pool size (default: 12).")
+    export_cmd.add_argument("--output", "-o", type=str, required=True, help="Output YAML path.")
+    export_cmd.add_argument("--name", type=str, default=None, help="Custom name for the exported profile.")
+
     # -- Analyze command --------------------------------------------------------
     analyze_cmd = sub.add_parser(
         "analyze",
@@ -905,6 +915,10 @@ def _resolve_profile_chain_from_args(args):
 
         count = getattr(args, "auto_palette_count", 12)
         seed = getattr(args, "auto_palette_seed", None)
+        if seed is None:
+            import time
+            seed = int(time.time()) % 100000
+            print(f"Auto-palette seed: {seed} (reuse with --auto-palette-seed {seed})")
         pool = generate_profile_set(count, seed=seed)
         chain = ProfileChain(pool, chain_config, seed=seed)
         print(f"Auto-palette: {count} generated profiles, blend {chain_config.blend_duration:.0f}s, interval {chain_min:.0f}-{chain_max:.0f}s")
@@ -1617,17 +1631,25 @@ def main(argv: list[str] | None = None) -> int:
         if generate_count is not None:
             from .profile_generator import generate_profile_set
             from .color_utils import profile_color_distance
+            from .profile_chain import _get_tag
 
             gen_profiles = generate_profile_set(generate_count, seed=seed)
             for i, p in enumerate(gen_profiles, 1):
-                pal_info = ", ".join(f"{k}({len(v)} colors)" for k, v in p.palettes.items())
-                print(f"  {i}. {p.name}  [{pal_info}]")
+                primary = _get_tag(p, "primary:") or "?"
+                secondary = _get_tag(p, "secondary:") or "?"
+                temp = next((t for t in ("warm", "cool", "neutral") if t in p.tags), "?")
+                intensity = next((t for t in ("muted", "medium", "vivid") if t in p.tags), "?")
+                tag_str = f"[primary:{primary}  secondary:{secondary}  {temp}/{intensity}]"
+                print(f"  {i:>2}. {p.name:40s} {tag_str}")
                 if getattr(args, "verbose", False):
                     for pal_name, colors in p.palettes.items():
-                        print(f"     {pal_name}: {' '.join(colors)}")
+                        print(f"      {pal_name}: {' '.join(colors)}")
+
+            if seed is not None:
+                print(f"\nSeed: {seed} (use --auto-palette-seed {seed} to reuse this palette set)")
 
             if chain_preview is not None:
-                from .profile_chain import ChainConfig, ProfileChain, pick_next_profile
+                from .profile_chain import ChainConfig, ProfileChain, pick_next_profile, _tag_score
 
                 chain = ProfileChain(gen_profiles, ChainConfig(), seed=seed)
                 print(f"\nChain sequence (seed={seed}, {generate_count} profiles):")
@@ -1637,7 +1659,18 @@ def main(argv: list[str] | None = None) -> int:
                     rng = _rnd.Random(seed if seed is not None else step)
                     nxt = pick_next_profile(current, gen_profiles, [], rng)
                     dist = profile_color_distance(current, nxt)
-                    print(f"  {step}. {current.name:40s} -> {nxt.name:40s} (distance: {dist:.0f})")
+                    score = _tag_score(current, nxt)
+                    cur_p = _get_tag(current, "primary:") or "?"
+                    nxt_p = _get_tag(nxt, "primary:") or "?"
+                    # Describe the transition reason
+                    reasons = []
+                    if cur_p != nxt_p:
+                        reasons.append("contrast primary")
+                    nxt_sec = _get_tag(nxt, "secondary:")
+                    if nxt_sec and nxt_sec == cur_p:
+                        reasons.append(f"color thread {cur_p}->{nxt_sec}")
+                    reason_str = ", ".join(reasons) if reasons else "distance"
+                    print(f"  {step}. {current.name} ({cur_p}){' ':>2} -> {nxt.name} ({nxt_p}){' ':>2} score={score:.2f} dist={dist:.0f} [{reason_str}]")
                     current = nxt
 
             return 0
@@ -1682,6 +1715,24 @@ def main(argv: list[str] | None = None) -> int:
             print("  No harmony warnings.")
         else:
             print(f"  {warnings_total} warning(s) found.")
+        return 0
+
+    if args.command == "profile-export":
+        from .profile_generator import generate_profile_set, export_profile_yaml
+
+        seed = args.seed
+        index = args.index
+        count = args.count
+        output = args.output
+
+        if index < 0 or index >= count:
+            print(f"Error: --index {index} is out of range for pool size {count} (0-{count - 1}).")
+            return 1
+
+        pool = generate_profile_set(count, seed=seed)
+        profile = pool[index]
+        export_profile_yaml(profile, output, name_override=args.name, seed=seed, index=index)
+        print(f"Exported profile '{args.name or profile.name}' to {output}")
         return 0
 
     if args.command == "analyze":

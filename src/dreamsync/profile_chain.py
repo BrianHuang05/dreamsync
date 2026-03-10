@@ -23,7 +23,94 @@ from dreamsync.profile import (
 
 
 # ---------------------------------------------------------------------------
-# Distance matrix & neighbor selection (Deliverable 2A)
+# Tag helpers
+# ---------------------------------------------------------------------------
+
+def _get_tag(profile: ProfileConfig, prefix: str) -> str | None:
+    """Extract a tag value by prefix. e.g., _get_tag(p, 'primary:') -> 'O'"""
+    for tag in profile.tags:
+        if tag.startswith(prefix):
+            return tag[len(prefix):]
+    return None
+
+
+_INTENSITY_ORDER = ("muted", "medium", "vivid")
+
+
+def _tag_score(
+    current: ProfileConfig,
+    candidate: ProfileConfig,
+    mood: str | None = None,
+) -> float:
+    """Score a candidate profile based on tag relationships to current.
+
+    Returns a value in [0.0, 1.0] where 1.0 = ideal transition.
+    """
+    score = 0.0
+
+    cur_primary = _get_tag(current, "primary:")
+    cand_primary = _get_tag(candidate, "primary:")
+    cur_secondary = _get_tag(current, "secondary:")
+    cand_secondary = _get_tag(candidate, "secondary:")
+
+    # If either profile lacks tags, return neutral score
+    if cur_primary is None or cand_primary is None:
+        return 0.5
+
+    # Primary color contrast: different primary -> +0.4
+    if cand_primary != cur_primary:
+        score += 0.4
+
+    # Secondary color thread: candidate secondary == current primary -> +0.2
+    if cand_secondary is not None and cand_secondary == cur_primary:
+        score += 0.2
+
+    # Temperature
+    cur_temp = None
+    cand_temp = None
+    for t in ("warm", "cool", "neutral"):
+        if t in current.tags:
+            cur_temp = t
+        if t in candidate.tags:
+            cand_temp = t
+
+    if cur_temp and cand_temp:
+        same_temp = cur_temp == cand_temp
+        if mood in ("chill", "groove"):
+            score += 0.2 if same_temp else 0.0
+        elif mood in ("hype", "drop"):
+            score += 0.2 if not same_temp else 0.0
+        else:
+            score += 0.1
+
+    # Intensity
+    cur_int = None
+    cand_int = None
+    for val in _INTENSITY_ORDER:
+        if val in current.tags:
+            cur_int = val
+        if val in candidate.tags:
+            cand_int = val
+
+    if cur_int and cand_int:
+        if cur_int == cand_int:
+            score += 0.1
+        else:
+            ci = _INTENSITY_ORDER.index(cur_int)
+            cai = _INTENSITY_ORDER.index(cand_int)
+            if abs(ci - cai) == 1:
+                score += 0.05
+
+    # Color distance within ideal range -> +0.1
+    dist = profile_color_distance(current, candidate)
+    if 60.0 <= dist <= 150.0:
+        score += 0.1
+
+    return min(score, 1.0)
+
+
+# ---------------------------------------------------------------------------
+# Distance matrix & neighbor selection
 # ---------------------------------------------------------------------------
 
 def build_distance_matrix(profiles: list[ProfileConfig]) -> list[list[float]]:
@@ -45,11 +132,20 @@ def pick_next_profile(
     rng: random.Random,
     max_distance: float | None = None,
     min_distance: float | None = None,
+    mood: str | None = None,
 ) -> ProfileConfig:
-    """Select next profile from pool based on color distance to current.
+    """Select next profile using combined tag score + color distance.
 
-    Excludes recent history, filters by distance bounds, and uses
-    inverse-distance weighting for smooth transitions.
+    Scoring:
+      1. Filter: exclude current, history, out-of-distance-range
+      2. For each candidate:
+         - tag_weight = _tag_score(current, candidate, mood)
+         - dist_weight = 1.0 / (distance + 1.0)
+         - combined = (0.6 * tag_weight) + (0.4 * dist_weight)
+      3. Weighted random choice using combined scores
+
+    Fallback: if no tagged profiles (e.g., hand-crafted YAML profiles without
+    tags), falls back to pure distance weighting (current behavior).
     """
     if max_distance is None:
         max_distance = 180.0
@@ -86,9 +182,27 @@ def pick_next_profile(
     if not candidates:
         return current  # single-profile pool
 
-    # Weighted random: inverse distance (closer = more likely)
-    max_d = max(d for _, d in candidates)
-    weights = [(max_d - d + 1.0) for _, d in candidates]
+    # Check if any candidate has tags (primary:X)
+    has_tags = _get_tag(current, "primary:") is not None and any(
+        _get_tag(p, "primary:") is not None for p, _ in candidates
+    )
+
+    if has_tags:
+        # Combined tag + distance scoring
+        max_d = max(d for _, d in candidates) or 1.0
+        weights = []
+        for p, d in candidates:
+            tag_w = _tag_score(current, p, mood)
+            dist_w = 1.0 / (d + 1.0)
+            # Normalize dist_w relative to pool
+            dist_w_norm = dist_w * (max_d + 1.0)  # scale to ~[0, 1]
+            combined = 0.6 * tag_w + 0.4 * dist_w_norm
+            weights.append(max(combined, 0.01))
+    else:
+        # Pure distance fallback for untagged profiles
+        max_d = max(d for _, d in candidates)
+        weights = [(max_d - d + 1.0) for _, d in candidates]
+
     total = sum(weights)
     if total <= 0:
         return candidates[0][0]
@@ -251,6 +365,7 @@ class ProfileChain:
     ) -> None:
         self._pool = list(pool)
         self._config = config or ChainConfig()
+        self._seed = seed
         self._rng = random.Random(seed)
         self._current = self._pool[0]
         self._current_start_t: float = 0.0
@@ -258,6 +373,15 @@ class ProfileChain:
         self._blend_start_t: float | None = None
         self._history: list[str] = []
         self._distance_matrix = build_distance_matrix(self._pool)
+        self._pool_index: dict[str, int] = {p.name: i for i, p in enumerate(pool)}
+
+    @property
+    def seed(self) -> int | None:
+        return self._seed
+
+    def pool_index_of(self, profile: ProfileConfig) -> int | None:
+        """Return the profile's index in the original pool, or None."""
+        return self._pool_index.get(profile.name)
 
     @property
     def current(self) -> ProfileConfig:
@@ -310,6 +434,7 @@ class ProfileChain:
                 self._rng,
                 max_distance=self._config.max_color_distance,
                 min_distance=self._config.min_color_distance,
+                mood=mood,
             )
             self._blend_start_t = t
             # Return first blend frame
