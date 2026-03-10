@@ -67,6 +67,7 @@ def run_session(
     pipeline: bool = False,
     playback_device: int | None = None,
     purge: bool = False,
+    profile_chain: Any | None = None,
 ) -> dict[str, Any]:
     """Run an infinite DreamSync session from a YAML config.
 
@@ -370,6 +371,7 @@ def run_session(
                 telemetry_dir=telemetry_dir,
                 profile=profile,
                 effect_cycler_override=effect_cycler,
+                profile_chain=profile_chain,
             )
         elif v3 and spotify_watcher is not None:
             from dreamsync.v3_session import run_v3_session
@@ -406,6 +408,7 @@ def run_session(
                 telemetry_dir=telemetry_dir,
                 profile=profile,
                 effect_cycler_override=effect_cycler,
+                profile_chain=profile_chain,
             )
     finally:
         # 7. Cleanup — shutdown capture before Spotify (needs timing data)

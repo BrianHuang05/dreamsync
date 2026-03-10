@@ -145,7 +145,7 @@ Explicit config always overrides defaults. `brightness_scale` stacks multiplicat
 
 ### Color profiles
 
-8 built-in color profiles control palette selection and effect pools per mood. Use `--profile` to load one, or `--profile-rotation` to cycle through several:
+8 built-in color profiles control palette selection and effect pools per mood. Use `--profile` to load one, `--profile-rotation` to cycle through several, or `--auto-palette` for unlimited procedural variety:
 
 ```bash
 # List available profiles
@@ -158,6 +158,17 @@ python -m dreamsync govee-live --device 10.0.0.1:7:primary:ptreal --duration 120
 python -m dreamsync govee-live --device 10.0.0.1:7:primary:ptreal --duration 300 \
     --profile-rotation aurora,neon_city,midnight_rave --rotation-interval 60 --debug-mood
 
+# Auto-palette: procedural generation + smart chaining with cross-fade
+python -m dreamsync govee-live --device 10.0.0.1:7:primary:ptreal --duration 300 \
+    --auto-palette --debug-mood
+
+# Smart rotation: mood-aware chaining through named profiles
+python -m dreamsync govee-live --device 10.0.0.1:7:primary:ptreal --duration 300 \
+    --smart-rotation --profile-rotation aurora,neon_city,ocean_deep,warm_sunset --debug-mood
+
+# Preview generated profiles and chain sequence
+python -m dreamsync profiles --generate 12 --seed 42 --chain-preview 10
+
 # Validate a profile's YAML structure
 python -m dreamsync profile-validate aurora
 ```
@@ -169,6 +180,12 @@ Editing a profile YAML under `src/dreamsync/profiles/` during a live session tri
 | `--profile` | none | Load a named color profile |
 | `--profile-rotation` | none | Comma-separated profile names to rotate through |
 | `--rotation-interval` | 60 | Seconds between profile rotations |
+| `--auto-palette` | off | Generate procedural profiles + smart chaining with cross-fade |
+| `--auto-palette-seed` | none | Seed for reproducible profile generation |
+| `--auto-palette-count` | 12 | Number of profiles to generate for the pool |
+| `--smart-rotation` | off | Use mood-aware smart chaining with `--profile-rotation` profiles |
+| `--chain-blend` | 8.0 | Cross-fade duration in seconds between profiles |
+| `--chain-interval` | 60-180 | Min[-max] seconds per profile before switching |
 
 ### Device health monitoring
 
@@ -398,6 +415,10 @@ Tests covering all subsystems:
 | `test_null_adapter.py` | 6 | NullMultiAdapter interface compliance, runtime + session compatibility |
 | `test_show_pipeline_worker.py` | 12 | Background analyze + compile worker, queue, error handling, concurrency |
 | `test_show_playback_consumer.py` | 10 | Playback consumer thread, purge, adapter lifecycle, ordering |
+| `test_color_utils.py` | 24 | HSL conversions, interpolation, harmony generators, palette distance |
+| `test_profile_generator.py` | 14 | Procedural profile generation, validation, determinism, harmony/temp/saturation |
+| `test_profile_chain.py` | 30 | Distance matrix, neighbor selection, cross-fade blending, chain controller state machine |
+| `test_cli_auto_palette.py` | 12 | CLI flag parsing, mutual exclusivity, chain wiring |
 
 ### Validation tests
 
@@ -566,6 +587,9 @@ System Audio → LiveBpmEstimator → beat events + BPM
 | Composite energy metric (RMS + spectral flux + bass + onset) | `director.py` | `Director`, `DirectorConfig` |
 | Mood classification (CHILL / GROOVE / HYPE / DROP) | `mood.py` | `MoodClassifier`, `MoodConfig` |
 | Effect cycling + color profiles | `effects.py`, `profile.py` | `EffectCycler`, `ProfileLoader`, `ProfileWatcher` |
+| Procedural profile generation | `profile_generator.py` | `generate_profile()`, `generate_profile_set()`, `GeneratorParams` |
+| Smart profile chaining + cross-fade | `profile_chain.py` | `ProfileChain`, `ChainConfig`, `blend_profiles()`, `pick_next_profile()` |
+| HSL color utilities | `color_utils.py` | `hex_to_hsl()`, `interpolate_hex_hsl()`, `generate_palette()`, harmony generators |
 | Segment rendering (SOLID, PULSE, SCROLL, BREATHE, STROBE, WAVE, GRADIENT) | `render.py` | `SegmentRenderer` |
 | LAN output (ptreal, razer, colorwc over UDP) | `output/govee_lan.py` | `GoveeLanAdapter` |
 | BLE output (bleak GATT, mood-follower mode) | `output/govee_ble.py` | `GoveeBleAdapter` |

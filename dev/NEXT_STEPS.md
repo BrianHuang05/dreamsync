@@ -2,35 +2,6 @@
 
 ## What to Test Next
 
-### 1. Re-analyze existing songs (Issues 1-2 changed analyzer output)
-
-The hybrid beat grid, octave detection, and phrase segmentation produce different `.analysis.json` output. Re-analyze existing MP3s and re-compile to pick up the improvements:
-
-```bash
-# Re-analyze all captured songs (overwrites existing .analysis.json)
-python -m dreamsync analyze-dir out/capture-boundary/ --output-dir out/analysis/
-
-# Re-compile all analysis files (overwrites existing .show.json)
-python -m dreamsync compile-dir out/analysis/ --output-dir out/shows/ --summary
-```
-
-**What to check:**
-- BPM values should be same or better (no octave-doubled values)
-- Section count should be same or slightly higher (phrases add sub-sections)
-- Compile summary should show micro-cues (more cues per section than before)
-
-### 2. Dry-run playback of a re-compiled show (no devices needed)
-
-```bash
-# Pick any MP3 with a matching show file
-python -m dreamsync play out/capture-boundary/2026-03-06_00-15-02_Vacation\ Manor_-_If\ Only\ for\ Tonight\ -\ Midnight\ Version.mp3 --dry-run --debug
-```
-
-**What to check:**
-- Cue transitions in debug output — should see more frequent cue changes (micro-cues from phrases)
-- Outro should show intensity ramping down (intensity_start)
-- Final cue should be fade-to-black (intensity=0.00)
-
 ### 3. Compile-and-play with devices (Test 34 — the last unchecked validation test)
 
 ```bash
@@ -51,56 +22,44 @@ python -m dreamsync play out/capture-boundary/2026-03-06_00-19-45_Pat\ Metheny\ 
 - Song ending fades to black gracefully — Issue 6
 - No errors in console output
 
-### 4. Directory playback (multiple songs sequentially)
+### 7. Auto-palette live test (no devices needed)
 
 ```bash
-python -m dreamsync play out/capture-boundary/ --config dev/devices.yaml --debug
+# Dry-run auto-palette: watch mood-aware profile switching + cross-fade
+python -m dreamsync govee-live \
+    --device 192.168.0.99:7:primary:ptreal \
+    --duration 300 --auto-palette --debug-mood
+
+# With explicit seed for reproducibility
+python -m dreamsync govee-live \
+    --device 192.168.0.99:7:primary:ptreal \
+    --duration 300 --auto-palette --auto-palette-seed 42 --debug-mood
+
+# Smart rotation with built-in profiles
+python -m dreamsync govee-live \
+    --device 192.168.0.99:7:primary:ptreal \
+    --duration 300 \
+    --smart-rotation --profile-rotation aurora,neon_city,ocean_deep,warm_sunset \
+    --chain-blend 10 --debug-mood
 ```
 
 **What to check:**
-- Each song analyzed/compiled/played in sequence
-- Transitions between songs are clean
-- Different songs get different palettes (Issue 3 song-level palette selection)
+- `[chain]` messages appear in debug output
+- Profile switches only during CHILL/GROOVE moods
+- Cross-fade produces smooth transitions (blend messages visible)
+- No errors in console output
 
-### 5. Streaming pipeline (live capture + concurrent playback)
+### 8. Profile generation preview
 
 ```bash
-# Full streaming: Spotify track changes trigger capture -> analyze -> compile -> play
-python -m dreamsync session --config dev/devices.yaml \
-  --pipeline --capture --capture-dir out/streaming \
-  --capture-naming metadata --spotify \
-  --playback-device 5 --purge --debug-mood
+python -m dreamsync profiles --generate 12 --seed 42 --verbose
+python -m dreamsync profiles --generate 12 --seed 42 --chain-preview 10
 ```
 
 **What to check:**
-- Songs captured and played back with compiled shows
-- Concurrent pipeline: while song N plays, song N+1 compiles
-- Device brightness_scale applied (strips dimmer than bulbs)
-- Color cycling happens on downbeats, not every beat (Issue 3)
-
-### 6. Device config with brightness_scale (manual verification)
-
-Add `brightness_scale` to `dev/devices.yaml` to test per-device calibration:
-
-```yaml
-  - name: "Couch strip (H612F)"
-    address: "10.126.166.180"
-    type: lan
-    segments: 7
-    transport: ptreal
-    role: primary
-    brightness_scale: 0.4    # dim the close strip
-
-  - name: "Overhead strip (H808A)"
-    address: "10.126.166.156"
-    type: lan
-    segments: 25
-    transport: razer
-    role: primary
-    brightness_scale: 0.6    # slightly dimmer
-```
-
-Then run any play command and verify strips are noticeably dimmer than bulbs.
+- 12 profiles listed with hue spread
+- Chain preview shows distance values between transitions
+- Deterministic output with same seed
 
 ---
 
@@ -118,6 +77,17 @@ Then run any play command and verify strips are noticeably dimmer than bulbs.
 - [ ] **34. Compile-and-play** (full pipeline with devices) — see command in section 3 above
 
 See the **Validation tests** section in `README.md` for full test details and commands.
+
+## Dynamic Profile Chaining — Complete
+
+Procedural profile generation, smart chaining, and palette cross-fade (80 new tests, 1595+ total passing):
+
+- [x] **Color utilities** (`color_utils.py`): HSL conversions, RGB/HSL interpolation, harmony generators, palette distance — 24 tests
+- [x] **Profile generator** (`profile_generator.py`): Procedural ProfileConfig from color theory params, energy-tiered palettes, deterministic with seed — 14 tests
+- [x] **Smart chain controller** (`profile_chain.py`): Distance matrix, neighbor selection, palette cross-fade, mood-aware state machine — 30 tests
+- [x] **CLI integration**: `--auto-palette`, `--smart-rotation`, `--chain-blend`, `--chain-interval`, `profiles --generate --chain-preview` — 12 tests
+
+Plan: `dev/plans/dynamic-profile-chaining.md`
 
 ## Show Quality Improvements (Issues 1-6) — Complete
 
@@ -144,6 +114,5 @@ Capture + analyze + compile + play concurrently. Implemented in:
 
 - 24 (Genre variety — analyzer tuning, not correctness)
 - 32 (Seed determinism — no reproducibility requirement)
-- 33 (Profile override — not actively using multiple profiles)
 - 35 (Compiler genre variety — quality polish, not a gate)
 - 36-41 (Cache — premature optimization; add later if re-analysis latency is a problem)

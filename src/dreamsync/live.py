@@ -1339,6 +1339,7 @@ def run_live_to_govee(
     profile: Any | None = None,
     effect_cycler_override: "EffectCycler | None" = None,
     profile_rotation: Any | None = None,
+    profile_chain: Any | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Audio capture → beat detection → renderer → Govee UDP streaming.
 
@@ -1543,8 +1544,16 @@ def run_live_to_govee(
                     beat_this_tick = True
                 stream_t += float(hop_size) / float(sample_rate)
 
-            # --- Profile rotation ---
-            if profile_rotation is not None and effect_cycler is not None:
+            # --- Profile chain / rotation ---
+            if profile_chain is not None and effect_cycler is not None:
+                _current_mood = mood_classifier.mood.value if mood_classifier else "chill"
+                new_profile = profile_chain.update(stream_t, _current_mood)
+                if new_profile is not None:
+                    effect_cycler.set_profile(new_profile)
+                    if debug_mood:
+                        blending = " (blending)" if profile_chain.is_blending else ""
+                        print(f"[chain] profile: {new_profile.name}{blending}")
+            elif profile_rotation is not None and effect_cycler is not None:
                 new_profile = profile_rotation.update(stream_t)
                 if new_profile is not None:
                     effect_cycler.set_profile(new_profile)

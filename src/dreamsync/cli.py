@@ -279,6 +279,43 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds between profile rotations when using --profile-rotation (default: 300).",
     )
     govee_live.add_argument(
+        "--auto-palette",
+        action="store_true",
+        default=False,
+        help="Generate procedural color profiles and chain them with cross-fade.",
+    )
+    govee_live.add_argument(
+        "--auto-palette-seed",
+        type=int,
+        default=None,
+        help="Seed for reproducible profile generation.",
+    )
+    govee_live.add_argument(
+        "--auto-palette-count",
+        type=int,
+        default=12,
+        help="Number of profiles to generate for auto-palette pool (default: 12).",
+    )
+    govee_live.add_argument(
+        "--smart-rotation",
+        action="store_true",
+        default=False,
+        help="Use smart chaining with --profile-rotation profiles (mood-aware, cross-fade).",
+    )
+    govee_live.add_argument(
+        "--chain-blend",
+        type=float,
+        default=8.0,
+        help="Cross-fade duration in seconds between profiles (default: 8.0).",
+    )
+    govee_live.add_argument(
+        "--chain-interval",
+        type=str,
+        default=None,
+        metavar="MIN[-MAX]",
+        help="Min[-max] seconds per profile (e.g. '60' or '60-180').",
+    )
+    govee_live.add_argument(
         "--capture",
         action="store_true",
         default=False,
@@ -460,6 +497,43 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds between profile rotations when using --profile-rotation (default: 300).",
     )
     session.add_argument(
+        "--auto-palette",
+        action="store_true",
+        default=False,
+        help="Generate procedural color profiles and chain them with cross-fade.",
+    )
+    session.add_argument(
+        "--auto-palette-seed",
+        type=int,
+        default=None,
+        help="Seed for reproducible profile generation.",
+    )
+    session.add_argument(
+        "--auto-palette-count",
+        type=int,
+        default=12,
+        help="Number of profiles to generate for auto-palette pool (default: 12).",
+    )
+    session.add_argument(
+        "--smart-rotation",
+        action="store_true",
+        default=False,
+        help="Use smart chaining with --profile-rotation profiles (mood-aware, cross-fade).",
+    )
+    session.add_argument(
+        "--chain-blend",
+        type=float,
+        default=8.0,
+        help="Cross-fade duration in seconds between profiles (default: 8.0).",
+    )
+    session.add_argument(
+        "--chain-interval",
+        type=str,
+        default=None,
+        metavar="MIN[-MAX]",
+        help="Min[-max] seconds per profile (e.g. '60' or '60-180').",
+    )
+    session.add_argument(
         "--spotify",
         action="store_true",
         default=False,
@@ -568,6 +642,26 @@ def build_parser() -> argparse.ArgumentParser:
     profiles_cmd.add_argument(
         "--verbose", "-v", action="store_true",
         help="Show full details including tags.",
+    )
+    profiles_cmd.add_argument(
+        "--generate",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Preview N procedurally generated profiles.",
+    )
+    profiles_cmd.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Seed for profile generation (with --generate).",
+    )
+    profiles_cmd.add_argument(
+        "--chain-preview",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Preview N chain transitions (dry-run, with --generate).",
     )
 
     validate_cmd = sub.add_parser(
@@ -768,6 +862,67 @@ def _resolve_profile_from_args(args: argparse.Namespace):
         print(f"Loaded profile: {profile.name}")
         return profile
     return None
+
+
+def _parse_chain_interval(raw: str | None) -> tuple[float, float]:
+    """Parse '--chain-interval MIN[-MAX]' into (min, max) seconds."""
+    if raw is None:
+        return (60.0, 180.0)
+    if "-" in raw:
+        parts = raw.split("-", 1)
+        return (float(parts[0]), float(parts[1]))
+    val = float(raw)
+    return (val, val * 3)
+
+
+def _resolve_profile_chain_from_args(args):
+    """Build a ProfileChain from --auto-palette or --smart-rotation flags.
+
+    Returns (initial_profile, profile_chain) or (None, None) if not applicable.
+    """
+    auto_palette = getattr(args, "auto_palette", False)
+    smart_rotation = getattr(args, "smart_rotation", False)
+
+    if not auto_palette and not smart_rotation:
+        return None, None
+
+    profile_name = getattr(args, "profile", None)
+    if auto_palette and profile_name:
+        print("Error: --auto-palette and --profile are mutually exclusive.")
+        return "error", None
+
+    from .profile_chain import ChainConfig, ProfileChain
+
+    chain_min, chain_max = _parse_chain_interval(getattr(args, "chain_interval", None))
+    chain_config = ChainConfig(
+        min_profile_duration=chain_min,
+        max_profile_duration=chain_max,
+        blend_duration=getattr(args, "chain_blend", 8.0),
+    )
+
+    if auto_palette:
+        from .profile_generator import generate_profile_set
+
+        count = getattr(args, "auto_palette_count", 12)
+        seed = getattr(args, "auto_palette_seed", None)
+        pool = generate_profile_set(count, seed=seed)
+        chain = ProfileChain(pool, chain_config, seed=seed)
+        print(f"Auto-palette: {count} generated profiles, blend {chain_config.blend_duration:.0f}s, interval {chain_min:.0f}-{chain_max:.0f}s")
+        return chain.current, chain
+
+    if smart_rotation:
+        rotation_names = getattr(args, "profile_rotation", None)
+        if not rotation_names:
+            print("Error: --smart-rotation requires --profile-rotation.")
+            return "error", None
+        from .profile import load_profile, resolve_profile_path
+        names = [n.strip() for n in rotation_names.split(",") if n.strip()]
+        profiles = [load_profile(resolve_profile_path(n)) for n in names]
+        chain = ProfileChain(profiles, chain_config)
+        print(f"Smart rotation: {len(profiles)} profiles, blend {chain_config.blend_duration:.0f}s, interval {chain_min:.0f}-{chain_max:.0f}s")
+        return chain.current, chain
+
+    return None, None
 
 
 def _start_keyboard_listener(session_ref, stop_event, *, debug=False):
@@ -1166,23 +1321,32 @@ def main(argv: list[str] | None = None) -> int:
             separators=(",", ":"),
         ))
 
-        profile = _resolve_profile_from_args(args)
-        if profile == "error":
+        # --- Profile chain (auto-palette / smart-rotation) ---
+        profile_chain = None
+        chain_profile, profile_chain = _resolve_profile_chain_from_args(args)
+        if chain_profile == "error":
             return 1
+        if profile_chain is not None:
+            profile = chain_profile
+        else:
+            profile = _resolve_profile_from_args(args)
+            if profile == "error":
+                return 1
 
-        # Profile rotation
+        # Profile rotation (legacy, used when --smart-rotation is not set)
         rotation = None
-        rotation_names = getattr(args, "profile_rotation", None)
-        if rotation_names:
-            from .profile import ProfileRotation, load_profile, resolve_profile_path
-            names = [n.strip() for n in rotation_names.split(",") if n.strip()]
-            rotation_profiles = []
-            for n in names:
-                p = resolve_profile_path(n)
-                rotation_profiles.append(load_profile(p))
-            rotation = ProfileRotation(rotation_profiles, interval_seconds=args.rotation_interval)
-            profile = rotation.current
-            print(f"Profile rotation: {len(rotation_profiles)} profiles, rotating every {args.rotation_interval:.0f}s")
+        if profile_chain is None:
+            rotation_names = getattr(args, "profile_rotation", None)
+            if rotation_names:
+                from .profile import ProfileRotation, load_profile, resolve_profile_path
+                names = [n.strip() for n in rotation_names.split(",") if n.strip()]
+                rotation_profiles = []
+                for n in names:
+                    p = resolve_profile_path(n)
+                    rotation_profiles.append(load_profile(p))
+                rotation = ProfileRotation(rotation_profiles, interval_seconds=args.rotation_interval)
+                profile = rotation.current
+                print(f"Profile rotation: {len(rotation_profiles)} profiles, rotating every {args.rotation_interval:.0f}s")
 
         # Spotify queue watcher (for capture track splitting)
         spotify_watcher = None
@@ -1316,6 +1480,7 @@ def main(argv: list[str] | None = None) -> int:
                 crossfade_detect=getattr(args, "crossfade_detect", False),
                 profile=profile,
                 profile_rotation=rotation,
+                profile_chain=profile_chain,
             )
         finally:
             if capture_orchestrator is not None:
@@ -1356,21 +1521,29 @@ def main(argv: list[str] | None = None) -> int:
         brightness = max(0.0, min(1.0, float(args.brightness)))
         director_config = DirectorConfig()
 
-        profile = _resolve_profile_from_args(args)
-        if profile == "error":
+        # --- Profile chain (auto-palette / smart-rotation) ---
+        session_profile_chain = None
+        chain_profile, session_profile_chain = _resolve_profile_chain_from_args(args)
+        if chain_profile == "error":
             return 1
+        if session_profile_chain is not None:
+            profile = chain_profile
+        else:
+            profile = _resolve_profile_from_args(args)
+            if profile == "error":
+                return 1
 
-        # Profile rotation for session
-        rotation_names = getattr(args, "profile_rotation", None)
-        if rotation_names:
-            from .profile import ProfileRotation, load_profile, resolve_profile_path as _resolve
-            names = [n.strip() for n in rotation_names.split(",") if n.strip()]
-            rotation_profiles = []
-            for n in names:
-                p = _resolve(n)
-                rotation_profiles.append(load_profile(p))
-            profile = rotation_profiles[0] if rotation_profiles else profile
-            print(f"Profile rotation: {len(rotation_profiles)} profiles, rotating every {args.rotation_interval:.0f}s")
+            # Profile rotation for session (legacy)
+            rotation_names = getattr(args, "profile_rotation", None)
+            if rotation_names:
+                from .profile import ProfileRotation, load_profile, resolve_profile_path as _resolve
+                names = [n.strip() for n in rotation_names.split(",") if n.strip()]
+                rotation_profiles = []
+                for n in names:
+                    p = _resolve(n)
+                    rotation_profiles.append(load_profile(p))
+                profile = rotation_profiles[0] if rotation_profiles else profile
+                print(f"Profile rotation: {len(rotation_profiles)} profiles, rotating every {args.rotation_interval:.0f}s")
 
         profile_path = None
         if profile is not None:
@@ -1425,11 +1598,44 @@ def main(argv: list[str] | None = None) -> int:
             pipeline=getattr(args, "pipeline", False),
             playback_device=getattr(args, "playback_device", None),
             purge=getattr(args, "purge", False),
+            profile_chain=session_profile_chain,
         )
         print(json.dumps(summary, separators=(",", ":")))
         return 0
 
     if args.command == "profiles":
+        generate_count = getattr(args, "generate", None)
+        chain_preview = getattr(args, "chain_preview", None)
+        seed = getattr(args, "seed", None)
+
+        if generate_count is not None:
+            from .profile_generator import generate_profile_set
+            from .color_utils import profile_color_distance
+
+            gen_profiles = generate_profile_set(generate_count, seed=seed)
+            for i, p in enumerate(gen_profiles, 1):
+                pal_info = ", ".join(f"{k}({len(v)} colors)" for k, v in p.palettes.items())
+                print(f"  {i}. {p.name}  [{pal_info}]")
+                if getattr(args, "verbose", False):
+                    for pal_name, colors in p.palettes.items():
+                        print(f"     {pal_name}: {' '.join(colors)}")
+
+            if chain_preview is not None:
+                from .profile_chain import ChainConfig, ProfileChain, pick_next_profile
+
+                chain = ProfileChain(gen_profiles, ChainConfig(), seed=seed)
+                print(f"\nChain sequence (seed={seed}, {generate_count} profiles):")
+                current = chain.current
+                for step in range(1, chain_preview + 1):
+                    import random as _rnd
+                    rng = _rnd.Random(seed if seed is not None else step)
+                    nxt = pick_next_profile(current, gen_profiles, [], rng)
+                    dist = profile_color_distance(current, nxt)
+                    print(f"  {step}. {current.name:40s} -> {nxt.name:40s} (distance: {dist:.0f})")
+                    current = nxt
+
+            return 0
+
         from .profile import list_available_profiles
 
         profiles = list_available_profiles()
