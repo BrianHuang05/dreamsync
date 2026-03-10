@@ -53,6 +53,30 @@ def list_input_devices() -> list[dict[str, int | float | str]]:
     return rows
 
 
+def list_output_devices() -> list[dict[str, int | float | str]]:
+    """List audio output devices (speakers, headphones, virtual cables)."""
+    sd = _require_sounddevice()
+    devices = sd.query_devices()
+    hostapis = sd.query_hostapis()
+    rows: list[dict[str, int | float | str]] = []
+    for idx, dev in enumerate(devices):
+        max_out = int(dev.get("max_output_channels", 0))
+        if max_out <= 0:
+            continue
+        hostapi_idx = int(dev.get("hostapi", 0))
+        hostapi_name = str(hostapis[hostapi_idx].get("name", ""))
+        rows.append(
+            {
+                "id": idx,
+                "name": str(dev.get("name", "")),
+                "hostapi": hostapi_name,
+                "max_output_channels": max_out,
+                "default_samplerate": float(dev.get("default_samplerate", 0.0)),
+            }
+        )
+    return rows
+
+
 def capture_mono_audio(
     duration_seconds: float,
     sample_rate: int = 44100,

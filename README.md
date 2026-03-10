@@ -356,6 +356,37 @@ python -m dreamsync session --config devices.yaml \
 python -m dreamsync devices
 ```
 
+Lists both **input** devices (for `--audio-device`, used by the beat detector) and **output** devices (for `--playback-device`, used by the show player).
+
+### Audio routing for streaming pipeline
+
+The streaming pipeline (`session --pipeline`) captures and plays audio simultaneously. To avoid feedback (the show player's audio being re-captured), the capture and playback devices **must be different**:
+
+```
+Spotify  ──▸  CABLE Input (system default)  ──▸  CABLE Output  ──▸  FFmpeg capture
+                                                                     (--device-pattern "CABLE Output")
+
+Show player  ──▸  Speakers / Headphone jack  ──▸  physical audio out
+                  (--playback-device N)
+```
+
+Use `dreamsync devices` to find the right IDs, then:
+
+```bash
+python -m dreamsync session --config devices.yaml \
+  --pipeline --capture --capture-dir out/streaming \
+  --spotify --playback-device 4 --debug-mood
+```
+
+Common device IDs (run `dreamsync devices` to confirm yours):
+
+| Device | Use for | Feedback-safe? |
+|---|---|---|
+| `Speakers (Realtek)` | `--playback-device` | Yes |
+| `Headphones (Realtek)` | `--playback-device` | Yes |
+| `CABLE Input (VB-Audio)` | **Do not use** for playback | No — feeds back into capture |
+| `CABLE Output (VB-Audio)` | `--audio-device` (beat detection) | N/A (input only) |
+
 ## Run tests
 
 ```bash

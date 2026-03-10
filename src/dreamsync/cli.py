@@ -50,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write replay intent logs to JSONL path (defaults to stdout).",
     )
 
-    sub.add_parser("devices", help="List real-time audio input devices.")
+    sub.add_parser("devices", help="List audio input and output devices.")
 
     capture = sub.add_parser("capture", help="Capture system input and emit feature JSONL.")
     capture.add_argument("--duration", type=float, required=True, help="Capture duration in seconds.")
@@ -1020,8 +1020,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "devices":
-        devices = list_input_devices()
-        for dev in devices:
+        from dreamsync.audio.system_input import list_output_devices
+
+        print("=== Audio Input Devices (for --audio-device) ===")
+        for dev in list_input_devices():
+            print(json.dumps(dev, separators=(",", ":")))
+        print()
+        print("=== Audio Output Devices (for --playback-device) ===")
+        for dev in list_output_devices():
             print(json.dumps(dev, separators=(",", ":")))
         return 0
 
