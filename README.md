@@ -45,27 +45,6 @@ python -m dreamsync govee-live \
     --render-mode scroll
 ```
 
-### Key options
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--device-ip` | | Single device IP (use with `--segments`) |
-| `--device` | | Repeatable device spec: `IP:SEGMENTS[:ROLE[:TRANSPORT]]` |
-| `--segments` | 15 | Segment count (with `--device-ip`) |
-| `--duration` | | Capture duration in seconds (required) |
-| `--render-mode` | scroll | `solid`, `pulse`, `scroll`, or `breathe` |
-| `--transport` | ptreal | `razer` (DreamView per-LED), `ptreal` (BLE-over-LAN per-segment), `colorwc` (whole-strip) |
-| `--fps` | 30 | Frame rate |
-| `--brightness` | 1.0 | Global brightness (0-1) |
-| `--colors` | auto | Comma-separated hex colors to cycle on beats |
-| `--mirror` / `--no-mirror` | mirror | Scroll from center outward vs left-to-right |
-| `--half-time` | off | Halve detected BPM (fixes octave-doubled detection) |
-| `--max-brightness` | off | Force all frames to full intensity |
-| `--auto-cycle` / `--no-auto-cycle` | on | Mood-driven effect cycling |
-| `--cycle-interval` | 16 | Seconds between effect changes within same mood |
-| `--debug-mood` | off | Print mood, effect, BPM, and song boundary events to stdout |
-| `--audio-device` | system default | PortAudio input device ID |
-
 ## Debug / dry-run testing (no lights needed)
 
 Use a fake IP to test the audio analysis pipeline without any hardware connected. UDP sends are fire-and-forget, so they silently fail on unreachable IPs while the full BPM, mood, effect, and song boundary pipeline runs normally.
@@ -181,18 +160,6 @@ python -m dreamsync profile-validate aurora
 
 Editing a profile YAML under `src/dreamsync/profiles/` during a live session triggers a hot-reload within ~2 seconds.
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--profile` | none | Load a named color profile |
-| `--profile-rotation` | none | Comma-separated profile names to rotate through |
-| `--rotation-interval` | 60 | Seconds between profile rotations |
-| `--auto-palette` | off | Generate procedural profiles + smart chaining with cross-fade |
-| `--auto-palette-seed` | none | Seed for reproducible profile generation |
-| `--auto-palette-count` | 12 | Number of profiles to generate for the pool |
-| `--smart-rotation` | off | Use mood-aware smart chaining with `--profile-rotation` profiles |
-| `--chain-blend` | 8.0 | Cross-fade duration in seconds between profiles |
-| `--chain-interval` | 60-180 | Min[-max] seconds per profile before switching |
-
 ### Device health monitoring
 
 Enable periodic probing to detect offline/online transitions and auto-pause/resume devices:
@@ -200,12 +167,6 @@ Enable periodic probing to detect offline/online transitions and auto-pause/resu
 ```bash
 python -m dreamsync session --config devices.yaml --health-monitor --health-interval 30 --debug-mood
 ```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--health-monitor` | off | Enable periodic device health probing |
-| `--health-interval` | 30 | Seconds between health probes |
-| `--health-discovery` | off | Scan for new devices on the network |
 
 When a device goes offline (3 consecutive failed probes), its adapter is paused. When it comes back (2 consecutive successes), it resumes automatically. The audio pipeline is never blocked.
 
@@ -251,14 +212,6 @@ python -m dreamsync session --config devices.yaml --capture --capture-dir ./song
 ```bash
 python -m dreamsync govee-live --device 10.0.0.1:7:primary:ptreal --duration 300 --capture --capture-dir ./songs
 ```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--mp3` | off | Enable MP3 capture pipeline (capture subcommand) |
-| `--capture` | off | Enable MP3 capture pipeline (session/govee-live) |
-| `--output-dir` / `--capture-dir` | `captured_songs` | Output directory for MP3 files |
-| `--naming` / `--capture-naming` | `timestamp` | Filename scheme: `timestamp` or `metadata` |
-| `--device-pattern` | `CABLE Output` | DirectShow audio device for FFmpeg |
 
 With `--spotify`, song boundaries come from Spotify's queue API for frame-accurate splits. Without Spotify, the pipeline captures continuously without splitting.
 
@@ -356,12 +309,6 @@ python -m dreamsync session --config devices.yaml \
   --capture-naming metadata --spotify --debug-mood
 ```
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--pipeline` | off | Enable concurrent capture + analyze + compile + play |
-| `--playback-device` | None | Output audio device ID or `pick` for interactive selection (must differ from capture device) |
-| `--purge` | off | Delete MP3 + sidecar files after playback |
-
 ## List audio devices
 
 ```bash
@@ -410,6 +357,63 @@ Common device IDs (run `dreamsync devices` to confirm yours):
 | `Headphones (Realtek)` | `--playback-device` | Yes |
 | `CABLE Input (VB-Audio)` | **Do not use** for playback | No — feeds back into capture |
 | `CABLE Output (VB-Audio)` | `--audio-device` (beat detection) | N/A (input only) |
+
+## CLI flag reference
+
+All flags in one table, grouped by category. Not every flag applies to every subcommand — see `--help` on each for specifics.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| **Device targeting** | | |
+| `--device-ip` | | Single device IP (use with `--segments`) |
+| `--device` | | Repeatable device spec: `IP:SEGMENTS[:ROLE[:TRANSPORT]]` |
+| `--segments` | 15 | Segment count (with `--device-ip`) |
+| `--config` | | Path to YAML device config file |
+| **Audio** | | |
+| `--audio-device` | system default | Input/output device ID, or `pick` for interactive selection |
+| `--playback-device` | None | Output device ID for show playback, or `pick` (must differ from capture device) |
+| `--sample-rate` | 44100 | Audio sample rate |
+| `--duration` | | Capture duration in seconds (govee-live, capture) |
+| **Rendering** | | |
+| `--render-mode` | scroll | `solid`, `pulse`, `scroll`, or `breathe` |
+| `--transport` | ptreal | `razer` (DreamView per-LED), `ptreal` (BLE-over-LAN per-segment), `colorwc` (whole-strip) |
+| `--fps` | 30 | Frame rate |
+| `--brightness` | 1.0 | Global brightness (0-1) |
+| `--colors` | auto | Comma-separated hex colors to cycle on beats |
+| `--mirror` / `--no-mirror` | mirror | Scroll from center outward vs left-to-right |
+| `--half-time` | off | Halve detected BPM (fixes octave-doubled detection) |
+| `--max-brightness` | off | Force all frames to full intensity |
+| **Mood & effects** | | |
+| `--auto-cycle` / `--no-auto-cycle` | on | Mood-driven effect cycling |
+| `--cycle-interval` | 16 | Seconds between effect changes within same mood |
+| `--debug-mood` | off | Print mood, effect, BPM, and song boundary events to stdout |
+| **Color profiles** | | |
+| `--profile` | none | Load a named color profile |
+| `--profile-rotation` | none | Comma-separated profile names to rotate through |
+| `--rotation-interval` | 60 | Seconds between profile rotations |
+| `--auto-palette` | off | Generate procedural profiles + smart chaining with cross-fade |
+| `--auto-palette-seed` | none | Seed for reproducible profile generation |
+| `--auto-palette-count` | 12 | Number of profiles to generate for the pool |
+| `--smart-rotation` | off | Use mood-aware smart chaining with `--profile-rotation` profiles |
+| `--chain-blend` | 8.0 | Cross-fade duration in seconds between profiles |
+| `--chain-interval` | 60-180 | Min[-max] seconds per profile before switching |
+| **Device health** | | |
+| `--health-monitor` | off | Enable periodic device health probing |
+| `--health-interval` | 30 | Seconds between health probes |
+| `--health-discovery` | off | Scan for new devices on the network during health monitoring |
+| **MP3 capture** | | |
+| `--mp3` | off | Enable MP3 capture pipeline (capture subcommand) |
+| `--capture` | off | Enable MP3 capture pipeline (session/govee-live) |
+| `--output-dir` / `--capture-dir` | `captured_songs` | Output directory for MP3 files |
+| `--naming` / `--capture-naming` | `timestamp` | Filename scheme: `timestamp` or `metadata` |
+| `--device-pattern` | `CABLE Output` | DirectShow audio device for FFmpeg |
+| `--spotify` | off | Use Spotify queue API for song boundary detection |
+| `--capture-buffer` | off | Max MP3 files to keep on disk (rotating buffer) |
+| **Streaming pipeline** | | |
+| `--pipeline` | off | Enable concurrent capture + analyze + compile + play |
+| `--purge` | off | Delete MP3 + sidecar files after playback |
+| `--dry-run` | off | Skip device detection, audio-only playback |
+| `--debug` | off | Verbose debug output |
 
 ## Run tests
 
