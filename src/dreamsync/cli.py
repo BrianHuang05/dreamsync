@@ -50,7 +50,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write replay intent logs to JSONL path (defaults to stdout).",
     )
 
-    sub.add_parser("devices", help="List audio input and output devices.")
+    devices_cmd = sub.add_parser("devices", help="List audio input and output devices.")
+    devices_cmd.add_argument("--json", action="store_true", dest="json_output",
+        help="Output raw JSON (machine-readable).")
 
     capture = sub.add_parser("capture", help="Capture system input and emit feature JSONL.")
     capture.add_argument("--duration", type=float, required=True, help="Capture duration in seconds.")
@@ -597,10 +599,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     session.add_argument(
         "--playback-device",
-        type=int,
         default=None,
         dest="playback_device",
-        help="Output audio device ID for show playback (must differ from capture device).",
+        help="Output audio device ID, or 'pick' for interactive selection.",
     )
     session.add_argument(
         "--purge",
@@ -722,7 +723,7 @@ def build_parser() -> argparse.ArgumentParser:
     play_cmd.add_argument("--profile", type=str, default=None, help="Profile name or path for on-the-fly compilation.")
     play_cmd.add_argument("--cache-dir", type=str, default="~/.dreamsync/cache", help="Show cache directory (default: ~/.dreamsync/cache).")
     play_cmd.add_argument("--sample-rate", type=int, default=44100, help="Audio sample rate.")
-    play_cmd.add_argument("--audio-device", type=int, default=None, dest="audio_device", help="Output audio device ID (None = system default).")
+    play_cmd.add_argument("--audio-device", default=None, dest="audio_device", help="Output audio device ID, or 'pick' for interactive selection (None = system default).")
     play_cmd.add_argument("--fps", type=int, default=30, help="Device frame rate.")
     play_cmd.add_argument("--brightness", type=float, default=1.0, help="Global brightness (0-1).")
     play_cmd.add_argument(
@@ -777,7 +778,7 @@ def build_parser() -> argparse.ArgumentParser:
     cap_cmd.add_argument("--seed", type=int, default=None, help="Random seed for determinism.")
     cap_cmd.add_argument("--output", "-o", type=Path, default=None, help="Save compiled show JSON.")
     cap_cmd.add_argument("--sample-rate", type=int, default=44100, help="Audio sample rate.")
-    cap_cmd.add_argument("--audio-device", type=int, default=None, dest="audio_device", help="Output audio device ID.")
+    cap_cmd.add_argument("--audio-device", default=None, dest="audio_device", help="Output audio device ID, or 'pick' for interactive selection.")
     cap_cmd.add_argument("--fps", type=int, default=30, help="Device frame rate.")
     cap_cmd.add_argument("--brightness", type=float, default=1.0, help="Global brightness (0-1).")
     cap_cmd.add_argument("--mirror", dest="mirror", action="store_true", default=True)
@@ -817,8 +818,8 @@ def build_parser() -> argparse.ArgumentParser:
                               help="Show cache directory (default: ~/.dreamsync/cache).")
     pipeline_cmd.add_argument("--sample-rate", type=int, default=44100,
                               help="Audio sample rate.")
-    pipeline_cmd.add_argument("--audio-device", type=int, default=None, dest="audio_device",
-                              help="Output audio device ID (None = system default).")
+    pipeline_cmd.add_argument("--audio-device", default=None, dest="audio_device",
+                              help="Output audio device ID, or 'pick' for interactive selection (None = system default).")
     pipeline_cmd.add_argument("--mode", choices=["analyze", "compile", "play"], default="play",
                               help="Pipeline mode: analyze, compile, or play (default: play).")
     pipeline_cmd.add_argument("--shuffle", action="store_true", default=False,
@@ -991,6 +992,19 @@ def _start_keyboard_listener(session_ref, stop_event, *, debug=False):
     return thread
 
 
+def _resolve_output_device(raw_value: str | None) -> int | None:
+    """Resolve --playback-device / --audio-device value to an int or None."""
+    if raw_value is None:
+        return None
+    if raw_value == "pick":
+        from dreamsync.audio.system_input import pick_output_device
+        return pick_output_device()
+    try:
+        return int(raw_value)
+    except ValueError:
+        raise SystemExit(f"Error: invalid device value '{raw_value}'. Use an integer ID or 'pick'.")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1034,15 +1048,27 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "devices":
-        from dreamsync.audio.system_input import list_output_devices
+        from dreamsync.audio.system_input import list_output_devices, format_device_table
 
-        print("=== Audio Input Devices (for --audio-device) ===")
-        for dev in list_input_devices():
-            print(json.dumps(dev, separators=(",", ":")))
-        print()
-        print("=== Audio Output Devices (for --playback-device) ===")
-        for dev in list_output_devices():
-            print(json.dumps(dev, separators=(",", ":")))
+        inputs = list_input_devices()
+        outputs = list_output_devices()
+
+        if getattr(args, "json_output", False):
+            print("=== Audio Input Devices ===")
+            for dev in inputs:
+                print(json.dumps(dev, separators=(",", ":")))
+            print()
+            print("=== Audio Output Devices ===")
+            for dev in outputs:
+                print(json.dumps(dev, separators=(",", ":")))
+        else:
+            print()
+            print("  Audio Input Devices (for --audio-device)")
+            print(format_device_table(inputs, kind="input"))
+            print()
+            print("  Audio Output Devices (for --playback-device / --audio-device)")
+            print(format_device_table(outputs, kind="output", mark_capture=True))
+            print()
         return 0
 
     if args.command == "capture":
@@ -1538,6 +1564,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "session":
         from .session import run_session
 
+        # Resolve interactive device picker early (before threads start)
+        args.playback_device = _resolve_output_device(getattr(args, "playback_device", None))
+
         brightness = max(0.0, min(1.0, float(args.brightness)))
         director_config = DirectorConfig()
 
@@ -1814,6 +1843,9 @@ def main(argv: list[str] | None = None) -> int:
         import signal
         import threading
 
+        # Resolve interactive device picker early (before threads start)
+        args.audio_device = _resolve_output_device(getattr(args, "audio_device", None))
+
         audio_path = args.audio_path
         show_path = args.show
         config_path = args.config
@@ -2026,6 +2058,9 @@ def main(argv: list[str] | None = None) -> int:
         import signal
         import threading
 
+        # Resolve interactive device picker early (before threads start)
+        args.audio_device = _resolve_output_device(getattr(args, "audio_device", None))
+
         from .analyzer.analyze import analyze_song
         from .compiler import compile_show
         from .output.auto_detect import build_multi_adapter, detect_all_devices, load_device_config
@@ -2196,6 +2231,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "pipeline":
         import signal
         import threading
+
+        # Resolve interactive device picker early (before threads start)
+        args.audio_device = _resolve_output_device(getattr(args, "audio_device", None))
 
         from .cache import ShowCache
         from .dir_pipeline import DirectoryPipeline

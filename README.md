@@ -338,7 +338,13 @@ python -m dreamsync pipeline out/captured-songs/ --config devices.yaml --debug  
 Stream captured songs through analyze, compile, and play as they arrive. While song N plays with its compiled show, song N+1 is being compiled, and song N+2 is being analyzed.
 
 ```bash
-# Full streaming pipeline (Spotify + devices + aux audio output)
+# Full streaming pipeline (Spotify + devices + interactive device picker)
+python -m dreamsync session --config devices.yaml \
+  --pipeline --capture --capture-dir out/streaming \
+  --capture-naming metadata --spotify \
+  --playback-device pick --purge --debug-mood
+
+# Or with a known device ID
 python -m dreamsync session --config devices.yaml \
   --pipeline --capture --capture-dir out/streaming \
   --capture-naming metadata --spotify \
@@ -353,16 +359,28 @@ python -m dreamsync session --config devices.yaml \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--pipeline` | off | Enable concurrent capture + analyze + compile + play |
-| `--playback-device` | None | Output audio device ID for show playback (must differ from capture device) |
+| `--playback-device` | None | Output audio device ID or `pick` for interactive selection (must differ from capture device) |
 | `--purge` | off | Delete MP3 + sidecar files after playback |
 
 ## List audio devices
 
 ```bash
-python -m dreamsync devices
+python -m dreamsync devices          # formatted table
+python -m dreamsync devices --json   # raw JSON (machine-readable, backward compat)
 ```
 
-Lists both **input** devices (for `--audio-device`, used by the beat detector) and **output** devices (for `--playback-device`, used by the show player).
+Lists both **input** devices (for `--audio-device`, used by the beat detector) and **output** devices (for `--playback-device`, used by the show player). Capture/virtual-cable devices are marked with a warning.
+
+### Interactive device picker
+
+Instead of looking up device IDs manually, use `pick` to get an interactive menu:
+
+```bash
+python -m dreamsync play song.mp3 --audio-device pick --config devices.yaml
+python -m dreamsync session --config devices.yaml --pipeline --playback-device pick
+```
+
+The picker lists all output devices, warns if you select a capture device (to prevent feedback loops), and returns the selected device ID. Integer IDs (`--playback-device 4`) still work unchanged.
 
 ### Audio routing for streaming pipeline
 
@@ -397,7 +415,7 @@ Common device IDs (run `dreamsync devices` to confirm yours):
 
 ```bash
 python -m pytest tests/ -v        # Core subsystems (569 tests)
-python -m pytest dev/tests/ -v    # Dev tests (1660+ tests)
+python -m pytest dev/tests/ -v    # Dev tests (1680+ tests)
 ```
 
 Tests covering all subsystems:
@@ -459,6 +477,7 @@ Tests covering all subsystems:
 | `test_color_tags.py` | 31 | ROYGBIVW hue classification, palette color classification, profile tag generation |
 | `test_tag_chaining.py` | 25 | Tag parsing, tag scoring, tag-aware profile selection, mood preferences, backward compat |
 | `test_profile_export.py` | 9 | YAML export, round-trip, name override, tag preservation, CLI export |
+| `test_device_picker.py` | 15 | `is_capture_device`, `format_device_table`, `pick_output_device` interactive picker |
 
 ### Validation tests
 

@@ -89,6 +89,12 @@ See the **Validation tests** section in `README.md` for full test details and co
 
 ## Completed
 
+- Interactive Audio Device Picker — all 4 steps implemented and tested (15 new tests, 0 regressions)
+  - Step 1: `is_capture_device()` + `format_device_table()` helpers (`audio/system_input.py`)
+  - Step 2: `pick_output_device()` interactive menu (`audio/system_input.py`)
+  - Step 3: CLI wiring — `--playback-device pick` / `--audio-device pick` on session, play, compile-and-play, pipeline (`cli.py`)
+  - Step 4: Improved `devices` subcommand — formatted table output + `--json` flag for backward compat (`cli.py`)
+
 - Tagged Profile Chaining — all 8 deliverables implemented and tested (65 new tests, 0 regressions)
   - 1A: ROYGBIVW hue-to-color classification (`color_utils.py`)
   - 1B: Semantic profile tag generation (`profile_generator.py`)

@@ -72,7 +72,7 @@ class TestPlayArgParsing:
         assert args.show == Path("show.json")
         assert args.config == Path("devices.yaml")
         assert args.sample_rate == 48000
-        assert args.audio_device == 3
+        assert args.audio_device == "3"
         assert args.fps == 60
         assert args.brightness == 0.8
         assert args.mirror is False
