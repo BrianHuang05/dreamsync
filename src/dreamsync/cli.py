@@ -610,6 +610,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Delete MP3 + sidecar after playback (use with --pipeline).",
     )
     session.add_argument(
+        "--archive",
+        action="store_true",
+        default=False,
+        help="Archive MP3 files in capture directory on clean shutdown.",
+    )
+    session.add_argument(
         "--local",
         type=str,
         default=None,
@@ -836,6 +842,19 @@ def build_parser() -> argparse.ArgumentParser:
                               help="Scroll from center outward (default).")
     pipeline_cmd.add_argument("--no-mirror", dest="mirror", action="store_false",
                               help="Scroll left-to-right.")
+
+    # -- Archive subcommand ----------------------------------------------------
+    archive_cmd = sub.add_parser(
+        "archive",
+        help="Archive MP3 files in a directory into a zip, leaving JSON sidecars untouched.",
+    )
+    archive_cmd.add_argument("directory", type=Path, help="Directory containing MP3 files to archive.")
+    archive_cmd.add_argument("--name", type=str, default=None,
+                             help="Custom archive name (without .zip extension).")
+    archive_cmd.add_argument("--keep", action="store_true", default=False,
+                             help="Keep original MP3 files after archiving (don't delete).")
+    archive_cmd.add_argument("--dry-run", action="store_true", default=False,
+                             help="Show what would be archived without creating the zip.")
 
     return parser
 
@@ -1650,6 +1669,16 @@ def main(argv: list[str] | None = None) -> int:
             profile_chain=session_profile_chain,
         )
         print(json.dumps(summary, separators=(",", ":")))
+
+        # Auto-archive MP3s on clean shutdown
+        if getattr(args, "archive", False) and getattr(args, "capture", False):
+            capture_dir = Path(getattr(args, "capture_dir", "captured_songs"))
+            if capture_dir.is_dir():
+                from .capture.archiver import archive_mp3s
+                archive_path = archive_mp3s(capture_dir)
+                if archive_path:
+                    print(f"Archived MP3s to {archive_path}")
+
         return 0
 
     if args.command == "profiles":
@@ -2077,6 +2106,11 @@ def main(argv: list[str] | None = None) -> int:
         if profile == "error":
             return 1
 
+        # Derive artifact paths from the MP3 path
+        mp3_stem = args.mp3_path.with_suffix("")
+        analysis_path = Path(f"{mp3_stem}.analysis.json")
+        show_path = args.output or Path(f"{mp3_stem}.show.json")
+
         if args.cache_dir:
             from .cache import ShowCache, cached_compile_show, path_based_track_id
             cache = ShowCache(args.cache_dir)
@@ -2093,6 +2127,9 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"Analysis failed: {exc}")
                     return 1
 
+                structure.to_json(analysis_path)
+                print(f"Analysis saved to {analysis_path}")
+
                 print("Cache miss - analyzing and compiling...")
                 timeline, _ = cached_compile_show(
                     structure, profile, cache=cache, track_id=track_id, seed=args.seed,
@@ -2105,12 +2142,14 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Analysis failed: {exc}")
                 return 1
 
+            structure.to_json(analysis_path)
+            print(f"Analysis saved to {analysis_path}")
+
             print("Compiling show...")
             timeline = compile_show(structure, profile, seed=args.seed)
 
-        if args.output:
-            timeline.to_json(args.output)
-            print(f"Show timeline saved to {args.output}")
+        timeline.to_json(show_path)
+        print(f"Show saved to {show_path}")
 
         brightness = max(0.0, min(1.0, float(args.brightness)))
         try:
@@ -2126,11 +2165,6 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Device setup failed: {exc}")
             return 1
 
-        # Write show to temp file for run_show_playback
-        import tempfile
-        show_tmp = Path(tempfile.mktemp(suffix=".json"))
-        timeline.to_json(show_tmp)
-
         stop_event = threading.Event()
 
         def _signal_handler(signum, frame):
@@ -2143,7 +2177,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             summary = run_show_playback(
                 args.mp3_path,
-                show_tmp,
+                show_path,
                 multi_adapter,
                 sample_rate=args.sample_rate,
                 audio_device=args.audio_device,
@@ -2153,8 +2187,6 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             print(f"Playback failed: {exc}")
             return 1
-        finally:
-            show_tmp.unlink(missing_ok=True)
 
         print(json.dumps(summary, separators=(",", ":")))
         return 0
@@ -2338,6 +2370,42 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         print(json.dumps(summary, separators=(",", ":")))
+        return 0
+
+    if args.command == "archive":
+        from .capture.archiver import archive_mp3s
+
+        directory = args.directory
+        if not directory.is_dir():
+            print(f"Error: directory not found: {directory}")
+            return 1
+
+        mp3s = sorted(directory.glob("*.mp3"))
+        if not mp3s:
+            print(f"No MP3 files found in {directory}")
+            return 0
+
+        if args.dry_run:
+            print(f"Would archive {len(mp3s)} MP3 file(s):")
+            for p in mp3s:
+                print(f"  {p.name}  ({_format_bytes(p.stat().st_size)})")
+            json_count = len(list(directory.glob("*.json")))
+            print(f"\n{json_count} JSON file(s) would be left untouched.")
+            return 0
+
+        result = archive_mp3s(
+            directory,
+            archive_name=args.name,
+            delete_originals=not args.keep,
+        )
+
+        if result is None:
+            print(f"No MP3 files found in {directory}")
+            return 0
+
+        action = "kept" if args.keep else "deleted"
+        print(f"Archived {len(mp3s)} MP3 file(s) to {result.name} "
+              f"({_format_bytes(result.stat().st_size)}), originals {action}")
         return 0
 
     parser.print_help()

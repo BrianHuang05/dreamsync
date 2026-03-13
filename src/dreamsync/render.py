@@ -36,7 +36,7 @@ class SegmentRenderer:
 
     # Pulse state
     _pulse_brightness: float = field(default=0.0, init=False, repr=False)
-    _pulse_decay: float = field(default=12.0, init=False, repr=False)
+    _pulse_decay: float = field(default=4.0, init=False, repr=False)
 
     # Scroll state — half-buffer (center-to-edge), mirrored on output
     _scroll_buf: list[tuple[float, float, float]] = field(

@@ -247,13 +247,13 @@ class EffectCyclerIntegrationTests(unittest.TestCase):
 
 
 class EffectDecayTests(unittest.TestCase):
-    """Test updated pulse decay values (Issue 4)."""
+    """Test pulse decay values are tuned for rhythmic pulsing, not strobing."""
 
-    def test_beat_pulse_decay_12(self) -> None:
-        assert EFFECTS["beat_pulse"].params["pulse_decay"] == 12.0
+    def test_beat_pulse_decay(self) -> None:
+        assert EFFECTS["beat_pulse"].params["pulse_decay"] == 4.0
 
-    def test_drop_blast_decay_10(self) -> None:
-        assert EFFECTS["drop_blast"].params["pulse_decay"] == 10.0
+    def test_drop_blast_decay(self) -> None:
+        assert EFFECTS["drop_blast"].params["pulse_decay"] == 6.0
 
 
 if __name__ == "__main__":

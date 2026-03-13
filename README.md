@@ -183,17 +183,41 @@ The capture pipeline uses FFmpeg to read from VB-Cable's output device. You must
    - Open **Settings > System > Sound** (or right-click the speaker icon in the taskbar)
    - Under **Output**, select **CABLE Input (VB-Audio Virtual Cable)**
    - All system audio now flows into the virtual cable instead of your speakers
-3. **Echo audio back to your speakers:**
-   - Open **Control Panel > Sound** (the classic panel, not Settings)
-   - Go to the **Recording** tab
-   - Right-click **CABLE Output (VB-Audio Virtual Cable)** > **Properties**
-   - Go to the **Listen** tab
-   - Check **"Listen to this device"**
-   - In the dropdown, select your real speakers/headphones
-   - Click **OK**
-4. **Verify:** Play music. You should hear it through your speakers, and running `ffmpeg -hide_banner -list_devices true -f dshow -i dummy 2>&1` should show `CABLE Output (VB-Audio Virtual Cable)` as an available audio device.
+3. **Verify:** Run `ffmpeg -hide_banner -list_devices true -f dshow -i dummy 2>&1` and confirm `CABLE Output (VB-Audio Virtual Cable)` appears as an available audio device.
 
-The audio path is: App -> CABLE Input -> CABLE Output -> FFmpeg capture (+ echoed to speakers via Listen).
+The audio path is: App -> CABLE Input -> CABLE Output -> FFmpeg capture -> DreamSync -> `--playback-device` (speakers/aux out).
+
+> **Note:** No VB-Cable loopback ("Listen to this device") is needed. The streaming pipeline captures audio from VB-Cable, processes it (analyze + compile), and plays it back through `--playback-device`. DreamSync itself handles the routing between capture and playback — the only delay is the pipeline processing time between songs.
+>
+> If you're using `govee-live` without `--pipeline` (real-time beat detection only, no show playback), you'll need to hear the music through other means — either enable "Listen to this device" on CABLE Output in the Recording tab, or use a hardware splitter.
+
+### VB-Cable reinstall (when the driver breaks)
+
+If VB-Cable stops appearing in your audio devices or behaves erratically, do a clean reinstall:
+
+1. **Uninstall the device from Device Manager:**
+   - Open **Device Manager** > **Sound, video and game controllers**
+   - Right-click **VB-Audio Virtual Cable** > **Uninstall device**
+2. **Remove the driver package via PowerShell (run as Administrator):**
+   ```powershell
+   # Find the VB-Cable driver OEM number
+   pnputil /enum-drivers | Select-String -Context 3,3 "vb"
+
+   # Stop audio services
+   net stop audiosrv
+   net stop AudioEndpointBuilder
+
+   # Delete the driver (replace oemXX.inf with the actual number from step above)
+   pnputil /delete-driver oemXX.inf /uninstall /force
+
+   # Restart audio services
+   net start AudioEndpointBuilder
+   net start audiosrv
+   ```
+3. **Reboot** the computer.
+4. **Download and install** the latest VB-Cable from https://vb-audio.com/Cable/.
+5. **Reboot** again as part of the installation.
+6. **Re-do audio routing** — follow the steps in [Audio routing setup](#audio-routing-setup-windows) above.
 
 ### Standalone capture
 
@@ -309,6 +333,30 @@ python -m dreamsync session --config devices.yaml \
   --capture-naming metadata --spotify --debug-mood
 ```
 
+## Archive MP3s
+
+After a session, archive captured MP3 files into a zip to reclaim disk space. JSON sidecar files (`.analysis.json`, `.show.json`, `.meta.json`) are left untouched for re-runs and inspection.
+
+```bash
+# Dry run — see what would be archived
+python -m dreamsync archive out/capture-boundary/ --dry-run
+
+# Archive and delete originals
+python -m dreamsync archive out/capture-boundary/
+
+# Archive with custom name
+python -m dreamsync archive out/capture-boundary/ --name "session-2026-03-13"
+
+# Keep originals (just create the zip)
+python -m dreamsync archive out/capture-boundary/ --keep
+```
+
+To auto-archive at the end of a capture session:
+
+```bash
+python -m dreamsync session --config devices.yaml --capture --capture-dir out/songs --archive
+```
+
 ## List audio devices
 
 ```bash
@@ -336,9 +384,12 @@ The streaming pipeline (`session --pipeline`) captures and plays audio simultane
 ```
 Spotify  ──▸  CABLE Input (system default)  ──▸  CABLE Output  ──▸  FFmpeg capture
                                                                      (--device-pattern "CABLE Output")
-
-Show player  ──▸  Speakers / Headphone jack  ──▸  physical audio out
-                  (--playback-device N)
+                                                                          │
+                                              DreamSync (analyze + compile + play)
+                                                                          │
+                                                                          ▼
+                                              Speakers / AUX out  ──▸  physical audio
+                                              (--playback-device N)
 ```
 
 Use `dreamsync devices` to find the right IDs, then:
@@ -409,6 +460,7 @@ All flags in one table, grouped by category. Not every flag applies to every sub
 | `--device-pattern` | `CABLE Output` | DirectShow audio device for FFmpeg |
 | `--spotify` | off | Use Spotify queue API for song boundary detection |
 | `--capture-buffer` | off | Max MP3 files to keep on disk (rotating buffer) |
+| `--archive` | off | Archive MP3 files in capture directory on clean shutdown (session) |
 | **Streaming pipeline** | | |
 | `--pipeline` | off | Enable concurrent capture + analyze + compile + play |
 | `--purge` | off | Delete MP3 + sidecar files after playback |
@@ -482,6 +534,7 @@ Tests covering all subsystems:
 | `test_tag_chaining.py` | 25 | Tag parsing, tag scoring, tag-aware profile selection, mood preferences, backward compat |
 | `test_profile_export.py` | 9 | YAML export, round-trip, name override, tag preservation, CLI export |
 | `test_device_picker.py` | 15 | `is_capture_device`, `format_device_table`, `pick_output_device` interactive picker |
+| `test_archiver.py` | 8 | MP3 archiving: zip creation, delete/keep originals, JSON untouched, min age, custom name |
 
 ### Validation tests
 
@@ -695,6 +748,7 @@ Separate FFmpeg-based pipeline for recording system audio as per-song MP3 files.
 | Structured JSON + console pipeline logging | `capture/pipeline_logger.py` | `PipelineLogger` — JSONL to `logs/pipeline.jsonl` + console |
 | Pipeline orchestrator (unified lifecycle + CLI) | `capture/orchestrator.py` | `CaptureOrchestrator`, `DynamicSplitProcessor`, `OrchestratorConfig` |
 | Windows audio routing via PowerShell | `capture/audio_router.py` | `AudioRouter` |
+| MP3 archiver (zip + cleanup) | `capture/archiver.py` | `archive_mp3s()` — zip MP3s, leave JSON sidecars |
 
 ### Capture pipeline data flow
 

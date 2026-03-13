@@ -65,7 +65,7 @@ EFFECTS: dict[str, EffectPreset] = {
         name="beat_pulse",
         render_mode=RenderMode.PULSE,
         color_palette=PALETTES["vivid"],
-        params={"pulse_decay": 12.0},
+        params={"pulse_decay": 4.0},
     ),
     "color_scroll": EffectPreset(
         name="color_scroll",
@@ -83,7 +83,7 @@ EFFECTS: dict[str, EffectPreset] = {
         name="drop_blast",
         render_mode=RenderMode.PULSE,
         color_palette=PALETTES["fire"],
-        params={"pulse_decay": 10.0},
+        params={"pulse_decay": 6.0},
     ),
     "wave_drift": EffectPreset(
         name="wave_drift",
