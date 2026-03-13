@@ -654,6 +654,28 @@ python -m dreamsync pipeline out/capture-test/ --config devices.yaml --debug
 
 Pass: Analyze writes `.analysis.json` files, compile caches shows, play runs full playback.
 
+#### Archive (no hardware needed)
+
+```bash
+# Unit tests
+python -m pytest dev/tests/test_archiver.py -v
+
+# Dry run — show what would be archived
+python -m dreamsync archive out/capture-boundary/ --dry-run
+
+# Archive MP3s, delete originals
+python -m dreamsync archive out/capture-boundary/
+
+# Confirm JSON files remain, MP3s are in zip
+ls out/capture-boundary/*.json
+unzip -l out/capture-boundary/archived_*.zip
+
+# Archive with custom name, keep originals
+python -m dreamsync archive out/capture-boundary/ --name "test-session" --keep
+```
+
+Pass: Zip contains all MP3s, JSON sidecars untouched, `--dry-run` lists files without creating zip, `--keep` preserves originals, `--name` sets custom archive name.
+
 #### Capture troubleshooting
 
 | Symptom | Fix |
