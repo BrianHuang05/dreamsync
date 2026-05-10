@@ -1,0 +1,12 @@
+# Dummy device config for testing the full pipeline without hardware.
+# Uses unreachable IPs — build_multi_adapter falls back to NullMultiAdapter
+# so the entire capture/analyze/compile/play pipeline runs through real code paths,
+# just with no UDP packets sent.
+
+devices:
+  - name: "Dummy Strip"
+    address: "192.168.255.254"
+    type: lan
+    segments: 15
+    transport: ptreal
+    role: primary

@@ -47,20 +47,27 @@ python -m dreamsync govee-live \
 
 ## Debug / dry-run testing (no lights needed)
 
-Use a fake IP to test the audio analysis pipeline without any hardware connected. UDP sends are fire-and-forget, so they silently fail on unreachable IPs while the full BPM, mood, effect, and song boundary pipeline runs normally.
+Use a dummy device config (`dev/devices-dummy.yaml`) to test the full pipeline without any hardware connected. When all devices in the config are unreachable, `build_multi_adapter` automatically falls back to a `NullMultiAdapter` — the entire pipeline runs through real code paths (capture, analyze, compile, play), just with no UDP packets sent.
 
 ```bash
-# Watch mood/effect/BPM transitions live (60 seconds)
+# govee-live with fake IP (UDP sends silently fail, audio pipeline runs normally)
 python -m dreamsync govee-live \
     --device 192.168.0.99:7:primary:ptreal \
     --duration 60 \
     --debug-mood
 
-# Longer run to test song boundary detection across a playlist
-python -m dreamsync govee-live \
-    --device 192.168.0.99:7:primary:ptreal \
-    --duration 600 \
-    --debug-mood
+# Session with dummy config (full pipeline: VB-Cable capture + analyze + compile + play)
+python -m dreamsync session --config dev/devices-dummy.yaml \
+    --pipeline --capture --capture-dir out/dry-test \
+    --capture-naming metadata --spotify \
+    --playback-device pick --debug-mood
+
+# Show player with dummy config (pre-compiled show + audio)
+python -m dreamsync play path/to/song.mp3 --config dev/devices-dummy.yaml --debug
+
+# Or use --dry-run on play/compile-and-play to skip device detection entirely
+python -m dreamsync play path/to/song.mp3 --dry-run --debug
+python -m dreamsync compile-and-play path/to/song.mp3 --dry-run --debug
 ```
 
 With `--debug-mood` you'll see output like:
@@ -298,6 +305,9 @@ Analyze, compile, and play a single file in one command:
 
 ```bash
 python -m dreamsync compile-and-play path/to/song.mp3 --config devices.yaml --profile aurora --debug
+
+# Audio only (no devices needed)
+python -m dreamsync compile-and-play path/to/song.mp3 --dry-run --debug
 ```
 
 ### Shortcut: directory pipeline
@@ -327,8 +337,8 @@ python -m dreamsync session --config devices.yaml \
   --capture-naming metadata --spotify \
   --playback-device 5 --purge --debug-mood
 
-# Dry-run streaming (no devices, just capture + analyze + compile)
-python -m dreamsync session --config devices.yaml \
+# Dry-run streaming (dummy config — full pipeline, no device output)
+python -m dreamsync session --config dev/devices-dummy.yaml \
   --pipeline --capture --capture-dir out/streaming \
   --capture-naming metadata --spotify --debug-mood
 ```
@@ -622,8 +632,11 @@ python -m dreamsync compile path/to/song.analysis.json --output song.show.json
 python -m dreamsync compile-dir out/analysis/ --summary
 python -m dreamsync compile-dir out/analysis/ --output-dir out/shows/
 
-# Full pipeline (requires mp3 + devices)
+# Full pipeline (with devices)
 python -m dreamsync compile-and-play path/to/song.mp3 --config devices.yaml --profile aurora --debug
+
+# Full pipeline (audio only, no devices)
+python -m dreamsync compile-and-play path/to/song.mp3 --dry-run --debug
 ```
 
 Pass: Summary table with Duration/BPM/Sections/Cues, JSON round-trips, batch compiles all files, full pipeline runs analyze→compile→play.
@@ -739,7 +752,7 @@ System Audio → LiveBpmEstimator → beat events + BPM
 | Per-song telemetry (JSONL per song, session summary) | `telemetry.py` | `TelemetryWriter` |
 | Hot-reload device config (mtime polling, diff, atomic swap) | `config_watcher.py` | `ConfigWatcher` |
 | Infinite session runner (YAML config + Ctrl+C shutdown) | `session.py` | `run_session()` |
-| Null adapter (dry-run / audio-only testing) | `output/null_adapter.py` | `NullMultiAdapter` |
+| Null adapter (auto-fallback when no devices reachable, or `--dry-run`) | `output/null_adapter.py` | `NullMultiAdapter` |
 | Streaming pipeline worker (background analyze + compile) | `show_pipeline_worker.py` | `ShowPipelineWorker` |
 | Streaming playback consumer (play from ready queue) | `show_playback_consumer.py` | `ShowPlaybackConsumer` |
 | Spotify OAuth + API client | `spotify/auth.py`, `spotify/client.py` | `SpotifyAuth`, `SpotifyClient` |

@@ -234,10 +234,11 @@ class BuildMultiAdapterTests(unittest.TestCase):
         multi = build_multi_adapter(detected)
         self.assertIsInstance(multi, MultiGoveeLanAdapter)
         self.assertEqual(len(multi.devices), 1)
-        adapter, renderer, role, _bs = multi.devices[0]
+        adapter, renderer, role, _bs, placement = multi.devices[0]
         self.assertEqual(adapter.config.device_ip, "192.168.1.10")
         self.assertEqual(adapter.config.segments, 15)
         self.assertEqual(role, DeviceRole.PRIMARY)
+        self.assertIsNone(placement)
 
     def test_unreachable_skipped(self) -> None:
         detected = [
@@ -263,7 +264,9 @@ class BuildMultiAdapterTests(unittest.TestCase):
         self.assertEqual(len(multi.devices), 1)
         self.assertEqual(multi.devices[0][0].config.device_ip, "192.168.1.10")
 
-    def test_all_unreachable_raises(self) -> None:
+    def test_all_unreachable_returns_null_adapter(self) -> None:
+        from dreamsync.output.null_adapter import NullMultiAdapter
+
         detected = [
             DetectedDevice(
                 name="Dead",
@@ -274,9 +277,10 @@ class BuildMultiAdapterTests(unittest.TestCase):
                 config=DeviceConfig(name="Dead", address="192.168.1.99"),
             ),
         ]
-        with self.assertRaises(RuntimeError) as ctx:
-            build_multi_adapter(detected)
-        self.assertIn("No reachable devices", str(ctx.exception))
+        adapter = build_multi_adapter(detected)
+        self.assertIsInstance(adapter, NullMultiAdapter)
+        self.assertEqual(adapter.devices, [])
+        self.assertTrue(adapter.send_frame(0.0, None))
 
     def test_ble_follower_added(self) -> None:
         detected = [
@@ -316,7 +320,7 @@ class BuildMultiAdapterTests(unittest.TestCase):
             ),
         ]
         multi = build_multi_adapter(detected)
-        _, _, role, _bs = multi.devices[0]
+        _, _, role, _bs, _placement = multi.devices[0]
         self.assertEqual(role, DeviceRole.ACCENT)
 
     def test_render_mode_propagated(self) -> None:
@@ -332,7 +336,7 @@ class BuildMultiAdapterTests(unittest.TestCase):
             ),
         ]
         multi = build_multi_adapter(detected, render_mode=RenderMode.PULSE, mirror=False)
-        _, renderer, _, _bs = multi.devices[0]
+        _, renderer, _, _bs, _placement = multi.devices[0]
         self.assertEqual(renderer.mode, RenderMode.PULSE)
         self.assertFalse(renderer.mirror)
 

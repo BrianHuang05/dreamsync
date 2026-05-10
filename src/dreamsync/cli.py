@@ -622,7 +622,6 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="AUDIO_PATH",
         help="Play a local audio file with synchronized lighting (no Spotify needed).",
     )
-
     # -- Spotify auth command ------------------------------------------------
     spotify_auth = sub.add_parser(
         "spotify-auth",
@@ -780,7 +779,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cap_cmd.add_argument("mp3_path", type=Path, help="Path to audio file.")
     cap_cmd.add_argument("--profile", type=str, default=None, help="Profile name or path.")
-    cap_cmd.add_argument("--config", type=Path, required=True, help="Device config YAML.")
+    cap_cmd.add_argument("--config", type=Path, default=None, help="Device config YAML (required unless --dry-run).")
     cap_cmd.add_argument("--seed", type=int, default=None, help="Random seed for determinism.")
     cap_cmd.add_argument("--output", "-o", type=Path, default=None, help="Save compiled show JSON.")
     cap_cmd.add_argument("--sample-rate", type=int, default=44100, help="Audio sample rate.")
@@ -792,6 +791,8 @@ def build_parser() -> argparse.ArgumentParser:
     cap_cmd.add_argument("--debug", action="store_true", help="Print cue changes.")
     cap_cmd.add_argument("--cache-dir", type=str, default=None,
                          help="Enable caching — check/store in this directory")
+    cap_cmd.add_argument("--dry-run", action="store_true", default=False, dest="dry_run",
+                         help="Audio only, no device output (skips device detection).")
 
     # -- Cache management subcommands ------------------------------------------
     cache_list_cmd = sub.add_parser("cache-list", help="List cached compiled shows")
@@ -960,45 +961,88 @@ def _resolve_profile_chain_from_args(args):
 
 
 def _start_keyboard_listener(session_ref, stop_event, *, debug=False):
-    """Start a daemon thread that listens for keyboard input.
-
-    Controls:
-    - 'n' or right arrow -> next track
-    - 'p' or left arrow -> previous track
-    - 'q' -> quit session
-    """
+    """Start a daemon thread that listens for simple queue control commands."""
     import sys
-    import time
     import threading
 
-    def _handle_key(ch, sess_ref, stop_ev):
+    def _print_help():
+        print("[controls] Commands: next | prev | list | play N | rm N | mv A B | shuffle | quit")
+
+    def _format_queue(session) -> str:
+        snapshot = session.queue_snapshot()
+        lines = []
+        current_index = snapshot["current_index"]
+        tracks = snapshot["tracks"]
+        for idx, track in enumerate(tracks, start=1):
+            marker = ">" if (idx - 1) == current_index else " "
+            lines.append(f"{marker} {idx:>2}. {Path(track).name}")
+        return "\n".join(lines) if lines else "(empty queue)"
+
+    def _handle_command(raw: str, sess_ref, stop_ev):
         session = sess_ref[0] if sess_ref else None
-        if ch == "n" and session is not None:
-            session.signal_next()
-        elif ch == "p" and session is not None:
-            session.signal_prev()
-        elif ch == "q":
+        command = raw.strip()
+        if not command:
+            return
+
+        parts = command.split()
+        action = parts[0].lower()
+
+        if action in {"help", "h", "?"}:
+            _print_help()
+            return
+        if action in {"q", "quit", "exit"}:
             stop_ev.set()
+            return
+        if session is None:
+            print("[controls] Session not ready yet.")
+            return
+
+        if action in {"n", "next"}:
+            session.signal_next()
+        elif action in {"p", "prev"}:
+            session.signal_prev()
+        elif action in {"ls", "list", "queue"}:
+            print(_format_queue(session))
+        elif action in {"rm", "remove"}:
+            if len(parts) != 2:
+                print("[controls] Usage: rm N")
+                return
+            removed = session.remove_track(int(parts[1]) - 1)
+            print(f"[controls] Removed: {Path(removed).name}")
+        elif action == "play":
+            if len(parts) != 2:
+                print("[controls] Usage: play N")
+                return
+            index = int(parts[1]) - 1
+            session.play_now(index)
+            print(f"[controls] Jumping to queue item {parts[1]}.")
+        elif action in {"mv", "move"}:
+            if len(parts) != 3:
+                print("[controls] Usage: mv FROM TO")
+                return
+            from_index = int(parts[1]) - 1
+            to_index = int(parts[2]) - 1
+            session.move_track(from_index, to_index)
+            print(f"[controls] Moved {parts[1]} -> {parts[2]}.")
+        elif action in {"shuffle", "mix"}:
+            session.shuffle_queue()
+            print("[controls] Shuffled upcoming queue.")
+        else:
+            print(f"[controls] Unknown command: {command}")
+            _print_help()
 
     def _listener():
-        if debug:
-            print("[controls] n=next, p=prev, q=quit")
+        _print_help()
 
         while not stop_event.is_set():
             try:
-                if sys.platform == "win32":
-                    import msvcrt
-                    if msvcrt.kbhit():
-                        ch = msvcrt.getch().decode("utf-8", errors="ignore").lower()
-                        _handle_key(ch, session_ref, stop_event)
-                else:
-                    import select
-                    if select.select([sys.stdin], [], [], 0.1)[0]:
-                        ch = sys.stdin.read(1).lower()
-                        _handle_key(ch, session_ref, stop_event)
-            except Exception:
-                pass
-            time.sleep(0.05)
+                line = sys.stdin.readline()
+                if not line:
+                    break
+                _handle_command(line, session_ref, stop_event)
+            except Exception as exc:
+                print(f"[controls] {exc}")
+                continue
 
     # Wrap session_ref for mutability if needed
     if session_ref is None:
@@ -1964,8 +2008,9 @@ def main(argv: list[str] | None = None) -> int:
             signal.signal(signal.SIGINT, lambda *_: stop_event.set())
 
             # If playlist session, set up keyboard controls
+            session_ref = [None]
             if len(playlist) > 1:
-                _start_keyboard_listener(None, stop_event, debug=getattr(args, "debug", False))
+                _start_keyboard_listener(session_ref, stop_event, debug=getattr(args, "debug", False))
 
             summary = run_local_session(
                 multi_adapter,
@@ -1977,6 +2022,7 @@ def main(argv: list[str] | None = None) -> int:
                 stop_event=stop_event,
                 debug=getattr(args, "debug", False),
                 playlist=playlist if len(playlist) > 1 else None,
+                session_ref=session_ref,
             )
 
         print(json.dumps(summary, separators=(",", ":")))
@@ -2098,7 +2144,11 @@ def main(argv: list[str] | None = None) -> int:
         if not args.mp3_path.exists():
             print(f"Error: audio file not found: {args.mp3_path}")
             return 1
-        if not args.config.exists():
+        dry_run = getattr(args, "dry_run", False)
+        if not dry_run and not args.config:
+            print("Error: --config is required (or use --dry-run for audio-only)")
+            return 1
+        if args.config and not args.config.exists():
             print(f"Error: config file not found: {args.config}")
             return 1
 
@@ -2152,18 +2202,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Show saved to {show_path}")
 
         brightness = max(0.0, min(1.0, float(args.brightness)))
-        try:
-            configs = load_device_config(args.config)
-            detected = detect_all_devices(configs)
-            multi_adapter = build_multi_adapter(
-                detected,
-                fps=args.fps,
-                brightness=brightness,
-                mirror=args.mirror,
-            )
-        except Exception as exc:
-            print(f"Device setup failed: {exc}")
-            return 1
+        if dry_run:
+            from .output.null_adapter import NullMultiAdapter
+            multi_adapter = NullMultiAdapter()
+            print("Dry-run mode: audio only, no device output.")
+        else:
+            try:
+                configs = load_device_config(args.config)
+                detected = detect_all_devices(configs)
+                multi_adapter = build_multi_adapter(
+                    detected,
+                    fps=args.fps,
+                    brightness=brightness,
+                    mirror=args.mirror,
+                )
+            except Exception as exc:
+                print(f"Device setup failed: {exc}")
+                return 1
 
         stop_event = threading.Event()
 
@@ -2353,8 +2408,9 @@ def main(argv: list[str] | None = None) -> int:
         stop_event = threading.Event()
         signal.signal(signal.SIGINT, lambda *_: stop_event.set())
 
+        session_ref = [None]
         if len(playlist) > 1:
-            _start_keyboard_listener(None, stop_event, debug=args.debug)
+            _start_keyboard_listener(session_ref, stop_event, debug=args.debug)
 
         print(f"\nPlaying {len(playable)} tracks...")
         summary = run_local_session(
@@ -2367,6 +2423,7 @@ def main(argv: list[str] | None = None) -> int:
             stop_event=stop_event,
             debug=args.debug,
             playlist=playlist if len(playlist) > 1 else None,
+            session_ref=session_ref,
         )
 
         print(json.dumps(summary, separators=(",", ":")))

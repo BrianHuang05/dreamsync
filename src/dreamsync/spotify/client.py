@@ -92,9 +92,35 @@ class SpotifyClient:
             fetched_at=time.monotonic(),
         )
 
+    def add_to_queue(self, uri: str, *, device_id: str | None = None) -> None:
+        """POST /v1/me/player/queue — add an item to the playback queue."""
+        params = {"uri": uri}
+        if device_id:
+            params["device_id"] = device_id
+        self._request("POST", "/me/player/queue", params=params)
+
+    def skip_to_next(self, *, device_id: str | None = None) -> None:
+        """POST /v1/me/player/next — skip to the next queued item."""
+        params = {"device_id": device_id} if device_id else None
+        self._request("POST", "/me/player/next", params=params)
+
+    def set_shuffle(self, enabled: bool, *, device_id: str | None = None) -> None:
+        """PUT /v1/me/player/shuffle — toggle Spotify playback shuffle."""
+        params: dict[str, str] = {"state": "true" if enabled else "false"}
+        if device_id:
+            params["device_id"] = device_id
+        self._request("PUT", "/me/player/shuffle", params=params)
+
     # -- Internal ------------------------------------------------------------
 
-    def _request(self, method: str, path: str) -> httpx.Response:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, str] | None = None,
+        json_body: dict | None = None,
+    ) -> httpx.Response:
         """Make an authenticated request with auto-refresh and rate-limit retry."""
         # Refresh token if near expiry
         if not refresh_if_needed(self._token_store):
@@ -103,7 +129,13 @@ class SpotifyClient:
         url = f"{SPOTIFY_API_BASE}{path}"
         headers = {"Authorization": f"Bearer {self._token_store.access_token}"}
 
-        resp = self._http.request(method, url, headers=headers)
+        resp = self._http.request(
+            method,
+            url,
+            headers=headers,
+            params=params,
+            json=json_body,
+        )
 
         # Handle 401 — try one refresh then retry
         if resp.status_code == 401:
@@ -111,7 +143,13 @@ class SpotifyClient:
             if not refresh_if_needed(self._token_store):
                 raise SpotifyAuthError("Token refresh failed after 401")
             headers["Authorization"] = f"Bearer {self._token_store.access_token}"
-            resp = self._http.request(method, url, headers=headers)
+            resp = self._http.request(
+                method,
+                url,
+                headers=headers,
+                params=params,
+                json=json_body,
+            )
             if resp.status_code == 401:
                 raise SpotifyAuthError("Still 401 after token refresh")
 
@@ -120,7 +158,13 @@ class SpotifyClient:
             retry_after = int(resp.headers.get("Retry-After", "1"))
             _logger.warning("Rate limited, waiting %ds", retry_after)
             time.sleep(retry_after)
-            resp = self._http.request(method, url, headers=headers)
+            resp = self._http.request(
+                method,
+                url,
+                headers=headers,
+                params=params,
+                json=json_body,
+            )
             if resp.status_code == 429:
                 raise SpotifyAPIError("Still rate limited after retry", 429)
 

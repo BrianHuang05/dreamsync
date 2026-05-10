@@ -131,6 +131,49 @@ class TestGetQueue:
         assert q.queue[0].name == "Next"
 
 
+class TestPlaybackControlEndpoints:
+    @patch("dreamsync.spotify.client.refresh_if_needed", return_value=True)
+    def test_add_to_queue_calls_expected_endpoint(self, _mock_refresh, tmp_path):
+        store = _make_token_store(tmp_path)
+        client = SpotifyClient(store)
+        with patch.object(client._http, "request", return_value=_mock_response(204)) as mock_request:
+            client.add_to_queue("spotify:track:track2", device_id="device123")
+
+        mock_request.assert_called_once()
+        _, url = mock_request.call_args.args[:2]
+        assert url.endswith("/me/player/queue")
+        assert mock_request.call_args.kwargs["params"] == {
+            "uri": "spotify:track:track2",
+            "device_id": "device123",
+        }
+
+    @patch("dreamsync.spotify.client.refresh_if_needed", return_value=True)
+    def test_skip_to_next_calls_expected_endpoint(self, _mock_refresh, tmp_path):
+        store = _make_token_store(tmp_path)
+        client = SpotifyClient(store)
+        with patch.object(client._http, "request", return_value=_mock_response(204)) as mock_request:
+            client.skip_to_next()
+
+        mock_request.assert_called_once()
+        _, url = mock_request.call_args.args[:2]
+        assert url.endswith("/me/player/next")
+
+    @patch("dreamsync.spotify.client.refresh_if_needed", return_value=True)
+    def test_set_shuffle_calls_expected_endpoint(self, _mock_refresh, tmp_path):
+        store = _make_token_store(tmp_path)
+        client = SpotifyClient(store)
+        with patch.object(client._http, "request", return_value=_mock_response(204)) as mock_request:
+            client.set_shuffle(True, device_id="speaker1")
+
+        mock_request.assert_called_once()
+        _, url = mock_request.call_args.args[:2]
+        assert url.endswith("/me/player/shuffle")
+        assert mock_request.call_args.kwargs["params"] == {
+            "state": "true",
+            "device_id": "speaker1",
+        }
+
+
 class TestErrorHandling:
     @patch("dreamsync.spotify.client.refresh_if_needed", return_value=True)
     def test_rate_limit_retry(self, _mock_refresh, tmp_path):

@@ -85,14 +85,14 @@ def format_summary(structure: SongStructure, timeline: ShowTimeline) -> str:
         t_sec = int(cue.t % 60)
         time_str = f"{t_min}:{t_sec:02d}"
 
-        # Get section info if available
-        if i < len(structure.sections):
-            sec = structure.sections[i]
-            label = sec.label
-            mood = sec.mood
-        else:
-            label = "?"
-            mood = "?"
+        # Find the section that contains this cue's timestamp
+        label = "?"
+        mood = "?"
+        for sec in structure.sections:
+            if sec.start_t <= cue.t < sec.end_t:
+                label = sec.label
+                mood = sec.mood
+                break
 
         lines.append(
             f"  {time_str:<8s} {label:<9s} {mood:<7s} "

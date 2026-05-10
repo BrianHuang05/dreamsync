@@ -224,6 +224,9 @@ class LocalPlaylistSession:
         # Control signals
         self._signal_next = threading.Event()
         self._signal_prev = threading.Event()
+        self._signal_jump = threading.Event()
+        self._control_lock = threading.RLock()
+        self._pending_jump_index: int | None = None
 
         # Background precompilation
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="precompile")
@@ -284,6 +287,12 @@ class LocalPlaylistSession:
                 elif result == "prev":
                     self._playlist.prev()
                     self._executor.submit(self._precompile_upcoming)
+                elif result == "jump":
+                    target = self._consume_jump_target()
+                    if target is None:
+                        continue
+                    self._playlist.jump_to(target)
+                    self._executor.submit(self._precompile_upcoming)
         except KeyboardInterrupt:
             pass
 
@@ -315,6 +324,50 @@ class LocalPlaylistSession:
         """Signal to go to the previous track (thread-safe)."""
         self._signal_prev.set()
 
+    def queue_snapshot(self) -> dict[str, Any]:
+        """Return a stable snapshot of the current queue state."""
+        tracks = self._playlist.snapshot()
+        current_index = self._playlist.current_index
+        return {
+            "current_index": current_index,
+            "tracks": tracks,
+        }
+
+    def remove_track(self, index: int) -> Path:
+        """Remove an upcoming track from the queue."""
+        with self._control_lock:
+            current_index = self._playlist.current_index
+            if index == current_index:
+                raise ValueError("Cannot remove the currently playing track; use next instead.")
+            if index < current_index:
+                raise ValueError("Cannot remove a track that has already been played.")
+            return self._playlist.remove(index)
+
+    def move_track(self, from_index: int, to_index: int) -> None:
+        """Reorder an upcoming track within the queue."""
+        with self._control_lock:
+            current_index = self._playlist.current_index
+            if from_index <= current_index or to_index <= current_index:
+                raise ValueError("Only upcoming tracks can be reordered.")
+            self._playlist.move(from_index, to_index)
+
+    def shuffle_queue(self) -> None:
+        """Shuffle only the remaining upcoming tracks."""
+        with self._control_lock:
+            self._playlist.shuffle_upcoming()
+
+    def play_now(self, index: int) -> None:
+        """Interrupt the current track and jump to the selected queue entry."""
+        with self._control_lock:
+            self._playlist.snapshot()[index]
+            current_index = self._playlist.current_index
+            if index < current_index:
+                raise ValueError("Cannot jump to a track that has already been played.")
+            if index == current_index:
+                return
+            self._pending_jump_index = index
+            self._signal_jump.set()
+
     def _play_track(
         self, audio_path: Path, stop_event: threading.Event,
     ) -> str:
@@ -322,6 +375,7 @@ class LocalPlaylistSession:
         # Clear any pending signals
         self._signal_next.clear()
         self._signal_prev.clear()
+        self._signal_jump.clear()
 
         # Compile show
         timeline = self._session.load_track(audio_path)
@@ -350,6 +404,8 @@ class LocalPlaylistSession:
                     return "next"
                 if self._signal_prev.is_set():
                     return "prev"
+                if self._signal_jump.is_set():
+                    return "jump"
 
                 if player.finished:
                     return "finished"
@@ -381,6 +437,13 @@ class LocalPlaylistSession:
             except Exception as exc:
                 logger.warning("playlist: precompile failed for '%s': %s", track_path.name, exc)
 
+    def _consume_jump_target(self) -> int | None:
+        with self._control_lock:
+            target = self._pending_jump_index
+            self._pending_jump_index = None
+            self._signal_jump.clear()
+            return target
+
 
 # ---------------------------------------------------------------------------
 # D7.2 — Top-level entry point
@@ -398,6 +461,7 @@ def run_local_session(
     stop_event: threading.Event,
     debug: bool = False,
     playlist: PlaylistManager | None = None,
+    session_ref: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Top-level entry point for local session. Called from run_session() or CLI."""
     cache = ShowCache(cache_dir)
@@ -412,6 +476,8 @@ def run_local_session(
             audio_device=audio_device,
             debug=debug,
         )
+        if session_ref is not None:
+            session_ref[:] = [session]
         return session.run(stop_event)
     else:
         session = LocalShowSession(
@@ -422,4 +488,6 @@ def run_local_session(
             audio_device=audio_device,
             debug=debug,
         )
+        if session_ref is not None:
+            session_ref[:] = [session]
         return session.run(Path(audio_path), stop_event)

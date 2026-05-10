@@ -1,0 +1,217 @@
+"""Tests for placement-aware multi-device spatial routing."""
+
+from __future__ import annotations
+
+import unittest
+
+from dreamsync.director import EffectMode, LightingIntent
+from dreamsync.output.govee_lan import MultiGoveeLanAdapter
+from dreamsync.output.null_adapter import NullMultiAdapter
+from dreamsync.output.roles import DeviceRole
+from dreamsync.spatial.mapper import SpatialMapper
+from dreamsync.spatial.models import DeviceOrientation, DevicePlacement, GridCell, SpatialCellState
+
+
+class _FakeAdapter:
+    def __init__(self, *, returns: bool = True):
+        self.returns = returns
+        self.frames: list[list[tuple[int, int, int]]] = []
+        self.config = type("Config", (), {"device_ip": "fake-ip"})()
+
+    def send_frame(self, colors):
+        self.frames.append(colors)
+        return self.returns
+
+    def turn_on(self):
+        pass
+
+    def set_brightness(self, brightness):
+        pass
+
+
+class _FakeRenderer:
+    def __init__(self):
+        self.calls: list[dict] = []
+        self.mirror = True
+
+    def render(self, t, intent, beat=False, params=None):
+        self.calls.append({
+            "t": t,
+            "intent": intent,
+            "beat": beat,
+            "params": params,
+            "mirror": self.mirror,
+        })
+        return [(1, 2, 3)]
+
+
+class _FakeBleFollower:
+    def __init__(self):
+        self.calls: list[tuple[float, LightingIntent]] = []
+
+    def emit(self, t, intent):
+        self.calls.append((t, intent))
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+
+def _intent(intensity: float = 0.5, color: str = "#3366ff") -> LightingIntent:
+    return LightingIntent(
+        mode=EffectMode.PULSE,
+        intensity=intensity,
+        speed=0.4,
+        bpm=120.0,
+        color=color,
+    )
+
+
+def _scene(center_intensity: float = 0.5) -> dict[GridCell, SpatialCellState]:
+    scene: dict[GridCell, SpatialCellState] = {}
+    for cell in GridCell:
+        base = _intent(intensity=center_intensity, color="#3366ff")
+        if cell == GridCell.FRONT_LEFT:
+            base = _intent(intensity=0.8, color="#ff0000")
+        elif cell == GridCell.CENTER:
+            base = _intent(intensity=center_intensity, color="#00ff00")
+        elif cell == GridCell.BACK_RIGHT:
+            base = _intent(intensity=0.3, color="#0000ff")
+        scene[cell] = SpatialCellState(intent=base, emphasis=1.0, params={"cell": cell.value})
+    return scene
+
+
+class SpatialRuntimeTests(unittest.TestCase):
+    def test_legacy_four_tuple_still_normalizes(self) -> None:
+        multi = MultiGoveeLanAdapter([(_FakeAdapter(), _FakeRenderer(), DeviceRole.PRIMARY, 1.0)])
+        self.assertEqual(len(multi.devices[0]), 5)
+        self.assertIsNone(multi.devices[0][4])
+
+    def test_five_tuple_with_placement_normalizes(self) -> None:
+        placement = DevicePlacement(x=0.0, y=0.0)
+        multi = MultiGoveeLanAdapter([
+            (_FakeAdapter(), _FakeRenderer(), DeviceRole.PRIMARY, 1.0, placement)
+        ])
+        self.assertEqual(multi.devices[0][4], placement)
+
+    def test_spatial_off_uses_legacy_send_path(self) -> None:
+        adapter = _FakeAdapter()
+        renderer = _FakeRenderer()
+        multi = MultiGoveeLanAdapter([(adapter, renderer, DeviceRole.PRIMARY)])
+        multi.send_frame(0.0, _intent(), beat=True)
+        self.assertEqual(len(renderer.calls), 1)
+        self.assertEqual(renderer.calls[0]["intent"].color, "#3366ff")
+
+    def test_spatial_on_routes_by_resolved_grid_cell(self) -> None:
+        adapter = _FakeAdapter()
+        renderer = _FakeRenderer()
+        mapper = SpatialMapper(enabled=True)
+        placement = DevicePlacement(x=-1.0, y=-1.0)
+        multi = MultiGoveeLanAdapter(
+            [(adapter, renderer, DeviceRole.PRIMARY, 1.0, placement)],
+            spatial_mapper=mapper,
+        )
+        scene = _scene()
+        sent = multi.send_spatial_scene(0.0, scene, base_intent=_intent())
+        self.assertTrue(sent)
+        self.assertEqual(renderer.calls[0]["intent"].color, "#ff0000")
+
+    def test_two_devices_in_same_cell_receive_same_cell_state(self) -> None:
+        scene = _scene()
+        r1 = _FakeRenderer()
+        r2 = _FakeRenderer()
+        placement = DevicePlacement(x=-1.0, y=-1.0)
+        multi = MultiGoveeLanAdapter([
+            (_FakeAdapter(), r1, DeviceRole.PRIMARY, 1.0, placement),
+            (_FakeAdapter(), r2, DeviceRole.PRIMARY, 1.0, placement),
+        ])
+        multi.send_spatial_scene(0.0, scene, base_intent=_intent())
+        self.assertEqual(r1.calls[0]["intent"].color, r2.calls[0]["intent"].color)
+        self.assertEqual(r1.calls[0]["intent"].intensity, r2.calls[0]["intent"].intensity)
+
+    def test_center_device_receives_center_cell_state(self) -> None:
+        scene = _scene(center_intensity=0.6)
+        renderer = _FakeRenderer()
+        placement = DevicePlacement(x=0.0, y=0.0)
+        multi = MultiGoveeLanAdapter([
+            (_FakeAdapter(), renderer, DeviceRole.PRIMARY, 1.0, placement)
+        ])
+        multi.send_spatial_scene(0.0, scene, base_intent=_intent())
+        self.assertEqual(renderer.calls[0]["intent"].color, "#00ff00")
+        self.assertEqual(renderer.calls[0]["intent"].intensity, 0.6)
+
+    def test_unplaced_device_uses_legacy_or_fallback_behavior(self) -> None:
+        scene = _scene(center_intensity=0.7)
+        renderer = _FakeRenderer()
+        multi = MultiGoveeLanAdapter([
+            (_FakeAdapter(), renderer, DeviceRole.PRIMARY, 1.0, None)
+        ])
+        multi.send_spatial_scene(0.0, scene, base_intent=_intent())
+        self.assertEqual(renderer.calls[0]["intent"].color, "#00ff00")
+
+    def test_orientation_flip_applied_to_renderer(self) -> None:
+        scene = _scene()
+        renderer = _FakeRenderer()
+        placement = DevicePlacement(
+            x=1.0,
+            y=1.0,
+            orientation=DeviceOrientation.RIGHT_TO_LEFT,
+        )
+        multi = MultiGoveeLanAdapter([
+            (_FakeAdapter(), renderer, DeviceRole.PRIMARY, 1.0, placement)
+        ])
+        multi.send_spatial_scene(0.0, scene, base_intent=_intent())
+        self.assertFalse(renderer.calls[0]["mirror"])
+        self.assertTrue(renderer.mirror)
+
+    def test_role_transform_still_applies_after_spatial_lookup(self) -> None:
+        scene = _scene(center_intensity=1.0)
+        renderer = _FakeRenderer()
+        placement = DevicePlacement(x=0.0, y=0.0)
+        multi = MultiGoveeLanAdapter([
+            (_FakeAdapter(), renderer, DeviceRole.ACCENT, 1.0, placement)
+        ])
+        multi.send_spatial_scene(0.0, scene, base_intent=_intent())
+        self.assertLess(renderer.calls[0]["intent"].intensity, 1.0)
+
+    def test_brightness_scale_still_applies_after_spatial_lookup(self) -> None:
+        scene = _scene(center_intensity=1.0)
+        renderer = _FakeRenderer()
+        placement = DevicePlacement(x=0.0, y=0.0)
+        multi = MultiGoveeLanAdapter([
+            (_FakeAdapter(), renderer, DeviceRole.PRIMARY, 0.5, placement)
+        ])
+        multi.send_spatial_scene(0.0, scene, base_intent=_intent())
+        self.assertEqual(renderer.calls[0]["intent"].intensity, 0.5)
+
+    def test_ble_followers_still_receive_base_intent(self) -> None:
+        ble = _FakeBleFollower()
+        multi = MultiGoveeLanAdapter([], ble_followers=[ble])
+        base = _intent(color="#abcdef")
+        multi.send_spatial_scene(0.0, _scene(), base_intent=base)
+        self.assertEqual(ble.calls[0][1], base)
+
+    def test_null_adapter_remains_compatible(self) -> None:
+        adapter = NullMultiAdapter()
+        self.assertTrue(adapter.send_spatial_scene(0.0, _scene(), base_intent=_intent()))
+
+    def test_any_sent_true_if_any_device_sent(self) -> None:
+        multi = MultiGoveeLanAdapter([
+            (_FakeAdapter(returns=False), _FakeRenderer(), DeviceRole.PRIMARY, 1.0, None),
+            (_FakeAdapter(returns=True), _FakeRenderer(), DeviceRole.PRIMARY, 1.0, None),
+        ])
+        self.assertTrue(multi.send_spatial_scene(0.0, _scene(), base_intent=_intent()))
+
+    def test_replace_devices_preserves_placement_metadata(self) -> None:
+        placement = DevicePlacement(x=0.0, y=1.0)
+        multi = MultiGoveeLanAdapter([])
+        multi.replace_devices([
+            (_FakeAdapter(), _FakeRenderer(), DeviceRole.PRIMARY, 1.0, placement)
+        ])
+        self.assertEqual(multi.devices[0][4], placement)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from dreamsync.director import EffectMode, LightingIntent
 from dreamsync.output.null_adapter import NullMultiAdapter
 from dreamsync.show.models import ShowCue, ShowTimeline

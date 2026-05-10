@@ -12,6 +12,11 @@
 #   protocol    - BLE protocol: "segment" (strips/panels) or "bulb" (H6006 family)
 #   role        - "primary" (full-FPS reactive) or "accent" (mood-follower)
 #   max_fps     - Max frame rate for this device (default 5.0 for BLE, 30 for LAN)
+#   x_position  - Optional spatial alias: "left", "center", "right"
+#   y_position  - Optional spatial alias: "front", "center", "back"
+#   x / y       - Optional normalized coordinates (-1.0 to 1.0) instead of aliases
+#   orientation - "left_to_right" (default) or "right_to_left"
+#   weight      - Relative emphasis weight for spatial mapping (default 1.0)
 
 devices:
   # --- LAN devices -----------------------------------------------------------
@@ -24,6 +29,10 @@ devices:
     segments: 15
     transport: ptreal           # ptreal for most strips, razer for DreamView
     role: primary
+    x_position: left
+    y_position: front
+    orientation: left_to_right
+    weight: 1.0
 
   # - name: "My DreamView"
   #   address: "10.0.0.101"
@@ -31,6 +40,9 @@ devices:
   #   segments: 25
   #   transport: razer
   #   role: primary
+  #   x_position: center
+  #   y_position: front
+  #   weight: 1.2
 
   # --- BLE devices ------------------------------------------------------------
   # BLE devices connect via Bluetooth. Higher latency (~4-20ms) but no LAN needed.
@@ -41,9 +53,14 @@ devices:
   #   type: ble
   #   protocol: segment         # "segment" for strips, "bulb" for H6006 smart bulbs
   #   role: accent
+  #   x_position: right
+  #   y_position: back
+  #   orientation: right_to_left
 
   # - name: "My Smart Bulb"
   #   address: "AA:BB:CC:DD:EE:00"
   #   type: ble
   #   protocol: bulb
   #   role: accent
+  #   x: 0.0
+  #   y: 0.8

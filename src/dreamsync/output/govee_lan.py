@@ -12,6 +12,8 @@ from typing import Callable
 from dreamsync.director import LightingIntent
 from dreamsync.output.roles import DeviceRole, transform_intent
 from dreamsync.render import RenderMode, SegmentRenderer
+from dreamsync.spatial.grid import resolve_grid_cell
+from dreamsync.spatial.models import DevicePlacement, GridCell, SpatialCellState
 
 _logger = logging.getLogger(__name__)
 
@@ -363,15 +365,18 @@ class MultiGoveeLanAdapter:
 
     def __init__(
         self,
-        devices: list[tuple],  # (adapter, renderer, role) or (adapter, renderer, role, brightness_scale)
+        devices: list[tuple],  # legacy tuples or (adapter, renderer, role, brightness_scale, placement)
         ble_followers: list | None = None,
+        spatial_mapper=None,
     ) -> None:
-        # Normalize to 4-tuples: (adapter, renderer, role, brightness_scale)
-        self.devices: list[tuple[GoveeLanAdapter, SegmentRenderer, DeviceRole, float]] = [
-            d if len(d) == 4 else (d[0], d[1], d[2], 1.0) for d in devices
-        ]
+        # Normalize to 5-tuples:
+        # (adapter, renderer, role, brightness_scale, placement)
+        self.devices: list[
+            tuple[GoveeLanAdapter, SegmentRenderer, DeviceRole, float, DevicePlacement | None]
+        ] = [self._normalize_device_tuple(d) for d in devices]
         # list of GoveeBleAdapter instances (imported lazily to avoid hard dep)
         self._ble_followers: list = ble_followers or []
+        self._spatial_mapper = spatial_mapper
 
     def activate(self, brightness: int = 100) -> None:
         """Turn on all devices and set brightness.
@@ -380,10 +385,10 @@ class MultiGoveeLanAdapter:
         power-on before receiving brightness and color data.
         BLE followers are started (background threads launched).
         """
-        for adapter, _renderer, _role, _bs in self.devices:
+        for adapter, _renderer, _role, _bs, _placement in self.devices:
             adapter.turn_on()
         time.sleep(0.8)
-        for adapter, _renderer, _role, _bs in self.devices:
+        for adapter, _renderer, _role, _bs, _placement in self.devices:
             adapter.set_brightness(brightness)
         time.sleep(0.3)
         # Start BLE follower threads
@@ -400,9 +405,7 @@ class MultiGoveeLanAdapter:
         new_devices: list[tuple],
     ) -> None:
         """Atomically replace the device list (GIL-safe reference swap)."""
-        self.devices = [
-            d if len(d) == 4 else (d[0], d[1], d[2], 1.0) for d in new_devices
-        ]
+        self.devices = [self._normalize_device_tuple(d) for d in new_devices]
 
     def replace_ble_followers(self, new_followers: list) -> None:
         """Atomically replace the BLE follower list (GIL-safe reference swap)."""
@@ -410,7 +413,7 @@ class MultiGoveeLanAdapter:
 
     def get_device_addresses(self) -> list[str]:
         """Return the IP/address of every LAN device currently in the list."""
-        return [adapter.config.device_ip for adapter, _, _, _ in self.devices]
+        return [adapter.config.device_ip for adapter, _, _, _, _ in self.devices]
 
     def send_frame(
         self, t: float, intent: LightingIntent, beat: bool = False,
@@ -420,8 +423,12 @@ class MultiGoveeLanAdapter:
 
         BLE mood followers receive the intent's color + intensity directly.
         """
+        if self._spatial_mapper is not None and getattr(self._spatial_mapper, "enabled", False):
+            scene = self._spatial_mapper.map_reactive(t, intent, beat=beat, params=params)
+            return self.send_spatial_scene(t, scene, beat=beat, base_intent=intent)
+
         any_sent = False
-        for adapter, renderer, role, bs in self.devices:
+        for adapter, renderer, role, bs, _placement in self.devices:
             device_intent = transform_intent(intent, role, brightness_scale=bs)
             colors = renderer.render(t, device_intent, beat=beat, params=params)
             if adapter.send_frame(colors):
@@ -431,3 +438,73 @@ class MultiGoveeLanAdapter:
             ble_adapter.emit(t, intent)
             any_sent = True
         return any_sent
+
+    def send_spatial_scene(
+        self,
+        t: float,
+        scene: dict[GridCell, SpatialCellState],
+        *,
+        beat: bool = False,
+        base_intent: LightingIntent | None = None,
+    ) -> bool:
+        """Render and send a spatial scene to all devices."""
+        any_sent = False
+        fallback_state = scene.get(GridCell.CENTER)
+        if fallback_state is None:
+            raise ValueError("Spatial scene must include GridCell.CENTER.")
+
+        for adapter, renderer, role, bs, placement in self.devices:
+            cell = resolve_grid_cell(placement)
+            cell_state = scene.get(cell, fallback_state) if cell is not None else fallback_state
+            device_intent = transform_intent(
+                cell_state.intent,
+                role,
+                brightness_scale=bs,
+            )
+            colors = self._render_with_orientation(
+                renderer,
+                t,
+                device_intent,
+                beat=beat,
+                params=cell_state.params,
+                placement=placement,
+            )
+            if adapter.send_frame(colors):
+                any_sent = True
+
+        follower_intent = base_intent if base_intent is not None else fallback_state.intent
+        for ble_adapter in self._ble_followers:
+            ble_adapter.emit(t, follower_intent)
+            any_sent = True
+
+        return any_sent
+
+    @staticmethod
+    def _normalize_device_tuple(device: tuple):
+        if len(device) == 3:
+            return (device[0], device[1], device[2], 1.0, None)
+        if len(device) == 4:
+            return (device[0], device[1], device[2], device[3], None)
+        if len(device) == 5:
+            return device
+        raise ValueError(f"Device tuple must have length 3, 4, or 5; got {len(device)}")
+
+    @staticmethod
+    def _render_with_orientation(
+        renderer: SegmentRenderer,
+        t: float,
+        intent: LightingIntent,
+        *,
+        beat: bool,
+        params: dict | None,
+        placement: DevicePlacement | None,
+    ) -> list[tuple[int, int, int]]:
+        if placement is None or placement.orientation.value == "left_to_right":
+            return renderer.render(t, intent, beat=beat, params=params)
+
+        original_mirror = renderer.mirror
+        try:
+            renderer.mirror = not original_mirror
+            return renderer.render(t, intent, beat=beat, params=params)
+        finally:
+            renderer.mirror = original_mirror

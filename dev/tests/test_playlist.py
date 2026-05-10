@@ -162,6 +162,56 @@ class TestIteration:
         assert pl.current.name == "a.mp3"  # not advanced
 
 
+class TestMutableQueue:
+    """Queue mutation helpers used by interactive playback."""
+
+    def test_remove_future_track_keeps_current(self, tmp_path):
+        for name in ("a.mp3", "b.mp3", "c.mp3"):
+            (tmp_path / name).touch()
+
+        pl = PlaylistManager.from_directory(tmp_path)
+        removed = pl.remove(1)
+
+        assert removed.name == "b.mp3"
+        assert pl.current.name == "a.mp3"
+        assert [t.name for t in pl.snapshot()] == ["a.mp3", "c.mp3"]
+
+    def test_move_future_track_reorders_queue(self, tmp_path):
+        for name in ("a.mp3", "b.mp3", "c.mp3", "d.mp3"):
+            (tmp_path / name).touch()
+
+        pl = PlaylistManager.from_directory(tmp_path)
+        pl.move(3, 1)
+
+        assert [t.name for t in pl.snapshot()] == ["a.mp3", "d.mp3", "b.mp3", "c.mp3"]
+        assert pl.current.name == "a.mp3"
+
+    def test_jump_to_changes_current_track(self, tmp_path):
+        for name in ("a.mp3", "b.mp3", "c.mp3"):
+            (tmp_path / name).touch()
+
+        pl = PlaylistManager.from_directory(tmp_path)
+        jumped = pl.jump_to(2)
+
+        assert jumped.name == "c.mp3"
+        assert pl.current.name == "c.mp3"
+        assert pl.current_index == 2
+
+    def test_shuffle_upcoming_keeps_current_fixed(self, tmp_path):
+        for name in ("a.mp3", "b.mp3", "c.mp3", "d.mp3"):
+            (tmp_path / name).touch()
+
+        pl = PlaylistManager.from_directory(tmp_path)
+        original = list(pl.snapshot())
+
+        with patch("random.shuffle", side_effect=lambda seq: seq.reverse()):
+            pl.shuffle_upcoming()
+
+        shuffled = list(pl.snapshot())
+        assert shuffled[0] == original[0]
+        assert shuffled[1:] == list(reversed(original[1:]))
+
+
 # ---------------------------------------------------------------------------
 # Content Hash
 # ---------------------------------------------------------------------------

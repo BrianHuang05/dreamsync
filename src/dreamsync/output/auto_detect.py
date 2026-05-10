@@ -26,6 +26,7 @@ from dreamsync.output.govee_lan import (
 )
 from dreamsync.output.roles import DeviceRole, default_device_config, infer_device_type
 from dreamsync.render import RenderMode, SegmentRenderer
+from dreamsync.spatial.models import DevicePlacement, parse_device_placement
 
 _logger = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ class DeviceConfig:
     role: str | None = None       # "primary", "accent"
     brightness_scale: float | None = None  # 0.0–1.0, None = use default
     max_fps: float = 5.0
+    placement: DevicePlacement | None = None
 
 
 @dataclass(frozen=True)
@@ -348,6 +350,7 @@ def load_device_config(path: Path) -> list[DeviceConfig]:
         if "address" not in entry:
             raise ValueError(f"Device entry {i} missing required 'address' field in {path}")
         bs_raw = entry.get("brightness_scale")
+        placement = parse_device_placement(entry)
         configs.append(DeviceConfig(
             name=entry.get("name", entry["address"]),
             address=entry["address"],
@@ -358,6 +361,7 @@ def load_device_config(path: Path) -> list[DeviceConfig]:
             role=entry.get("role"),
             brightness_scale=float(bs_raw) if bs_raw is not None else None,
             max_fps=float(entry.get("max_fps", 5.0)),
+            placement=placement,
         ))
 
     return configs
@@ -591,12 +595,16 @@ def build_multi_adapter(
     BLE / follower devices get a GoveeBleAdapter.
     Unreachable devices are skipped with a warning.
     """
-    device_triples: list[tuple[GoveeLanAdapter, SegmentRenderer, DeviceRole, float]] = []
+    device_triples: list[
+        tuple[GoveeLanAdapter, SegmentRenderer, DeviceRole, float, DevicePlacement | None]
+    ] = []
     ble_followers: list = []
 
     reachable_count = sum(1 for d in detected if d.role != "unreachable")
     if reachable_count == 0:
-        raise RuntimeError("No reachable devices found. Check your config and network.")
+        from .null_adapter import NullMultiAdapter
+        _logger.warning("No reachable devices — falling back to null adapter (audio only).")
+        return NullMultiAdapter()
 
     for dev in detected:
         if dev.role == "unreachable":
@@ -634,7 +642,7 @@ def build_multi_adapter(
                 mirror=mirror,
                 device_type=device_type.value,
             )
-            device_triples.append((adapter, renderer, device_role, device_bs))
+            device_triples.append((adapter, renderer, device_role, device_bs, cfg.placement))
 
         elif dev.connection_type == "ble":
             from dreamsync.output.govee_ble import (

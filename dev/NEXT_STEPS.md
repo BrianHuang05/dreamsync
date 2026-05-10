@@ -1,54 +1,40 @@
 # DreamSync — Next Steps
 
+## Planned Workstream
+
+### Desktop GUI migration
+
+The next major product step is moving from a CLI-first operator workflow to a
+desktop GUI while keeping the CLI intact as a supported fallback.
+
+Primary GUI targets:
+
+- spatial placement / zone editing with a fixed-camera projected room map
+- palette and profile editing with live color controls
+- queue management for local playback, plus Spotify queue visibility and supported controls
+- session control and diagnostics from one runtime surface
+
+See `dev/plans/gui-desktop-migration.md` for the detailed implementation plan.
+
 ## What to Test Next
 
-### Test 34. Compile-and-play with devices (the last unchecked validation test)
-
-```bash
-# Single song, full pipeline: analyze -> compile -> play with lights
-python -m dreamsync compile-and-play out/capture-boundary/2026-03-06_00-15-02_Vacation\ Manor_-_If\ Only\ for\ Tonight\ -\ Midnight\ Version.mp3 \
-  --config dev/devices.yaml --debug
-
-# Or use any MP3:
-python -m dreamsync play out/capture-boundary/2026-03-06_00-19-45_Pat\ Metheny\ Group_-_Last\ Train\ Home.mp3 \
-  --config dev/devices.yaml --debug
-```
-
-**What to check:**
-- Audio plays through speakers without glitches
-- Lights follow cue transitions (visible mode/color changes)
-- Bulbs get simplified effects (pulse/breathe instead of scroll/wave) — Issue 4
-- Strips at reduced brightness vs bulbs — Issue 5
-- Song ending fades to black gracefully — Issue 6
-- No errors in console output
-
----
-
-## Validation Tests
-
-- [ ] **34. Compile-and-play** (full pipeline with devices) — see command above
-- [ ] **35. Full live pipeline** (end-to-end with physical audio routing) — see below
-- [ ] **36. MP3 archiver** (zip MP3s, leave JSON sidecars) — see below
-
-See the **Validation tests** section in `README.md` for full test details and commands.
-
-### Test 35. Full live pipeline (end-to-end with physical audio routing)
+### Test 35. Full live pipeline (end-to-end with physical audio routing + devices)
 
 **Prerequisites:**
 - VB-Cable installed and audio routing configured (see README)
 - Computer aux out connected to AVR/speakers
-- Govee devices on LAN, `devices.yaml` configured
+- Govee devices on LAN, `dev/devices.yaml` configured
 - Music source playing (Spotify, etc.)
 
 ```bash
 # Full live session: capture + lights + Spotify boundaries
-python -m dreamsync session --config devices.yaml \
+python -m dreamsync session --config dev/devices.yaml \
   --capture --capture-dir out/live-test \
   --capture-naming metadata --spotify \
   --debug-mood
 
 # Or with streaming pipeline (capture + analyze + compile + play concurrently)
-python -m dreamsync session --config devices.yaml \
+python -m dreamsync session --config dev/devices.yaml \
   --pipeline --capture --capture-dir out/live-test \
   --capture-naming metadata --spotify \
   --playback-device pick --debug-mood
@@ -64,6 +50,15 @@ python -m dreamsync session --config devices.yaml \
 - Console output shows mood/effect/BPM transitions without errors
 - Ctrl+C shuts down cleanly (final segment flushed, no orphan processes)
 
+---
+
+## Validation Tests
+
+- [x] **34. Compile-and-play** (full pipeline, audio only) — passed with dummy devices
+- [ ] **35. Full live pipeline** (end-to-end with physical audio routing + devices) — see above
+- [x] **36. MP3 archiver** (zip MP3s, leave JSON sidecars) — 8/8 unit tests passed
+
+See the **Validation tests** section in `README.md` for full test details and commands.
 
 ### Test 36. MP3 archiver
 
@@ -91,7 +86,7 @@ ls out/capture-boundary/*.json
 ls out/capture-boundary/*.mp3  # should show no results
 
 # Session with auto-archive on shutdown
-python -m dreamsync session --config devices.yaml \
+python -m dreamsync session --config dev/devices.yaml \
   --capture --capture-dir out/archive-test \
   --capture-naming metadata --spotify \
   --archive --debug-mood
@@ -128,6 +123,21 @@ python -m dreamsync session --config devices.yaml \
   - 3B: Auto-seed display on live session (`cli.py`)
   - 4A: Enhanced chain logging with seed/index/tags (`live.py`, `profile_chain.py`)
   - 4B: Profile export to YAML (`profile_generator.py`, `cli.py`)
+
+- Test 34: Compile-and-play — passed (2026-03-13)
+  - Full pipeline: analyze → compile → play with `dev/devices-dummy.yaml` (NullMultiAdapter fallback)
+  - 20 cues fired, 34,062 frames sent, audio played full 194s duration
+  - `build_multi_adapter` now falls back to `NullMultiAdapter` when all devices unreachable (no crash)
+  - `--dry-run` added to `compile-and-play` for explicit audio-only mode
+
+- Test 36: MP3 archiver — passed (2026-03-13)
+  - 8/8 unit tests passed
+
+- Compile summary fix (2026-03-13)
+  - `format_summary()` now uses timestamp-based section lookup instead of index-based
+  - Fixes misaligned labels when cue count ≠ section count
+
+- All automated tests: 1,684 passed, 0 failures (2026-03-13)
 
 ## Out of Scope (deferred)
 

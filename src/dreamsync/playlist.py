@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import threading
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ class PlaylistManager:
         self._shuffle = shuffle
         self._repeat = repeat
         self._index: int = 0
+        self._lock = threading.RLock()
 
         if shuffle and len(self._tracks) > 1:
             import random
@@ -122,57 +124,121 @@ class PlaylistManager:
 
     @property
     def current(self) -> Path | None:
-        if not self._tracks or self._index >= len(self._tracks):
-            return None
-        return self._tracks[self._index]
+        with self._lock:
+            if not self._tracks or self._index >= len(self._tracks):
+                return None
+            return self._tracks[self._index]
 
     @property
     def current_index(self) -> int:
-        return self._index
+        with self._lock:
+            return self._index
 
     def next(self) -> Path | None:
-        if not self._tracks:
-            return None
+        with self._lock:
+            if not self._tracks:
+                return None
 
-        self._index += 1
+            self._index += 1
 
-        if self._index >= len(self._tracks):
-            if self._repeat:
-                self._index = 0
-                if self._shuffle:
-                    import random
-                    random.shuffle(self._tracks)
-            else:
-                return None  # exhausted
+            if self._index >= len(self._tracks):
+                if self._repeat:
+                    self._index = 0
+                    if self._shuffle:
+                        import random
+                        random.shuffle(self._tracks)
+                else:
+                    return None  # exhausted
 
-        return self.current
+            return self.current
 
     def prev(self) -> Path | None:
-        if not self._tracks:
-            return None
+        with self._lock:
+            if not self._tracks:
+                return None
 
-        if self._index > 0:
-            self._index -= 1
-        # At index 0, stay at 0 (no wrap-around for prev)
+            if self._index > 0:
+                self._index -= 1
+            # At index 0, stay at 0 (no wrap-around for prev)
 
-        return self.current
+            return self.current
 
     def peek_next(self, count: int = 1) -> list[Path]:
-        result = []
-        for i in range(1, count + 1):
-            idx = self._index + i
-            if idx < len(self._tracks):
-                result.append(self._tracks[idx])
-            elif self._repeat and self._tracks:
-                idx = idx % len(self._tracks)
-                result.append(self._tracks[idx])
-        return result
+        with self._lock:
+            result = []
+            for i in range(1, count + 1):
+                idx = self._index + i
+                if idx < len(self._tracks):
+                    result.append(self._tracks[idx])
+                elif self._repeat and self._tracks:
+                    idx = idx % len(self._tracks)
+                    result.append(self._tracks[idx])
+            return result
+
+    def snapshot(self) -> tuple[Path, ...]:
+        """Return the full playlist order as an immutable snapshot."""
+        with self._lock:
+            return tuple(self._tracks)
+
+    def jump_to(self, index: int) -> Path:
+        """Make *index* the current track and return it."""
+        with self._lock:
+            self._validate_index(index)
+            self._index = index
+            return self._tracks[self._index]
+
+    def remove(self, index: int) -> Path:
+        """Remove a track by absolute index and return the removed path."""
+        with self._lock:
+            self._validate_index(index)
+            removed = self._tracks.pop(index)
+
+            if index < self._index:
+                self._index -= 1
+            elif self._index >= len(self._tracks):
+                self._index = max(0, len(self._tracks) - 1)
+
+            return removed
+
+    def move(self, from_index: int, to_index: int) -> None:
+        """Move a track to a new absolute index."""
+        with self._lock:
+            self._validate_index(from_index)
+            self._validate_index(to_index)
+            if from_index == to_index:
+                return
+
+            track = self._tracks.pop(from_index)
+            self._tracks.insert(to_index, track)
+
+            if self._index == from_index:
+                self._index = to_index
+            elif from_index < self._index <= to_index:
+                self._index -= 1
+            elif to_index <= self._index < from_index:
+                self._index += 1
+
+    def shuffle_upcoming(self) -> None:
+        """Shuffle tracks after the current one, keeping the current track fixed."""
+        with self._lock:
+            if len(self._tracks) - self._index <= 2:
+                return
+            import random
+
+            upcoming = self._tracks[self._index + 1:]
+            random.shuffle(upcoming)
+            self._tracks[self._index + 1:] = upcoming
 
     def __len__(self) -> int:
-        return len(self._tracks)
+        with self._lock:
+            return len(self._tracks)
 
     def __iter__(self):
-        return iter(self._tracks)
+        return iter(self.snapshot())
+
+    def _validate_index(self, index: int) -> None:
+        if index < 0 or index >= len(self._tracks):
+            raise IndexError(f"Track index out of range: {index}")
 
 
 def content_hash_track_id(file_path: Path | str) -> str:

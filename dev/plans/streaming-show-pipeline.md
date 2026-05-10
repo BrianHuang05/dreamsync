@@ -1,4 +1,4 @@
-# Streaming Show Pipeline: Capture → Analyze → Compile → Play → Purge
+ # Streaming Show Pipeline: Capture → Analyze → Compile → Play → Purge
 
 ## Context
 

@@ -276,6 +276,45 @@ class TestRunLocalSession:
         assert summary["mode"] == "local"
         MockCache.assert_called_once()
 
+    def test_run_local_session_populates_session_ref_for_playlist(self, tmp_path):
+        """Playlist mode exposes the live session object to the caller."""
+        from dreamsync.local_session import run_local_session
+
+        for name in ("a.mp3", "b.mp3"):
+            (tmp_path / name).touch()
+
+        adapter = MagicMock()
+        adapter.activate = MagicMock()
+        adapter.deactivate = MagicMock()
+        adapter.send_frame = MagicMock(return_value=True)
+        adapter.devices = []
+
+        playlist = PlaylistManager.from_directory(tmp_path)
+        stop_event = threading.Event()
+        session_ref = [None]
+
+        with patch("dreamsync.local_session.ShowCache") as MockCache:
+            mock_cache = MockCache.return_value
+            mock_cache.has = MagicMock(return_value=True)
+            mock_cache.get = MagicMock(return_value=_make_timeline())
+
+            with patch("dreamsync.local_session.AudioPlayer") as MockPlayer:
+                player_instance = MockPlayer.return_value
+                player_instance.playing = True
+                type(player_instance).finished = PropertyMock(side_effect=[True, True])
+                player_instance.position_seconds = 0.0
+
+                summary = run_local_session(
+                    adapter,
+                    tmp_path / "a.mp3",
+                    stop_event=stop_event,
+                    playlist=playlist,
+                    session_ref=session_ref,
+                )
+
+        assert summary["mode"] == "local_playlist"
+        assert isinstance(session_ref[0], LocalPlaylistSession)
+
     def test_run_session_local_branch(self):
         """run_session dispatches to run_local_session when local=True."""
         with patch("dreamsync.session.run_session") as mock_run:
@@ -621,6 +660,86 @@ class TestLocalPlaylistSession:
 
         assert summary["tracks_played"] == 0
         assert "error" in summary
+
+    def test_queue_snapshot_reports_current_and_tracks(self, tmp_path):
+        for name in ("a.mp3", "b.mp3", "c.mp3"):
+            (tmp_path / name).touch()
+
+        playlist = PlaylistManager.from_directory(tmp_path)
+        adapter = MagicMock()
+        adapter.activate = MagicMock()
+        adapter.deactivate = MagicMock()
+        adapter.devices = []
+
+        session = LocalPlaylistSession(adapter, playlist, cache=MagicMock(), profile=None)
+        snapshot = session.queue_snapshot()
+
+        assert snapshot["current_index"] == 0
+        assert [p.name for p in snapshot["tracks"]] == ["a.mp3", "b.mp3", "c.mp3"]
+
+    def test_remove_track_removes_upcoming_item(self, tmp_path):
+        for name in ("a.mp3", "b.mp3", "c.mp3"):
+            (tmp_path / name).touch()
+
+        playlist = PlaylistManager.from_directory(tmp_path)
+        adapter = MagicMock()
+        adapter.activate = MagicMock()
+        adapter.deactivate = MagicMock()
+        adapter.devices = []
+
+        session = LocalPlaylistSession(adapter, playlist, cache=MagicMock(), profile=None)
+        removed = session.remove_track(1)
+
+        assert removed.name == "b.mp3"
+        assert [p.name for p in session.queue_snapshot()["tracks"]] == ["a.mp3", "c.mp3"]
+
+    def test_remove_track_rejects_current_item(self, tmp_path):
+        for name in ("a.mp3", "b.mp3"):
+            (tmp_path / name).touch()
+
+        playlist = PlaylistManager.from_directory(tmp_path)
+        adapter = MagicMock()
+        adapter.activate = MagicMock()
+        adapter.deactivate = MagicMock()
+        adapter.devices = []
+
+        session = LocalPlaylistSession(adapter, playlist, cache=MagicMock(), profile=None)
+
+        with pytest.raises(ValueError):
+            session.remove_track(0)
+
+    def test_move_track_reorders_upcoming_items(self, tmp_path):
+        for name in ("a.mp3", "b.mp3", "c.mp3", "d.mp3"):
+            (tmp_path / name).touch()
+
+        playlist = PlaylistManager.from_directory(tmp_path)
+        adapter = MagicMock()
+        adapter.activate = MagicMock()
+        adapter.deactivate = MagicMock()
+        adapter.devices = []
+
+        session = LocalPlaylistSession(adapter, playlist, cache=MagicMock(), profile=None)
+        session.move_track(3, 1)
+
+        assert [p.name for p in session.queue_snapshot()["tracks"]] == [
+            "a.mp3", "d.mp3", "b.mp3", "c.mp3",
+        ]
+
+    def test_play_now_sets_pending_jump(self, tmp_path):
+        for name in ("a.mp3", "b.mp3", "c.mp3"):
+            (tmp_path / name).touch()
+
+        playlist = PlaylistManager.from_directory(tmp_path)
+        adapter = MagicMock()
+        adapter.activate = MagicMock()
+        adapter.deactivate = MagicMock()
+        adapter.devices = []
+
+        session = LocalPlaylistSession(adapter, playlist, cache=MagicMock(), profile=None)
+        session.play_now(2)
+
+        assert session._signal_jump.is_set() is True
+        assert session._consume_jump_target() == 2
 
 
 # ---------------------------------------------------------------------------
