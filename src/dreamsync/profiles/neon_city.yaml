@@ -9,6 +9,17 @@ palettes:
   cyber_blue: ["#0088ff", "#00aaff", "#00ccff", "#0066dd", "#3399ff", "#66bbff"]
   lime:       ["#88ff00", "#aaff00", "#ccff00", "#66dd00", "#99ff33", "#bbff44"]
 
+eq_routes:
+  - band: "bass"
+    when: "enter"
+    render_mode: "pulse"
+    color_bias: "#ff1177"
+    intensity_boost: 0.2
+  - band: "presence"
+    when: "lift"
+    render_mode: "scroll"
+    color_bias: "#00ccff"
+
 moods:
   chill:
     palettes: ["cyber_blue"]
@@ -22,6 +33,12 @@ moods:
     palettes: ["lime", "hot_pink"]
     params:
       pulse_decay: 3.5
+    eq_routes:
+      - band: "sub"
+        when: "enter"
+        render_mode: "pulse"
+        color_bias: "#88ff00"
+        intensity_boost: 0.25
 
 transitions:
   - from: "groove"

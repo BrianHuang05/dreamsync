@@ -8,11 +8,15 @@ from dreamsync.dsp.features import _estimate_bpm
 from dreamsync.live import (
     HARMONIC_RATIOS,
     IOIHistogram,
+    LiveEqStateTracker,
     LiveBpmEstimator,
     NoiseFloorEstimator,
     PercussiveOnsetTracker,
     SpectralBeatTemplate,
     SpectralFeatures,
+    _apply_live_eq_to_intent,
+    _build_eq_layers,
+    _resolve_live_eq_routes,
     _spectral_features,
     _prepare_bass_window,
     _compute_whitened_flux,
@@ -33,6 +37,32 @@ def _make_pulse_audio(
     for start in range(0, n_samples - frame_size, hop_size):
         frames.append(signal[start : start + frame_size])
     return frames
+
+
+def _band_vector(**values: float) -> tuple[float, ...]:
+    order = ("sub", "kick", "bass", "low_mid", "mid", "presence", "air")
+    return tuple(float(values.get(name, 0.0)) for name in order)
+
+
+def _spectral_stub(
+    *,
+    ratios: tuple[float, ...] | None = None,
+    fluxes: tuple[float, ...] | None = None,
+) -> SpectralFeatures:
+    zeros = np.zeros(8, dtype=np.float32)
+    return SpectralFeatures(
+        bass=0.0,
+        bass_ratio=float((ratios or _band_vector())[2]),
+        spectral_flux=0.0,
+        kick_energy=0.0,
+        kick_ratio=0.0,
+        kick_spectral_flux=0.0,
+        centroid=0.0,
+        mag=zeros,
+        band_energies=_band_vector(),
+        band_ratios=ratios or _band_vector(),
+        band_fluxes=fluxes or _band_vector(),
+    )
 
 
 def _run_estimator_with_audio(
@@ -331,6 +361,88 @@ class TestWhitenedFlux(unittest.TestCase):
         est = LiveBpmEstimator(sample_rate=44100, hop_size=512, onset_mode="whitened_flux")
         est.update(energy=1.0, t=0.0, spectral_flux=5.0, whitened_flux=12.0)
         self.assertEqual(est.last_onset, 12.0)
+
+
+class TestLiveEqRouting(unittest.TestCase):
+    def test_tracker_detects_bass_enter_and_dominant_band(self) -> None:
+        tracker = LiveEqStateTracker(smoothing=1.0, event_cooldown_seconds=0.0)
+        tracker.update(_spectral_stub(ratios=_band_vector(low_mid=0.05, mid=0.05)), 0.0)
+        state = tracker.update(_spectral_stub(ratios=_band_vector(bass=0.26, low_mid=0.04)), 0.1)
+        self.assertEqual(state.dominant_band, "bass")
+        self.assertIn("bass_enter", state.events)
+        self.assertIn(("bass", "dominant"), state.trigger_keys)
+
+    def test_tracker_detects_presence_lift_from_band_flux(self) -> None:
+        tracker = LiveEqStateTracker(smoothing=1.0, event_cooldown_seconds=0.0)
+        tracker.update(
+            _spectral_stub(
+                ratios=_band_vector(presence=0.18, mid=0.08),
+                fluxes=_band_vector(),
+            ),
+            0.0,
+        )
+        state = tracker.update(
+            _spectral_stub(
+                ratios=_band_vector(presence=0.22, mid=0.05),
+                fluxes=_band_vector(presence=0.8, bass=0.1),
+            ),
+            0.1,
+        )
+        self.assertIn("presence_lift", state.events)
+        self.assertIn(("presence", "lift"), state.trigger_keys)
+
+    def test_resolve_live_eq_routes_merges_configured_overrides(self) -> None:
+        tracker = LiveEqStateTracker(smoothing=1.0, event_cooldown_seconds=0.0)
+        tracker.update(_spectral_stub(ratios=_band_vector()), 0.0)
+        state = tracker.update(_spectral_stub(ratios=_band_vector(bass=0.28)), 0.1)
+        routes = _resolve_live_eq_routes(
+            state,
+            {
+                "eq_routes": [
+                    {
+                        "band": "bass",
+                        "when": "dominant",
+                        "color_bias": "#00ffaa",
+                        "spatial_preset": "wave_front_to_back",
+                        "intensity_boost": 0.03,
+                    }
+                ]
+            },
+        )
+        dominant_route = next(route for route in routes if route["when"] == "dominant")
+        self.assertEqual(dominant_route["band"], "bass")
+        self.assertEqual(dominant_route["color_bias"], "#00ffaa")
+        self.assertEqual(dominant_route["spatial_preset"], "wave_front_to_back")
+
+    def test_build_eq_layers_and_apply_live_eq_to_intent(self) -> None:
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class _Intent:
+            intensity: float
+            color: str
+
+        routes = [
+            {
+                "band": "presence",
+                "when": "lift",
+                "color_bias": "#66ccff",
+                "spatial_preset": "flash_top_only",
+                "intensity_boost": 0.1,
+            },
+            {
+                "band": "bass",
+                "when": "dominant",
+                "color_bias": "#ff8800",
+                "spatial_preset": "flash_floor_only",
+                "intensity_boost": 0.06,
+            },
+        ]
+        layers = _build_eq_layers(routes)
+        self.assertEqual([layer["band"] for layer in layers], ["presence", "bass"])
+        intent = _apply_live_eq_to_intent(_Intent(intensity=0.5, color="#123456"), routes)
+        self.assertEqual(intent.color, "#66ccff")
+        self.assertAlmostEqual(intent.intensity, 0.66, places=2)
 
     def test_compute_whitened_flux_first_frame(self) -> None:
         """First frame: spectral_mean initializes from mag, no prev → flux=0."""

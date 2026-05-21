@@ -134,6 +134,75 @@ class SpatialMapperTests(unittest.TestCase):
         self.assertLess(scene[GridCell.CENTER_LEFT].phase_offset, 0.0)
         self.assertGreater(scene[GridCell.CENTER_RIGHT].phase_offset, 0.0)
 
+    def test_resolve_spatial_spec_uses_center_ripple_preset_for_ripple_intent(self) -> None:
+        mapper = SpatialMapper(enabled=True)
+        spec = mapper.resolve_spatial_spec(
+            _intent(mode=EffectMode.RIPPLE),
+            params=None,
+        )
+        self.assertEqual(spec.mode, "emanation")
+        self.assertEqual(spec.origin, (0.0, 0.0, 0.0))
+
+    def test_resolve_spatial_spec_accepts_vertical_aliases(self) -> None:
+        mapper = SpatialMapper(enabled=True)
+        spec = mapper.resolve_spatial_spec(
+            _intent(),
+            params={"spatial_mode": "wave", "spatial_axis": "vertical"},
+        )
+        self.assertEqual(spec.direction, (0.0, 1.0, 0.0))
+
+    def test_resolve_spatial_spec_can_apply_named_flash_preset(self) -> None:
+        mapper = SpatialMapper(enabled=True)
+        spec = mapper.resolve_spatial_spec(
+            _intent(mode=EffectMode.AMBIENT),
+            params={"spatial_preset": "flash_top_only"},
+        )
+        self.assertEqual(spec.mode, "wash")
+        self.assertIsNotNone(spec.extent)
+        assert spec.extent is not None
+        self.assertGreater(spec.extent[0][1], 0.0)
+
+    def test_resolve_spatial_layers_extracts_multiple_band_layers(self) -> None:
+        mapper = SpatialMapper(enabled=True)
+        base_spec, layers = mapper.resolve_spatial_layers(
+            _intent(mode=EffectMode.AMBIENT),
+            params={
+                "spatial_mode": "wash",
+                "eq_layers": [
+                    {"band": "bass", "spatial_preset": "flash_floor_only", "color_bias": "#ff8800"},
+                    {"band": "presence", "spatial_preset": "flash_top_only", "color_bias": "#66ccff"},
+                ],
+            },
+        )
+        self.assertEqual(base_spec.mode, "wash")
+        self.assertEqual(len(layers), 2)
+        self.assertEqual(layers[0].layer.band, "bass")
+        self.assertEqual(layers[0].spec.mode, "wash")
+        self.assertEqual(layers[1].layer.band, "presence")
+        self.assertEqual(layers[1].layer.color_override, "#66ccff")
+
+    def test_resolve_spatial_layers_preserves_instrument_pan_metadata(self) -> None:
+        mapper = SpatialMapper(enabled=True)
+        _base_spec, layers = mapper.resolve_spatial_layers(
+            _intent(mode=EffectMode.AMBIENT),
+            params={
+                "spatial_mode": "wash",
+                "eq_layers": [
+                    {
+                        "instrument": "vocals",
+                        "spatial_preset": "blend_front_to_back",
+                        "spatial_origin": {"x": 0.55, "y": 0.0, "z": -1.0},
+                        "spatial_width": 0.42,
+                        "color_bias": "#ddeeff",
+                    },
+                ],
+            },
+        )
+        self.assertEqual(len(layers), 1)
+        self.assertEqual(layers[0].layer.instrument, "vocals")
+        self.assertEqual(layers[0].spec.origin, (0.55, 0.0, -1.0))
+        self.assertEqual(layers[0].spec.width, 0.42)
+
     def test_mapping_is_deterministic(self) -> None:
         mapper = SpatialMapper(enabled=True)
         scene_a = mapper.map_show_cue(0.0, _cue("wave"), _intent())

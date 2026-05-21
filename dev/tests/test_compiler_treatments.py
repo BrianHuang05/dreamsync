@@ -8,10 +8,27 @@ from dreamsync.compiler.treatments import Treatment, TreatmentSelector
 from dreamsync.effects import EFFECTS, PALETTES, MOOD_EFFECTS, MOOD_PALETTES
 from dreamsync.mood import Mood
 from dreamsync.profile import (
+    EqRouteRule,
+    InstrumentRouteRule,
     MoodEffectEntry,
     MoodProfileConfig,
     ProfileConfig,
     TransitionRule,
+)
+
+_AREA_EXTENTS = (
+    {
+        "min": {"x": -1.0, "y": 0.35, "z": -1.0},
+        "max": {"x": 1.0, "y": 1.0, "z": 1.0},
+    },
+    {
+        "min": {"x": -1.0, "y": -0.35, "z": -1.0},
+        "max": {"x": 1.0, "y": 0.35, "z": 1.0},
+    },
+    {
+        "min": {"x": -1.0, "y": -1.0, "z": -1.0},
+        "max": {"x": 1.0, "y": -0.35, "z": 1.0},
+    },
 )
 
 
@@ -334,6 +351,75 @@ def test_params_merge():
     assert t.params["custom_key"] == "custom_val"
 
 
+def test_eq_routes_merge_from_profile_and_mood():
+    base_profile = _make_profile(
+        moods={
+            "chill": MoodProfileConfig(
+                palettes=("warm",),
+                eq_routes=(
+                    EqRouteRule("bass", when="dominant", color_bias="#ff5500", intensity_boost=0.2),
+                ),
+            ),
+            "groove": MoodProfileConfig(palettes=("vivid",)),
+            "hype": MoodProfileConfig(palettes=("neon",)),
+            "drop": MoodProfileConfig(palettes=("fire",)),
+        },
+    )
+    profile = ProfileConfig(
+        name=base_profile.name,
+        palettes=base_profile.palettes,
+        moods=base_profile.moods,
+        transitions=base_profile.transitions,
+        eq_routes=(EqRouteRule("presence", when="lift", color_bias="#66ccff", render_mode="gradient"),),
+    )
+
+    t = TreatmentSelector(profile=profile, seed=42).select("chill", "intro", 100.0)
+    routes = t.params["eq_routes"]
+    assert any(route["band"] == "presence" and route["when"] == "lift" for route in routes)
+    assert any(route["band"] == "bass" and route["when"] == "dominant" for route in routes)
+
+
+def test_instrument_routes_merge_from_profile_and_mood():
+    base_profile = _make_profile(
+        moods={
+            "chill": MoodProfileConfig(
+                palettes=("warm",),
+                instrument_routes=(
+                    InstrumentRouteRule(
+                        "drums",
+                        when="enter",
+                        spatial_preset="ripple_from_center",
+                        intensity_boost=0.2,
+                    ),
+                ),
+            ),
+            "groove": MoodProfileConfig(palettes=("vivid",)),
+            "hype": MoodProfileConfig(palettes=("neon",)),
+            "drop": MoodProfileConfig(palettes=("fire",)),
+        },
+    )
+    profile = ProfileConfig(
+        name=base_profile.name,
+        palettes=base_profile.palettes,
+        moods=base_profile.moods,
+        transitions=base_profile.transitions,
+        instrument_routes=(
+            InstrumentRouteRule(
+                "vocals",
+                when="dominant",
+                color_bias="#cceeff",
+                pan_follow=0.7,
+            ),
+        ),
+    )
+
+    t = TreatmentSelector(profile=profile, seed=42).select("chill", "intro", 100.0)
+    routes = t.params["instrument_routes"]
+    assert any(route["instrument"] == "vocals" and route["when"] == "dominant" for route in routes)
+    assert any(route["instrument"] == "drums" and route["when"] == "enter" for route in routes)
+    assert routes[0]["pan_follow"] == 0.7
+
+
 # ---------------------------------------------------------------------------
 # 15. test_deterministic_seed
 # ---------------------------------------------------------------------------
@@ -417,3 +503,102 @@ def test_reset_clears_song_palettes():
     sel.reset()
     assert sel._song_primary_palette is None
     assert sel._song_accent_palette is None
+
+
+def test_scroll_effect_gets_directional_spatial_preset():
+    """Directional motion effects gain a randomized spatial direction preset."""
+    profile = _make_profile(
+        moods={
+            "chill": MoodProfileConfig(palettes=("warm",)),
+            "groove": MoodProfileConfig(
+                palettes=("vivid",),
+                effects=(MoodEffectEntry(name="color_scroll", weight=10.0),),
+            ),
+            "hype": MoodProfileConfig(palettes=("neon",)),
+            "drop": MoodProfileConfig(palettes=("fire",)),
+        }
+    )
+    sel = TreatmentSelector(profile=profile, seed=42)
+
+    t = sel.select("groove", "verse", 120.0)
+
+    assert t.render_mode == "scroll"
+    assert t.params["spatial_preset"] in {
+        "ripple_left_to_right",
+        "ripple_right_to_left",
+        "wave_top_to_bottom",
+        "wave_bottom_to_top",
+        "wave_front_to_back",
+        "wave_back_to_front",
+    }
+    if "spatial_extent" in t.params:
+        assert t.params["spatial_extent"] in _AREA_EXTENTS
+
+
+def test_pulse_effect_gets_ripple_or_flash_spatial_family():
+    """Pulse-like generated sections choose from ripple/flash spatial variants."""
+    profile = _make_profile(
+        moods={
+            "chill": MoodProfileConfig(palettes=("warm",)),
+            "groove": MoodProfileConfig(
+                palettes=("vivid",),
+                effects=(MoodEffectEntry(name="beat_pulse", weight=10.0),),
+            ),
+            "hype": MoodProfileConfig(palettes=("neon",)),
+            "drop": MoodProfileConfig(palettes=("fire",)),
+        }
+    )
+    sel = TreatmentSelector(profile=profile, seed=42)
+
+    t = sel.select("groove", "verse", 120.0)
+
+    assert t.render_mode == "pulse"
+    assert t.params["spatial_preset"] in {
+        "ripple_from_center",
+        "flash_top_only",
+        "flash_floor_only",
+    }
+
+
+def test_gradient_effect_uses_selected_palette_for_gradient_colors():
+    """Generated gradient params should follow the selected palette, not baked-in defaults."""
+    profile = _make_profile(
+        moods={
+            "chill": MoodProfileConfig(
+                palettes=("ice",),
+                effects=(MoodEffectEntry(name="gradient_flow", weight=10.0),),
+            ),
+            "groove": MoodProfileConfig(palettes=("vivid",)),
+            "hype": MoodProfileConfig(palettes=("neon",)),
+            "drop": MoodProfileConfig(palettes=("fire",)),
+        }
+    )
+    sel = TreatmentSelector(profile=profile, seed=42)
+
+    t = sel.select("chill", "verse", 100.0)
+
+    assert t.render_mode == "gradient"
+    assert t.color_palette == PALETTES["ice"]
+    assert t.params["gradient_colors"] == PALETTES["ice"]
+
+
+def test_explicit_spatial_profile_params_are_preserved():
+    """Profile-authored spatial metadata should win over autogenerated defaults."""
+    profile = _make_profile(
+        moods={
+            "chill": MoodProfileConfig(palettes=("warm",)),
+            "groove": MoodProfileConfig(
+                palettes=("vivid",),
+                effects=(MoodEffectEntry(name="color_scroll", weight=10.0),),
+                params={"spatial_preset": "wave_front_to_back"},
+            ),
+            "hype": MoodProfileConfig(palettes=("neon",)),
+            "drop": MoodProfileConfig(palettes=("fire",)),
+        }
+    )
+    sel = TreatmentSelector(profile=profile, seed=42)
+
+    t = sel.select("groove", "verse", 120.0)
+
+    assert t.params["spatial_preset"] == "wave_front_to_back"
+    assert "spatial_extent" not in t.params

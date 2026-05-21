@@ -10,6 +10,17 @@ python -m venv .venv
 pip install -e .
 ```
 
+### Desktop GUI
+
+The CLI remains supported, but DreamSync now also has a Windows-first desktop shell.
+
+```bash
+pip install -e ".[gui,yaml,spotify]"
+python -m dreamsync gui --config dev/devices-dummy.yaml
+```
+
+If `PySide6` is not installed, the `gui` command exits with a clear dependency message instead of failing deep inside the app.
+
 ## Device discovery
 
 Find Govee devices on your network:
@@ -166,6 +177,32 @@ python -m dreamsync profile-validate aurora
 ```
 
 Editing a profile YAML under `src/dreamsync/profiles/` during a live session triggers a hot-reload within ~2 seconds.
+
+Profiles can also include optional `eq_routes` rules to tie named spectral bands to specific render changes. The compiler currently understands the analysis bands `sub`, `kick`, `bass`, `low_mid`, `mid`, `presence`, and `air`, and can react to phrase states such as `dominant`, `enter`, `drop`, `sustain`, `exit`, `lift`, and `swell`.
+
+```yaml
+eq_routes:
+  - band: "bass"
+    when: "enter"
+    render_mode: "pulse"
+    color_bias: "#ff6600"
+    intensity_boost: 0.2
+
+moods:
+  groove:
+    palettes: ["warm", "fire"]
+    eq_routes:
+      - band: "presence"
+        when: "lift"
+        render_mode: "scroll"
+        color_bias: "#00ccff"
+```
+
+Profile-level `eq_routes` apply everywhere, while mood-level rules are layered on top when that mood is active. This lets you keep broad behaviors like bass hits driving pulse intensity, then add mood-specific overrides for things like presence-heavy chorus sections.
+
+Offline analysis also now emits phrase-aligned `instrument_proxies` for `drums`, `bass`, `vocals`, `harmonic`, and `percussive`. These are heuristic scores derived from existing onset, EQ-band, and chroma features, not isolated stems. That means they are safe to use as routing hints in compiled analysis without pulling heavy ML dependencies into the default install.
+
+If you eventually want true stem-like routing, keep it as an explicit offline-only extra. The intended path is lightweight built-in heuristics first, then optional backends such as richer `librosa` analysis or an external separator like Demucs behind a separate install path. The default DreamSync install does not depend on those backends.
 
 ### Device health monitoring
 

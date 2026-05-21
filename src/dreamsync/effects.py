@@ -16,6 +16,56 @@ class EffectPreset:
     params: dict[str, Any]
 
 
+def _eq_route_to_mapping(route: Any) -> dict[str, Any]:
+    """Convert a profile EqRouteRule-like object into runtime params data."""
+
+    data = {
+        "band": str(getattr(route, "band", "")),
+        "when": str(getattr(route, "when", "dominant")),
+    }
+    color_bias = getattr(route, "color_bias", None)
+    if color_bias is not None:
+        data["color_bias"] = color_bias
+    render_mode = getattr(route, "render_mode", None)
+    if render_mode is not None:
+        data["render_mode"] = render_mode
+    spatial_preset = getattr(route, "spatial_preset", None)
+    if spatial_preset is not None:
+        data["spatial_preset"] = spatial_preset
+    intensity_boost = float(getattr(route, "intensity_boost", 0.0) or 0.0)
+    if intensity_boost:
+        data["intensity_boost"] = intensity_boost
+    return data
+
+
+def _instrument_route_to_mapping(route: Any) -> dict[str, Any]:
+    """Convert a profile InstrumentRouteRule-like object into runtime params data."""
+
+    data = {
+        "instrument": str(getattr(route, "instrument", "")),
+        "when": str(getattr(route, "when", "dominant")),
+        "pan_follow": float(getattr(route, "pan_follow", 0.0) or 0.0),
+        "width_scale": float(getattr(route, "width_scale", 1.0) or 1.0),
+        "confidence_min": float(getattr(route, "confidence_min", 0.45) or 0.45),
+    }
+    color_bias = getattr(route, "color_bias", None)
+    if color_bias is not None:
+        data["color_bias"] = color_bias
+    render_mode = getattr(route, "render_mode", None)
+    if render_mode is not None:
+        data["render_mode"] = render_mode
+    spatial_preset = getattr(route, "spatial_preset", None)
+    if spatial_preset is not None:
+        data["spatial_preset"] = spatial_preset
+    spatial_zone = getattr(route, "spatial_zone", None)
+    if spatial_zone is not None:
+        data["spatial_zone"] = spatial_zone
+    intensity_boost = float(getattr(route, "intensity_boost", 0.0) or 0.0)
+    if intensity_boost:
+        data["intensity_boost"] = intensity_boost
+    return data
+
+
 # ---------------------------------------------------------------------------
 # Palettes
 # ---------------------------------------------------------------------------
@@ -257,8 +307,33 @@ class EffectCycler:
         p = self._profile
         if p is not None and mood is not None:
             mood_cfg = p.moods.get(mood.value)
+            eq_routes: list[dict[str, Any]] = []
+            instrument_routes: list[dict[str, Any]] = []
+            if p.eq_routes:
+                eq_routes.extend(_eq_route_to_mapping(route) for route in p.eq_routes)
+            if p.instrument_routes:
+                instrument_routes.extend(
+                    _instrument_route_to_mapping(route) for route in p.instrument_routes
+                )
             if mood_cfg and mood_cfg.params:
                 params.update(mood_cfg.params)
+            if mood_cfg and mood_cfg.eq_routes:
+                eq_routes.extend(_eq_route_to_mapping(route) for route in mood_cfg.eq_routes)
+            if mood_cfg and mood_cfg.instrument_routes:
+                instrument_routes.extend(
+                    _instrument_route_to_mapping(route)
+                    for route in mood_cfg.instrument_routes
+                )
+            if eq_routes:
+                existing = params.get("eq_routes")
+                merged = [dict(route) for route in existing] if isinstance(existing, list) else []
+                merged.extend(eq_routes)
+                params["eq_routes"] = merged
+            if instrument_routes:
+                existing = params.get("instrument_routes")
+                merged = [dict(route) for route in existing] if isinstance(existing, list) else []
+                merged.extend(instrument_routes)
+                params["instrument_routes"] = merged
 
         return EffectPreset(
             name=base.name,

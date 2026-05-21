@@ -48,6 +48,8 @@ def profile_fingerprint(profile: ProfileConfig | None) -> str:
         "name": profile.name,
         "palettes": _canonical_palettes(profile.palettes),
         "moods": _canonical_moods(profile.moods),
+        "eq_routes": _canonical_eq_routes(profile.eq_routes),
+        "instrument_routes": _canonical_instrument_routes(profile.instrument_routes),
         "transitions": _canonical_transitions(profile.transitions),
     }
     json_str = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
@@ -71,8 +73,42 @@ def _canonical_moods(moods: dict) -> list:
             sorted(mood.palettes),
             sorted([[e.name, e.weight] for e in mood.effects]),
             sorted(mood.params.items()),
+            _canonical_eq_routes(mood.eq_routes),
+            _canonical_instrument_routes(mood.instrument_routes),
         ])
     return result
+
+
+def _canonical_eq_routes(routes: tuple) -> list:
+    return sorted([
+        [
+            route.band,
+            route.when,
+            route.color_bias,
+            route.render_mode,
+            route.spatial_preset,
+            route.intensity_boost,
+        ]
+        for route in routes
+    ])
+
+
+def _canonical_instrument_routes(routes: tuple) -> list:
+    return sorted([
+        [
+            route.instrument,
+            route.when,
+            route.color_bias,
+            route.render_mode,
+            route.spatial_preset,
+            route.spatial_zone,
+            route.pan_follow,
+            route.width_scale,
+            route.confidence_min,
+            route.intensity_boost,
+        ]
+        for route in routes
+    ])
 
 
 def _canonical_transitions(transitions: tuple) -> list:

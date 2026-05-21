@@ -13,6 +13,7 @@ from dreamsync.analyzer.phrases import (
     PhraseSegmenter,
 )
 from dreamsync.analyzer.sections import Section
+from dreamsync.live import EQ_BAND_NAMES
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +41,9 @@ def _make_features(
     energy: float = 0.5,
     kick_flux: float = 0.2,
     bass_ratio: float = 0.3,
+    band_energies: tuple[float, ...] | None = None,
+    band_ratios: tuple[float, ...] | None = None,
+    band_fluxes: tuple[float, ...] | None = None,
 ) -> list[FeatureRow]:
     rows = []
     t = start_t
@@ -50,6 +54,9 @@ def _make_features(
             kick_spectral_flux=kick_flux,
             onset_strength=0.2, energy=energy, bpm=120.0,
             beat=False, mood="groove",
+            band_energies=band_energies or _band_vector(),
+            band_ratios=band_ratios or _band_vector(),
+            band_fluxes=band_fluxes or _band_vector(),
         ))
         t += dt
     return rows
@@ -75,6 +82,10 @@ def _make_features_energy_ramp(
         ))
         t += dt
     return rows
+
+
+def _band_vector(**values: float) -> tuple[float, ...]:
+    return tuple(values.get(name, 0.0) for name in EQ_BAND_NAMES)
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +185,29 @@ class TestPhraseSegmenter:
         # 16s at 120 BPM = 32 beats = 8 bars = 2 × 4-bar phrases
         assert len(phrases) == 2
 
+    def test_phrase_captures_band_summary_and_dominant_band(self):
+        grid = _make_beat_grid(bpm=120.0, duration=12.0)
+        sections = [_make_section(0.0, 8.0)]
+        features = _make_features(
+            0.0,
+            8.0,
+            band_energies=_band_vector(sub=0.2, bass=0.7, presence=0.1),
+            band_ratios=_band_vector(sub=0.08, bass=0.42, presence=0.06),
+            band_fluxes=_band_vector(bass=0.18, presence=0.03),
+        )
+
+        segmenter = PhraseSegmenter(bars_per_phrase=4)
+        phrases = segmenter.segment(sections, features, grid)
+
+        assert len(phrases) == 1
+        phrase = phrases[0]
+        assert phrase.dominant_band == "bass"
+        assert len(phrase.band_ratios) == len(EQ_BAND_NAMES)
+        ratio_map = dict(zip(EQ_BAND_NAMES, phrase.band_ratios))
+        flux_map = dict(zip(EQ_BAND_NAMES, phrase.band_fluxes))
+        assert ratio_map["bass"] > ratio_map["presence"]
+        assert flux_map["bass"] > flux_map["presence"]
+
 
 # ---------------------------------------------------------------------------
 # InstrumentEventDetector (D2)
@@ -246,6 +280,78 @@ class TestInstrumentEventDetector:
         events = detector.detect(phrases, features)
 
         assert len(events) == 0
+
+    def test_presence_lift_detected(self):
+        phrases = [
+            Phrase(
+                0.0,
+                8.0,
+                0,
+                "steady",
+                0.0,
+                True,
+                dominant_band="mid",
+                band_ratios=_band_vector(mid=0.18, presence=0.04, air=0.02),
+            ),
+            Phrase(
+                8.0,
+                16.0,
+                0,
+                "steady",
+                0.0,
+                True,
+                dominant_band="presence",
+                band_ratios=_band_vector(mid=0.14, presence=0.18, air=0.04),
+            ),
+        ]
+        features = (
+            _make_features(0.0, 8.0, band_ratios=_band_vector(mid=0.18, presence=0.04))
+            + _make_features(8.0, 16.0, band_ratios=_band_vector(mid=0.14, presence=0.18))
+        )
+
+        detector = InstrumentEventDetector()
+        events = detector.detect(phrases, features)
+
+        presence_events = [e for e in events if e.event_type == "presence_lift"]
+        assert len(presence_events) == 1
+        assert presence_events[0].t == 8.0
+        assert presence_events[0].band == "presence"
+
+    def test_sub_enter_detected(self):
+        phrases = [
+            Phrase(
+                0.0,
+                8.0,
+                0,
+                "breakdown",
+                0.0,
+                False,
+                dominant_band="mid",
+                band_ratios=_band_vector(mid=0.20, sub=0.02),
+            ),
+            Phrase(
+                8.0,
+                16.0,
+                0,
+                "steady",
+                0.0,
+                True,
+                dominant_band="sub",
+                band_ratios=_band_vector(sub=0.16, bass=0.22),
+            ),
+        ]
+        features = (
+            _make_features(0.0, 8.0, band_ratios=_band_vector(mid=0.20, sub=0.02))
+            + _make_features(8.0, 16.0, band_ratios=_band_vector(sub=0.16, bass=0.22))
+        )
+
+        detector = InstrumentEventDetector()
+        events = detector.detect(phrases, features)
+
+        sub_events = [e for e in events if e.event_type == "sub_enter"]
+        assert len(sub_events) == 1
+        assert sub_events[0].t == 8.0
+        assert sub_events[0].band == "sub"
 
     def test_single_phrase_no_events(self):
         """One phrase → no events possible."""

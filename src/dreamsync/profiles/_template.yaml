@@ -25,6 +25,26 @@ palettes:
   my_accent:  ["#0044ff", "#0088ff", "#00ccff", "#0066ff"]
   my_intense: ["#ff00ff", "#00ffff", "#ffff00"]
 
+# EQ routing rules (optional)
+# Route specific spectral bands to lighting changes. Rules can live at the
+# profile level or inside an individual mood and are merged together.
+# Valid bands: sub, kick, bass, low_mid, mid, presence, air
+# Valid "when" values: dominant, enter, drop, sustain, exit, lift, swell
+# Optional fields:
+#   render_mode: built-in render mode name such as pulse, wave, breathe, scroll
+#   color_bias:  hex color used to tint the active palette
+#   intensity_boost: additive cue intensity boost
+# eq_routes:
+#   - band: "bass"
+#     when: "enter"
+#     render_mode: "pulse"
+#     color_bias: "#ff6600"
+#     intensity_boost: 0.2
+#   - band: "presence"
+#     when: "lift"
+#     render_mode: "scroll"
+#     color_bias: "#00ccff"
+
 # Per-mood configuration — all 4 moods must be defined
 moods:
   chill:
@@ -39,6 +59,10 @@ moods:
 
   groove:
     palettes: ["my_primary", "my_accent"]
+    # eq_routes:
+    #   - band: "bass"
+    #     when: "dominant"
+    #     color_bias: "#ff8800"
 
   hype:
     palettes: ["my_intense", "my_accent"]
@@ -47,6 +71,11 @@ moods:
     palettes: ["my_intense"]
     # params:
     #   pulse_decay: 3.5
+    # eq_routes:
+    #   - band: "sub"
+    #     when: "enter"
+    #     render_mode: "pulse"
+    #     intensity_boost: 0.25
 
 # Transition rules (optional)
 # Force a specific palette when transitioning between moods.

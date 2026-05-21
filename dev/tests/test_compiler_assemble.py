@@ -6,6 +6,7 @@ import pytest
 
 from dreamsync.analyzer.bpm import BeatGrid, TempoRegion
 from dreamsync.analyzer.features import FeatureRow
+from dreamsync.analyzer.instruments import InstrumentProxy
 from dreamsync.analyzer.models import SongStructure
 from dreamsync.analyzer.phrases import InstrumentEvent, Phrase
 from dreamsync.analyzer.sections import Section
@@ -162,6 +163,25 @@ def test_field_mapping_render_mode():
     assert tl.cues[0].render_mode == "gradient"
 
 
+def test_field_mapping_preserves_spatial_params():
+    """Generated spatial metadata should pass through to final cues unchanged."""
+    sections = (make_section(start_t=0.0, end_t=30.0),)
+    structure = make_structure(sections, duration=30.0)
+
+    params = {
+        "spatial_preset": "wave_top_to_bottom",
+        "spatial_extent": {
+            "min": {"x": -1.0, "y": -0.35, "z": -1.0},
+            "max": {"x": 1.0, "y": 0.35, "z": 1.0},
+        },
+    }
+    treats = [make_treatment(render_mode="scroll", params=params)]
+    tl = TimelineAssembler().assemble(
+        structure, [make_arc(0)], treats, [make_transition(0)]
+    )
+    assert tl.cues[0].params == params
+
+
 # ---------------------------------------------------------------------------
 # 4. test_beat_grid_copied
 # ---------------------------------------------------------------------------
@@ -176,6 +196,28 @@ def test_beat_grid_copied():
     assert tl.beat_times == structure.beat_grid.beat_times
     assert tl.downbeat_times == structure.beat_grid.downbeat_times
     assert tl.bpm == structure.bpm
+
+
+def test_zero_bpm_falls_back_to_default():
+    """Assembler should still build a runtime-valid timeline for zero-BPM analysis."""
+    sections = (make_section(start_t=0.0, end_t=0.75, bpm=0.0),)
+    structure = SongStructure(
+        path="/tmp/short.mp3",
+        duration=0.75,
+        bpm=0.0,
+        time_signature=4,
+        beat_grid=BeatGrid(bpm=0.0, beat_times=(), downbeat_times=(), time_signature=4),
+        tempo_regions=(TempoRegion(0.0, 0.75, 0.0, 0.0),),
+        sections=sections,
+        metadata={"track_name": "short"},
+    )
+
+    tl = TimelineAssembler().assemble(
+        structure, [make_arc(0)], [make_treatment()], [make_transition(0)]
+    )
+
+    assert tl.bpm == 120.0
+    assert len(tl.cues) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +342,7 @@ def _make_structure_with_phrases(
     sections: tuple[Section, ...],
     phrases: tuple[Phrase, ...],
     events: tuple[InstrumentEvent, ...] = (),
+    proxies: tuple[InstrumentProxy, ...] = (),
     bpm: float = 120.0,
     duration: float = 120.0,
 ) -> SongStructure:
@@ -315,6 +358,7 @@ def _make_structure_with_phrases(
         metadata={},
         phrases=phrases,
         instrument_events=events,
+        instrument_proxies=proxies,
     )
 
 
@@ -448,6 +492,197 @@ def test_breakdown_micro_cue_reduces_intensity():
     assert len(micro) == 1
     assert micro[0].intensity < 0.6
     assert micro[0].render_mode == "breathe"
+
+
+def test_bass_dominant_phrase_adds_eq_route_metadata():
+    sections = (make_section(start_t=0.0, end_t=16.0),)
+    phrases = tuple([
+        Phrase(0.0, 8.0, 0, "steady", 0.0, True),
+        Phrase(
+            8.0, 16.0, 0, "steady", 0.0, True,
+            band_ratios=(0.05, 0.02, 0.32, 0.08, 0.04, 0.03, 0.01),
+            dominant_band="bass",
+        ),
+    ])
+    structure = _make_structure_with_phrases(sections, phrases, duration=16.0)
+
+    tl = TimelineAssembler().assemble(
+        structure,
+        [make_arc(0, 0.5)],
+        [make_treatment(render_mode="scroll", color_palette=("#123456", "#abcdef"))],
+        [make_transition(0)],
+    )
+
+    micro = [c for c in tl.cues if c.t == 8.0][0]
+    assert micro.params["eq_routes"][0]["band"] == "bass"
+    assert micro.params["eq_routes"][0]["when"] == "dominant"
+    assert micro.params["spatial_preset"] == "flash_floor_only"
+    assert micro.color_palette[0] == "#ff8a3d"
+
+
+def test_profile_eq_route_overrides_default_micro_cue_route():
+    sections = (make_section(start_t=0.0, end_t=16.0),)
+    phrases = tuple([
+        Phrase(0.0, 8.0, 0, "steady", 0.0, True),
+        Phrase(
+            8.0, 16.0, 0, "steady", 0.0, True,
+            band_ratios=(0.04, 0.03, 0.28, 0.08, 0.05, 0.02, 0.01),
+            dominant_band="bass",
+        ),
+    ])
+    structure = _make_structure_with_phrases(sections, phrases, duration=16.0)
+    treatments = [make_treatment(params={
+        "eq_routes": [
+            {
+                "band": "bass",
+                "when": "dominant",
+                "color_bias": "#00ffaa",
+                "render_mode": "wave",
+                "spatial_preset": "wave_front_to_back",
+                "intensity_boost": 0.03,
+            },
+        ],
+    })]
+
+    tl = TimelineAssembler().assemble(
+        structure,
+        [make_arc(0, 0.5)],
+        treatments,
+        [make_transition(0)],
+    )
+
+    micro = [c for c in tl.cues if c.t == 8.0][0]
+    assert micro.render_mode == "wave"
+    assert micro.params["spatial_preset"] == "wave_front_to_back"
+    assert micro.params["eq_routes"][0]["color_bias"] == "#00ffaa"
+    assert micro.color_palette[0] == "#00ffaa"
+
+
+def test_multiple_active_eq_routes_emit_runtime_eq_layers():
+    sections = (make_section(start_t=0.0, end_t=16.0),)
+    phrases = tuple([
+        Phrase(0.0, 8.0, 0, "steady", 0.0, True),
+        Phrase(
+            8.0, 16.0, 0, "steady", 0.0, True,
+            band_ratios=(0.03, 0.02, 0.28, 0.05, 0.04, 0.22, 0.01),
+            dominant_band="bass",
+        ),
+    ])
+    events = [InstrumentEvent(t=8.0, event_type="presence_lift", confidence=0.7, band="presence")]
+    structure = _make_structure_with_phrases(sections, phrases, events=tuple(events), duration=16.0)
+
+    tl = TimelineAssembler().assemble(
+        structure,
+        [make_arc(0, 0.5)],
+        [make_treatment(render_mode="scroll", color_palette=("#123456", "#abcdef"))],
+        [make_transition(0)],
+    )
+
+    micro = [c for c in tl.cues if c.t == 8.0][0]
+    assert [layer["band"] for layer in micro.params["eq_layers"][:2]] == ["presence", "bass"]
+    assert micro.params["eq_layers"][0]["spatial_preset"] == "flash_top_only"
+    assert micro.params["eq_layers"][1]["spatial_preset"] == "flash_floor_only"
+    assert len(micro.params["active_eq_routes"]) == 2
+
+
+def test_instrument_dominant_phrase_adds_instrument_route_metadata():
+    sections = (make_section(start_t=0.0, end_t=16.0),)
+    phrases = tuple([
+        Phrase(0.0, 8.0, 0, "steady", 0.0, True),
+        Phrase(8.0, 16.0, 0, "steady", 0.0, True),
+    ])
+    proxies = (
+        InstrumentProxy(0.0, 8.0, 0, "harmonic", harmonic=0.52),
+        InstrumentProxy(8.0, 16.0, 0, "vocals", vocals=0.74, harmonic=0.38),
+    )
+    structure = _make_structure_with_phrases(
+        sections,
+        phrases,
+        proxies=proxies,
+        duration=16.0,
+    )
+
+    tl = TimelineAssembler().assemble(
+        structure,
+        [make_arc(0, 0.5)],
+        [make_treatment(render_mode="scroll", color_palette=("#123456", "#abcdef"))],
+        [make_transition(0)],
+    )
+
+    micro = [c for c in tl.cues if c.t == 8.0][0]
+    assert micro.params["active_instrument_routes"][0]["instrument"] == "vocals"
+    assert micro.params["active_instrument_routes"][0]["when"] == "dominant"
+    assert micro.params["instrument_proxy"]["dominant_proxy"] == "vocals"
+    assert micro.render_mode == "gradient"
+    assert micro.params["spatial_preset"] == "blend_left_to_right"
+    assert micro.color_palette[0] == "#cceeff"
+
+
+def test_profile_instrument_route_overrides_eq_route_on_micro_cue():
+    sections = (make_section(start_t=0.0, end_t=16.0),)
+    phrases = tuple([
+        Phrase(
+            0.0, 8.0, 0, "steady", 0.0, True,
+            band_ratios=(0.05, 0.02, 0.26, 0.06, 0.04, 0.03, 0.01),
+            dominant_band="bass",
+        ),
+        Phrase(
+            8.0, 16.0, 0, "steady", 0.0, True,
+            band_ratios=(0.05, 0.02, 0.26, 0.06, 0.04, 0.03, 0.01),
+            dominant_band="bass",
+        ),
+    ])
+    proxies = (
+        InstrumentProxy(0.0, 8.0, 0, "harmonic", harmonic=0.48),
+        InstrumentProxy(8.0, 16.0, 0, "vocals", vocals=0.82, pan_center=0.78, pan_width=0.34),
+    )
+    structure = _make_structure_with_phrases(
+        sections,
+        phrases,
+        proxies=proxies,
+        duration=16.0,
+    )
+    treatments = [make_treatment(params={
+        "eq_routes": [
+            {
+                "band": "bass",
+                "when": "dominant",
+                "color_bias": "#00ffaa",
+                "render_mode": "wave",
+                "spatial_preset": "wave_front_to_back",
+                "intensity_boost": 0.03,
+            },
+        ],
+        "instrument_routes": [
+            {
+                "instrument": "vocals",
+                "when": "dominant",
+                "color_bias": "#ddeeff",
+                "render_mode": "gradient",
+                "spatial_preset": "blend_front_to_back",
+                "pan_follow": 0.7,
+                "confidence_min": 0.5,
+            },
+        ],
+    })]
+
+    tl = TimelineAssembler().assemble(
+        structure,
+        [make_arc(0, 0.5)],
+        treatments,
+        [make_transition(0)],
+    )
+
+    micro = [c for c in tl.cues if c.t == 8.0][0]
+    assert micro.render_mode == "gradient"
+    assert micro.params["spatial_preset"] == "blend_front_to_back"
+    assert micro.params["active_eq_routes"][0]["band"] == "bass"
+    assert micro.params["active_instrument_routes"][0]["instrument"] == "vocals"
+    assert micro.params["eq_layers"][0]["instrument"] == "vocals"
+    assert micro.params["eq_layers"][1]["band"] == "bass"
+    assert micro.color_palette[0] == "#ddeeff"
+    assert micro.params["active_instrument_routes"][0]["spatial_origin"]["x"] > 0.5
+    assert micro.params["active_instrument_routes"][0]["spatial_width"] > 0.12
 
 
 # ---------------------------------------------------------------------------

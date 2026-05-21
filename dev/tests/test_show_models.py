@@ -185,6 +185,27 @@ class TestSerialization:
         assert loaded.bpm == tl.bpm
         assert loaded.song_path == tl.song_path
 
+    def test_eq_routes_params_roundtrip(self):
+        tl = _make_timeline(cues=(
+            _make_cue(
+                0.0,
+                params={
+                    "eq_routes": [
+                        {
+                            "band": "bass",
+                            "when": "enter",
+                            "color_bias": "#ff6600",
+                            "spatial_preset": "flash_floor_only",
+                            "intensity_boost": 0.15,
+                        },
+                    ],
+                },
+            ),
+        ))
+        loaded = ShowTimeline.from_dict(tl.to_dict())
+        assert loaded.cues[0].params["eq_routes"][0]["band"] == "bass"
+        assert loaded.cues[0].params["eq_routes"][0]["spatial_preset"] == "flash_floor_only"
+
     def test_to_json_creates_parent_dirs(self, tmp_path: Path):
         tl = _make_timeline()
         out = tmp_path / "subdir" / "nested" / "show.json"

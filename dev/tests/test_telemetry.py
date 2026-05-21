@@ -64,6 +64,28 @@ class TestWriteFrame:
         assert row["beat"] is True
         assert row["mood"] == "hype"
 
+    def test_frame_preserves_live_eq_debug_fields(self, tmp_path: Path) -> None:
+        writer = SongTelemetryWriter(tmp_path)
+        frame = _make_frame(0.25)
+        frame.update({
+            "dominant_band": "bass",
+            "dominant_band_ratio": 0.24,
+            "eq_events": ["bass_enter"],
+            "active_eq_bands": ["bass"],
+            "active_eq_routes": [{"band": "bass", "when": "enter", "color_bias": "#ff6600"}],
+            "band_ratios": {"bass": 0.24, "presence": 0.07},
+            "band_fluxes": {"bass": 0.31, "presence": 0.04},
+        })
+        writer.write_frame(frame)
+        writer.close()
+
+        song_file = list(tmp_path.glob("session-*/song-001.jsonl"))[0]
+        row = json.loads(song_file.read_text().strip().split("\n")[0])
+        assert row["dominant_band"] == "bass"
+        assert row["eq_events"] == ["bass_enter"]
+        assert row["active_eq_routes"][0]["when"] == "enter"
+        assert row["band_ratios"]["bass"] == 0.24
+
 
 class TestOnBoundary:
     def test_rotates_file(self, tmp_path: Path) -> None:

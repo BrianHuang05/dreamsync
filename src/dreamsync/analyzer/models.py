@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from dreamsync.analyzer.bpm import BeatGrid, TempoRegion
+from dreamsync.analyzer.instruments import InstrumentProxy
 from dreamsync.analyzer.phrases import InstrumentEvent, Phrase
 from dreamsync.analyzer.sections import Section
+from dreamsync.live import EQ_BAND_NAMES
+
+_ZERO_EQ_BANDS: tuple[float, ...] = (0.0,) * len(EQ_BAND_NAMES)
 
 
 @dataclass(frozen=True)
@@ -23,6 +27,7 @@ class SongStructure:
     metadata: dict                      # track_name, artist (if available)
     phrases: tuple[Phrase, ...] = ()    # sub-section phrases
     instrument_events: tuple[InstrumentEvent, ...] = ()  # instrument entrance/exit
+    instrument_proxies: tuple[InstrumentProxy, ...] = ()  # heuristic phrase-aligned proxies
 
     def to_dict(self) -> dict:
         """Serialise to a JSON-compatible dict."""
@@ -67,6 +72,10 @@ class SongStructure:
                     "phrase_type": p.phrase_type,
                     "energy_delta": round(p.energy_delta, 4),
                     "has_kick": p.has_kick,
+                    "band_energies": [round(v, 4) for v in p.band_energies],
+                    "band_ratios": [round(v, 4) for v in p.band_ratios],
+                    "band_fluxes": [round(v, 4) for v in p.band_fluxes],
+                    "dominant_band": p.dominant_band,
                 }
                 for p in self.phrases
             ],
@@ -75,8 +84,26 @@ class SongStructure:
                     "t": round(e.t, 4),
                     "event_type": e.event_type,
                     "confidence": round(e.confidence, 4),
+                    "band": e.band,
                 }
                 for e in self.instrument_events
+            ],
+            "instrument_proxies": [
+                {
+                    "start_t": round(proxy.start_t, 4),
+                    "end_t": round(proxy.end_t, 4),
+                    "parent_section_index": proxy.parent_section_index,
+                    "dominant_proxy": proxy.dominant_proxy,
+                    "drums": round(proxy.drums, 4),
+                    "bass": round(proxy.bass, 4),
+                    "vocals": round(proxy.vocals, 4),
+                    "harmonic": round(proxy.harmonic, 4),
+                    "percussive": round(proxy.percussive, 4),
+                    "pan_center": round(proxy.pan_center, 4),
+                    "pan_width": round(proxy.pan_width, 4),
+                    "band_pan_centers": [round(value, 4) for value in proxy.band_pan_centers],
+                }
+                for proxy in self.instrument_proxies
             ],
         }
 
@@ -134,6 +161,10 @@ class SongStructure:
                 phrase_type=p["phrase_type"],
                 energy_delta=p["energy_delta"],
                 has_kick=p["has_kick"],
+                band_energies=_normalize_band_values(p.get("band_energies")),
+                band_ratios=_normalize_band_values(p.get("band_ratios")),
+                band_fluxes=_normalize_band_values(p.get("band_fluxes")),
+                dominant_band=p.get("dominant_band", ""),
             )
             for p in data.get("phrases", [])
         )
@@ -142,8 +173,26 @@ class SongStructure:
                 t=e["t"],
                 event_type=e["event_type"],
                 confidence=e["confidence"],
+                band=e.get("band"),
             )
             for e in data.get("instrument_events", [])
+        )
+        instrument_proxies = tuple(
+            InstrumentProxy(
+                start_t=proxy["start_t"],
+                end_t=proxy["end_t"],
+                parent_section_index=proxy["parent_section_index"],
+                dominant_proxy=proxy.get("dominant_proxy", ""),
+                drums=proxy.get("drums", 0.0),
+                bass=proxy.get("bass", 0.0),
+                vocals=proxy.get("vocals", 0.0),
+                harmonic=proxy.get("harmonic", 0.0),
+                percussive=proxy.get("percussive", 0.0),
+                pan_center=proxy.get("pan_center", 0.0),
+                pan_width=proxy.get("pan_width", 0.0),
+                band_pan_centers=_normalize_band_values(proxy.get("band_pan_centers")),
+            )
+            for proxy in data.get("instrument_proxies", [])
         )
         return cls(
             path=data["path"],
@@ -156,4 +205,14 @@ class SongStructure:
             metadata=data.get("metadata", {}),
             phrases=phrases,
             instrument_events=instrument_events,
+            instrument_proxies=instrument_proxies,
         )
+
+
+def _normalize_band_values(values: list[float] | tuple[float, ...] | None) -> tuple[float, ...]:
+    if not values:
+        return _ZERO_EQ_BANDS
+    normalized = [float(v) for v in values[: len(EQ_BAND_NAMES)]]
+    if len(normalized) < len(EQ_BAND_NAMES):
+        normalized.extend([0.0] * (len(EQ_BAND_NAMES) - len(normalized)))
+    return tuple(normalized)

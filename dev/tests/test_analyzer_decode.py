@@ -17,10 +17,19 @@ from dreamsync.analyzer.decode import AudioData, DecodeError, decode_mp3, _probe
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_fake_pcm(n_samples: int = 4410, sample_rate: int = 44100) -> bytes:
+def _make_fake_pcm(
+    n_samples: int = 4410,
+    sample_rate: int = 44100,
+    *,
+    channels: int = 1,
+) -> bytes:
     """Generate raw float32 PCM bytes for a short sine wave."""
     t = np.linspace(0, n_samples / sample_rate, n_samples, dtype=np.float32)
-    signal = 0.5 * np.sin(2 * np.pi * 440 * t)
+    left = 0.5 * np.sin(2 * np.pi * 440 * t)
+    if channels <= 1:
+        return left.astype(np.float32).tobytes()
+    right = 0.35 * np.sin(2 * np.pi * 660 * t)
+    signal = np.stack((left, right), axis=1).astype(np.float32)
     return signal.tobytes()
 
 
@@ -56,6 +65,7 @@ class TestAudioData:
         assert ad.duration == 1.0
         assert ad.channels == 2
         assert len(ad.signal) == 44100
+        assert ad.stereo_signal is None
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +123,7 @@ class TestDecodeMp3Mocked:
         fake.write_bytes(b"\xff\xfb" * 50)
 
         n_samples = 44100  # 1 second
-        pcm_bytes = _make_fake_pcm(n_samples, 44100)
+        pcm_bytes = _make_fake_pcm(n_samples, 44100, channels=2)
 
         with patch("dreamsync.analyzer.decode.check_ffmpeg", return_value=True), \
              patch("dreamsync.analyzer.decode._probe_file", return_value={"channels": 2}), \
@@ -127,6 +137,8 @@ class TestDecodeMp3Mocked:
         assert len(result.signal) == n_samples
         assert abs(result.duration - 1.0) < 0.01
         assert result.signal.dtype == np.float32
+        assert result.stereo_signal is not None
+        assert result.stereo_signal.shape == (n_samples, 2)
 
     def test_resample(self, tmp_path: Path):
         """Target sample rate is passed to ffmpeg."""
@@ -134,7 +146,7 @@ class TestDecodeMp3Mocked:
         fake.write_bytes(b"\xff\xfb" * 50)
 
         n_samples = 22050  # 0.5 seconds at 44100
-        pcm_bytes = _make_fake_pcm(n_samples, 44100)
+        pcm_bytes = _make_fake_pcm(n_samples, 44100, channels=2)
 
         with patch("dreamsync.analyzer.decode.check_ffmpeg", return_value=True), \
              patch("dreamsync.analyzer.decode._probe_file", return_value={"channels": 1}), \
@@ -148,13 +160,13 @@ class TestDecodeMp3Mocked:
         assert call_args[ar_idx + 1] == "22050"
         assert result.sample_rate == 22050
 
-    def test_mono_output(self, tmp_path: Path):
-        """Decode always produces mono output."""
+    def test_stereo_retention_keeps_mono_compatibility(self, tmp_path: Path):
+        """Decode retains stereo PCM but still exposes a mono primary signal."""
         fake = tmp_path / "stereo.mp3"
         fake.write_bytes(b"\xff\xfb" * 50)
 
         n_samples = 4410
-        pcm_bytes = _make_fake_pcm(n_samples, 44100)
+        pcm_bytes = _make_fake_pcm(n_samples, 44100, channels=2)
 
         with patch("dreamsync.analyzer.decode.check_ffmpeg", return_value=True), \
              patch("dreamsync.analyzer.decode._probe_file", return_value={"channels": 2}), \
@@ -162,9 +174,28 @@ class TestDecodeMp3Mocked:
             mock_run.return_value = MagicMock(stdout=pcm_bytes, stderr=b"", returncode=0)
             result = decode_mp3(fake)
 
-        # Signal should be 1-D (mono)
         assert result.signal.ndim == 1
-        # ffmpeg was called with -ac 1
+        assert result.stereo_signal is not None
+        assert result.stereo_signal.shape == (n_samples, 2)
+        call_args = mock_run.call_args[0][0]
+        ac_idx = call_args.index("-ac")
+        assert call_args[ac_idx + 1] == "2"
+
+    def test_disable_stereo_retention(self, tmp_path: Path):
+        fake = tmp_path / "mono-only.mp3"
+        fake.write_bytes(b"\xff\xfb" * 50)
+
+        n_samples = 4410
+        pcm_bytes = _make_fake_pcm(n_samples, 44100, channels=1)
+
+        with patch("dreamsync.analyzer.decode.check_ffmpeg", return_value=True), \
+             patch("dreamsync.analyzer.decode._probe_file", return_value={"channels": 1}), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout=pcm_bytes, stderr=b"", returncode=0)
+            result = decode_mp3(fake, preserve_stereo=False)
+
+        assert result.signal.ndim == 1
+        assert result.stereo_signal is None
         call_args = mock_run.call_args[0][0]
         ac_idx = call_args.index("-ac")
         assert call_args[ac_idx + 1] == "1"
@@ -174,7 +205,7 @@ class TestDecodeMp3Mocked:
         fake = tmp_path / "song.mp3"
         fake.write_bytes(b"\xff\xfb" * 50)
 
-        pcm_bytes = _make_fake_pcm(4410, 44100)
+        pcm_bytes = _make_fake_pcm(4410, 44100, channels=2)
         with patch("dreamsync.analyzer.decode.check_ffmpeg", return_value=True), \
              patch("dreamsync.analyzer.decode._probe_file", return_value={"channels": 2}), \
              patch("subprocess.run") as mock_run:

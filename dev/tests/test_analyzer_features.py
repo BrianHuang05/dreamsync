@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from dreamsync.analyzer.features import FeatureRow, OfflineFeaturePipeline
+from dreamsync.live import EQ_BAND_NAMES, _prepare_bass_window, _spectral_features
 
 
 # ---------------------------------------------------------------------------
@@ -29,6 +30,18 @@ def _noise(duration: float = 2.0, sr: int = 44100, amplitude: float = 0.3) -> np
     return (amplitude * rng.standard_normal(int(sr * duration))).astype(np.float32)
 
 
+def _stereo_signal(
+    left_scale: float = 0.8,
+    right_scale: float = 0.2,
+    duration: float = 2.0,
+    sr: int = 44100,
+) -> np.ndarray:
+    t = np.linspace(0, duration, int(sr * duration), dtype=np.float32)
+    left = left_scale * np.sin(2 * np.pi * 220 * t)
+    right = right_scale * np.sin(2 * np.pi * 880 * t)
+    return np.stack((left, right), axis=1).astype(np.float32)
+
+
 def _click_track(bpm: float = 120.0, duration: float = 10.0, sr: int = 44100) -> np.ndarray:
     """Generate a click track at the given BPM."""
     n_samples = int(sr * duration)
@@ -44,6 +57,12 @@ def _click_track(bpm: float = 120.0, duration: float = 10.0, sr: int = 44100) ->
         signal[idx:end] = click[:end - idx]
         t += beat_interval
     return signal
+
+
+def _frame_sine(freq: float, frame_size: int = 2048, sr: int = 44100) -> np.ndarray:
+    """Generate one FFT-sized sine frame."""
+    t = np.arange(frame_size, dtype=np.float32) / sr
+    return 0.5 * np.sin(2 * np.pi * freq * t).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +88,12 @@ class TestFeatureRow:
         assert row.t == 1.5
         assert row.mood == "chill"
         assert row.beat is False
+        assert row.pan_center == 0.0
+        assert row.pan_width == 0.0
+        assert len(row.band_energies) == len(EQ_BAND_NAMES)
+        assert len(row.band_ratios) == len(EQ_BAND_NAMES)
+        assert len(row.band_fluxes) == len(EQ_BAND_NAMES)
+        assert len(row.band_pan_centers) == len(EQ_BAND_NAMES)
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +211,18 @@ class TestOfflineFeaturePipeline:
         noise_zcr = sum(r.zcr for r in noise_rows) / len(noise_rows)
         assert noise_zcr > sine_zcr
 
+    def test_stereo_signal_populates_pan_fields(self):
+        signal = _stereo_signal(left_scale=0.9, right_scale=0.15, duration=2.0)
+        pipeline = OfflineFeaturePipeline()
+        rows = pipeline.extract(signal)
+        assert len(rows) > 0
+        mid_rows = rows[5:]
+        avg_pan = sum(r.pan_center for r in mid_rows) / len(mid_rows)
+        avg_width = sum(r.pan_width for r in mid_rows) / len(mid_rows)
+        assert avg_pan < -0.2
+        assert avg_width > 0.1
+        assert any(abs(value) > 0.05 for value in mid_rows[0].band_pan_centers)
+
     def test_very_short_signal(self):
         """Signal shorter than one frame should produce empty list."""
         signal = np.zeros(100, dtype=np.float32)
@@ -201,3 +238,43 @@ class TestOfflineFeaturePipeline:
         beats = [r for r in rows if r.beat]
         # After warmup, should detect at least some beats
         assert len(beats) > 0, "No beats detected on click track"
+
+    def test_eq_bands_track_low_frequency_content(self):
+        frame_size = 2048
+        sr = 44100
+        window, bass_mask, kick_mask, freqs = _prepare_bass_window(frame_size, sr)
+        frame = _frame_sine(60.0, frame_size=frame_size, sr=sr)
+        sf = _spectral_features(
+            frame, window, bass_mask, None, kick_mask=kick_mask, freqs=freqs,
+        )
+        band_energy = dict(zip(EQ_BAND_NAMES, sf.band_energies))
+        assert band_energy["sub"] > band_energy["presence"]
+        assert band_energy["bass"] > band_energy["mid"]
+
+    def test_eq_bands_track_presence_content(self):
+        frame_size = 2048
+        sr = 44100
+        window, bass_mask, kick_mask, freqs = _prepare_bass_window(frame_size, sr)
+        frame = _frame_sine(4000.0, frame_size=frame_size, sr=sr)
+        sf = _spectral_features(
+            frame, window, bass_mask, None, kick_mask=kick_mask, freqs=freqs,
+        )
+        band_energy = dict(zip(EQ_BAND_NAMES, sf.band_energies))
+        assert band_energy["presence"] > band_energy["bass"]
+        assert band_energy["presence"] > band_energy["low_mid"]
+
+    def test_eq_band_flux_follows_band_onset(self):
+        frame_size = 2048
+        sr = 44100
+        window, bass_mask, kick_mask, freqs = _prepare_bass_window(frame_size, sr)
+        silence = np.zeros(frame_size, dtype=np.float32)
+        bass_frame = _frame_sine(60.0, frame_size=frame_size, sr=sr)
+        sf_silence = _spectral_features(
+            silence, window, bass_mask, None, kick_mask=kick_mask, freqs=freqs,
+        )
+        sf_bass = _spectral_features(
+            bass_frame, window, bass_mask, sf_silence.mag, kick_mask=kick_mask, freqs=freqs,
+        )
+        band_flux = dict(zip(EQ_BAND_NAMES, sf_bass.band_fluxes))
+        assert band_flux["sub"] > band_flux["presence"]
+        assert band_flux["bass"] > band_flux["mid"]

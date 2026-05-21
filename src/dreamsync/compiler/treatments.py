@@ -7,7 +7,43 @@ from dataclasses import dataclass
 
 from dreamsync.mood import Mood
 from dreamsync.effects import EFFECTS, PALETTES, MOOD_EFFECTS, MOOD_PALETTES
-from dreamsync.profile import ProfileConfig
+from dreamsync.profile import EqRouteRule, InstrumentRouteRule, ProfileConfig
+
+
+_DIRECTIONAL_SPATIAL_PRESETS: tuple[str, ...] = (
+    "ripple_left_to_right",
+    "ripple_right_to_left",
+    "wave_top_to_bottom",
+    "wave_bottom_to_top",
+    "wave_front_to_back",
+    "wave_back_to_front",
+)
+
+_PULSE_SPATIAL_PRESETS: tuple[str, ...] = (
+    "ripple_from_center",
+    "flash_top_only",
+    "flash_floor_only",
+)
+
+_GRADIENT_SPATIAL_PRESETS: tuple[str, ...] = (
+    "blend_left_to_right",
+    "blend_front_to_back",
+)
+
+_SPATIAL_AREA_EXTENTS: dict[str, dict[str, dict[str, float]]] = {
+    "top": {
+        "min": {"x": -1.0, "y": 0.35, "z": -1.0},
+        "max": {"x": 1.0, "y": 1.0, "z": 1.0},
+    },
+    "center": {
+        "min": {"x": -1.0, "y": -0.35, "z": -1.0},
+        "max": {"x": 1.0, "y": 0.35, "z": 1.0},
+    },
+    "bottom": {
+        "min": {"x": -1.0, "y": -1.0, "z": -1.0},
+        "max": {"x": 1.0, "y": -0.35, "z": 1.0},
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -103,6 +139,23 @@ class TreatmentSelector:
             mood_cfg = self._profile.moods.get(mood)
             if mood_cfg and mood_cfg.params:
                 params.update(mood_cfg.params)
+            eq_routes = self._resolve_eq_routes(mood)
+            if eq_routes:
+                params["eq_routes"] = eq_routes
+            instrument_routes = self._resolve_instrument_routes(mood)
+            if instrument_routes:
+                params["instrument_routes"] = instrument_routes
+        self._apply_generated_palette_layer(
+            effect_name=effect_name,
+            render_mode=render_mode,
+            params=params,
+            color_palette=color_palette,
+        )
+        self._apply_generated_spatial_layer(
+            effect_name=effect_name,
+            render_mode=render_mode,
+            params=params,
+        )
 
         # 7. Speed from BPM
         speed = self._compute_speed(mood, section_bpm)
@@ -149,6 +202,172 @@ class TreatmentSelector:
         if self._profile is not None and palette_name in self._profile.palettes:
             return self._profile.palettes[palette_name]
         return PALETTES[palette_name]
+
+    def _resolve_eq_routes(self, mood: str) -> list[dict]:
+        if self._profile is None:
+            return []
+        routes = list(self._profile.eq_routes)
+        mood_cfg = self._profile.moods.get(mood)
+        if mood_cfg and mood_cfg.eq_routes:
+            routes = self._merge_eq_route_rules(routes, list(mood_cfg.eq_routes))
+        return [self._eq_route_to_dict(route) for route in routes]
+
+    def _resolve_instrument_routes(self, mood: str) -> list[dict]:
+        if self._profile is None:
+            return []
+        routes = list(self._profile.instrument_routes)
+        mood_cfg = self._profile.moods.get(mood)
+        if mood_cfg and mood_cfg.instrument_routes:
+            routes = self._merge_instrument_route_rules(routes, list(mood_cfg.instrument_routes))
+        return [self._instrument_route_to_dict(route) for route in routes]
+
+    @staticmethod
+    def _merge_eq_route_rules(
+        base_routes: list[EqRouteRule],
+        override_routes: list[EqRouteRule],
+    ) -> list[EqRouteRule]:
+        merged: dict[tuple[str, str], EqRouteRule] = {
+            (route.band, route.when): route for route in base_routes
+        }
+        order = [(route.band, route.when) for route in base_routes]
+        for route in override_routes:
+            key = (route.band, route.when)
+            if key not in merged:
+                order.append(key)
+            merged[key] = route
+        return [merged[key] for key in order]
+
+    @staticmethod
+    def _eq_route_to_dict(route: EqRouteRule) -> dict:
+        data = {
+            "band": route.band,
+            "when": route.when,
+        }
+        if route.color_bias is not None:
+            data["color_bias"] = route.color_bias
+        if route.render_mode is not None:
+            data["render_mode"] = route.render_mode
+        if route.spatial_preset is not None:
+            data["spatial_preset"] = route.spatial_preset
+        if route.intensity_boost:
+            data["intensity_boost"] = route.intensity_boost
+        return data
+
+    @staticmethod
+    def _merge_instrument_route_rules(
+        base_routes: list[InstrumentRouteRule],
+        override_routes: list[InstrumentRouteRule],
+    ) -> list[InstrumentRouteRule]:
+        merged: dict[tuple[str, str], InstrumentRouteRule] = {
+            (route.instrument, route.when): route for route in base_routes
+        }
+        order = [(route.instrument, route.when) for route in base_routes]
+        for route in override_routes:
+            key = (route.instrument, route.when)
+            if key not in merged:
+                order.append(key)
+            merged[key] = route
+        return [merged[key] for key in order]
+
+    @staticmethod
+    def _instrument_route_to_dict(route: InstrumentRouteRule) -> dict:
+        data = {
+            "instrument": route.instrument,
+            "when": route.when,
+            "pan_follow": route.pan_follow,
+            "width_scale": route.width_scale,
+            "confidence_min": route.confidence_min,
+        }
+        if route.color_bias is not None:
+            data["color_bias"] = route.color_bias
+        if route.render_mode is not None:
+            data["render_mode"] = route.render_mode
+        if route.spatial_preset is not None:
+            data["spatial_preset"] = route.spatial_preset
+        if route.spatial_zone is not None:
+            data["spatial_zone"] = route.spatial_zone
+        if route.intensity_boost:
+            data["intensity_boost"] = route.intensity_boost
+        return data
+
+    def _apply_generated_palette_layer(
+        self,
+        *,
+        effect_name: str,
+        render_mode: str,
+        params: dict,
+        color_palette: tuple[str, ...],
+    ) -> None:
+        """Align generated color-bearing params with the chosen section palette."""
+        if render_mode != "gradient":
+            return
+
+        default_gradient = EFFECTS[effect_name].params.get("gradient_colors")
+        current_gradient = params.get("gradient_colors")
+        if current_gradient == default_gradient:
+            params["gradient_colors"] = color_palette
+
+    def _apply_generated_spatial_layer(
+        self,
+        *,
+        effect_name: str,
+        render_mode: str,
+        params: dict,
+    ) -> None:
+        """Attach spatial direction/area metadata for auto-generated show cues."""
+        if self._has_explicit_spatial_metadata(params):
+            return
+
+        preset = self._pick_spatial_preset(effect_name=effect_name, render_mode=render_mode)
+        if preset is not None:
+            params["spatial_preset"] = preset
+
+        if render_mode in {"solid", "breathe"}:
+            params.setdefault("spatial_mode", "wash")
+
+        area_name = self._rng.choice(("all", "top", "center", "bottom"))
+        if area_name != "all" and self._preset_supports_area(preset):
+            params["spatial_extent"] = self._copy_spatial_extent(_SPATIAL_AREA_EXTENTS[area_name])
+
+    @staticmethod
+    def _has_explicit_spatial_metadata(params: dict) -> bool:
+        return any(
+            key in params
+            for key in (
+                "spatial_mode",
+                "spatial_origin",
+                "spatial_direction",
+                "spatial_width",
+                "spatial_blend",
+                "spatial_extent",
+                "spatial_delay_ms",
+                "spatial_preset",
+            )
+        )
+
+    def _pick_spatial_preset(self, *, effect_name: str, render_mode: str) -> str | None:
+        if effect_name == "drop_blast":
+            return self._rng.choice(_PULSE_SPATIAL_PRESETS)
+        if render_mode == "pulse":
+            return self._rng.choice(_PULSE_SPATIAL_PRESETS)
+        if render_mode in {"scroll", "wave"}:
+            return self._rng.choice(_DIRECTIONAL_SPATIAL_PRESETS)
+        if render_mode == "gradient":
+            return self._rng.choice(_GRADIENT_SPATIAL_PRESETS)
+        return None
+
+    @staticmethod
+    def _preset_supports_area(preset: str | None) -> bool:
+        return preset not in {"flash_top_only", "flash_floor_only"}
+
+    @staticmethod
+    def _copy_spatial_extent(
+        extent: dict[str, dict[str, float]],
+    ) -> dict[str, dict[str, float]]:
+        return {
+            bound: {axis: float(value) for axis, value in coords.items()}
+            for bound, coords in extent.items()
+        }
 
     @staticmethod
     def _compute_speed(mood: str, bpm: float) -> float:

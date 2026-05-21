@@ -2,6 +2,21 @@
 
 ## Planned Workstream
 
+### Instrument-aware spatial follow-through
+
+The biggest functional gap is no longer offline analysis or compiled routing.
+Those foundations are now in place. The next product work on this thread should
+focus on finishing the live/runtime side and validating the behavior on real
+music.
+
+Immediate follow-through targets:
+
+- preserve stereo in live capture instead of collapsing to mono at ingest
+- let live mode emit instrument-aware pan layers, not just EQ-driven layers
+- validate compiled instrument panning against real stereo songs in local preview
+- decide whether to add a real optional stem backend (Demucs-style) behind the
+  new analyzer separation seam
+
 ### Desktop GUI migration
 
 The next major product step is moving from a CLI-first operator workflow to a
@@ -17,6 +32,32 @@ Primary GUI targets:
 See `dev/plans/gui-desktop-migration.md` for the detailed implementation plan.
 
 ## What to Test Next
+
+### Test 37. Compiled instrument/pan validation (offline stereo songs)
+
+**Prerequisites:**
+- A known stereo track with obvious left/right placement and clear bass/vocal motion
+- `dev/devices-dummy.yaml` or a real device config
+
+```bash
+# Re-run analysis/compile on a stereo-heavy song
+python -m dreamsync analyze path\\to\\song.mp3 --output out\\instrument-pan-analysis.json
+
+# Compile and preview with the current profile stack
+python -m dreamsync compile path\\to\\song.mp3 --config dev/devices-dummy.yaml
+
+# Optional: run local preview / simulation path if you want to inspect layering
+python -m pytest dev/tests/test_preview_simulation.py -q
+```
+
+**What to check:**
+- phrase-level `instrument_proxies` now include `pan_center` / `pan_width`
+- compiled micro-cues emit `active_instrument_routes` when vocals/drums/bass dominate
+- pan-aware instrument layers produce sensible `spatial_origin.x` shifts
+- EQ and instrument routes coexist, with instrument routes taking precedence when active
+- cached `.analysis.json` sidecars invalidate cleanly because cache version is now `4`
+
+---
 
 ### Test 35. Full live pipeline (end-to-end with physical audio routing + devices)
 
@@ -105,6 +146,14 @@ python -m dreamsync session --config dev/devices.yaml \
 ---
 
 ## Completed
+
+- Instrument-aware VFX and offline pan foundations (2026-05-20)
+  - profile/compiler support for `instrument_routes`
+  - stereo-preserving offline decode plus frame-level pan metadata
+  - serialized proxy pan summaries in `instrument_proxies`
+  - pan-aware compiled spatial layers for instrument routes
+  - optional stem-backend seam in `analyzer/separation.py`
+  - targeted/broad regression coverage passed: `390` tests in the final sweep
 
 - Tests 7-8: Auto-palette live test with tags + profile export round-trip — passed
 

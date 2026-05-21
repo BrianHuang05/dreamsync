@@ -52,6 +52,15 @@ def _parse_hex_color(color: str) -> tuple[int, int, int]:
     return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 
+def _scale_rgb(color: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
+    factor = max(0.0, min(1.5, factor))
+    return (
+        int(max(0, min(255, color[0] * factor))),
+        int(max(0, min(255, color[1] * factor))),
+        int(max(0, min(255, color[2] * factor))),
+    )
+
+
 def build_command_json(cmd: str, data: dict) -> bytes:
     """Build a generic Govee LAN command JSON payload."""
     msg = {"msg": {"cmd": cmd, "data": data}}
@@ -374,7 +383,7 @@ class MultiGoveeLanAdapter:
         self.devices: list[
             tuple[GoveeLanAdapter, SegmentRenderer, DeviceRole, float, DevicePlacement | None]
         ] = [self._normalize_device_tuple(d) for d in devices]
-        # list of GoveeBleAdapter instances (imported lazily to avoid hard dep)
+        # list of GoveeBleAdapter instances or tuples carrying follower metadata
         self._ble_followers: list = ble_followers or []
         self._spatial_mapper = spatial_mapper
 
@@ -392,13 +401,13 @@ class MultiGoveeLanAdapter:
             adapter.set_brightness(brightness)
         time.sleep(0.3)
         # Start BLE follower threads
-        for ble_adapter in self._ble_followers:
-            ble_adapter.start()
+        for follower in self._ble_followers:
+            self._ble_adapter_for(follower).start()
 
     def deactivate(self) -> None:
         """Stop BLE follower threads."""
-        for ble_adapter in self._ble_followers:
-            ble_adapter.stop()
+        for follower in self._ble_followers:
+            self._ble_adapter_for(follower).stop()
 
     def replace_devices(
         self,
@@ -424,8 +433,7 @@ class MultiGoveeLanAdapter:
         BLE mood followers receive the intent's color + intensity directly.
         """
         if self._spatial_mapper is not None and getattr(self._spatial_mapper, "enabled", False):
-            scene = self._spatial_mapper.map_reactive(t, intent, beat=beat, params=params)
-            return self.send_spatial_scene(t, scene, beat=beat, base_intent=intent)
+            return self.send_continuous_spatial_frame(t, intent, beat=beat, params=params)
 
         any_sent = False
         for adapter, renderer, role, bs, _placement in self.devices:
@@ -434,8 +442,8 @@ class MultiGoveeLanAdapter:
             if adapter.send_frame(colors):
                 any_sent = True
         # Push to BLE followers (fire-and-forget, they rate-limit internally)
-        for ble_adapter in self._ble_followers:
-            ble_adapter.emit(t, intent)
+        for follower in self._ble_followers:
+            self._ble_adapter_for(follower).emit(t, intent)
             any_sent = True
         return any_sent
 
@@ -473,8 +481,92 @@ class MultiGoveeLanAdapter:
                 any_sent = True
 
         follower_intent = base_intent if base_intent is not None else fallback_state.intent
-        for ble_adapter in self._ble_followers:
-            ble_adapter.emit(t, follower_intent)
+        for follower in self._ble_followers:
+            self._ble_adapter_for(follower).emit(t, follower_intent)
+            any_sent = True
+
+        return any_sent
+
+    def send_continuous_spatial_frame(
+        self,
+        t: float,
+        intent: LightingIntent,
+        *,
+        beat: bool = False,
+        params: dict | None = None,
+    ) -> bool:
+        if self._spatial_mapper is None:
+            return self.send_frame(t, intent, beat=beat, params=params)
+
+        spec, layers = self._spatial_mapper.resolve_spatial_layers(intent, params=params)
+        render_params = self._public_render_params(params)
+        any_sent = False
+
+        for adapter, renderer, role, bs, placement in self.devices:
+            device_intent = transform_intent(intent, role, brightness_scale=bs)
+            colors = self._render_with_orientation(
+                renderer,
+                t,
+                device_intent,
+                beat=beat,
+                params=render_params,
+                placement=placement,
+            )
+            colors = self._spatialize_colors(
+                colors,
+                placement=placement,
+                t=t,
+                intent=device_intent,
+                spec=spec,
+                layers=layers,
+            )
+            if adapter.send_frame(colors):
+                any_sent = True
+
+        for follower in self._ble_followers:
+            follower_adapter, follower_role, follower_bs, follower_placement, follower_renderer = self._normalize_ble_follower(follower)
+            follower_intent = transform_intent(intent, follower_role, brightness_scale=follower_bs)
+            if follower_renderer is not None:
+                follower_colors = self._render_with_orientation(
+                    follower_renderer,
+                    t,
+                    follower_intent,
+                    beat=beat,
+                    params=render_params,
+                    placement=follower_placement,
+                )
+                follower_colors = self._spatialize_colors(
+                    follower_colors,
+                    placement=follower_placement,
+                    t=t,
+                    intent=follower_intent,
+                    spec=spec,
+                    layers=layers,
+                )
+                brightness = max(30, min(100, int(max(0.0, min(1.0, follower_intent.intensity)) * 100)))
+                follower_adapter.send_segment_colors(follower_colors, brightness=brightness)
+            elif follower_placement is not None:
+                sample = self._spatial_mapper.sample_point(t, follower_placement, follower_intent, spec)
+                layer_samples = self._layer_samples(
+                    t=t,
+                    placement=follower_placement,
+                    intent=follower_intent,
+                    layers=layers,
+                )
+                color = self._resolve_sampled_color(
+                    follower_intent.color,
+                    sample,
+                    layer_samples,
+                )
+                intensity_scale = self._resolve_sampled_intensity(sample, layer_samples)
+                follower_intent = LightingIntent(
+                    mode=follower_intent.mode,
+                    intensity=max(0.0, min(1.0, follower_intent.intensity * intensity_scale)),
+                    speed=follower_intent.speed,
+                    bpm=follower_intent.bpm,
+                    color=color,
+                )
+            follower_adapter.emit(t, follower_intent)
             any_sent = True
 
         return any_sent
@@ -488,6 +580,32 @@ class MultiGoveeLanAdapter:
         if len(device) == 5:
             return device
         raise ValueError(f"Device tuple must have length 3, 4, or 5; got {len(device)}")
+
+    @staticmethod
+    def _ble_adapter_for(follower):
+        if isinstance(follower, tuple):
+            return follower[0]
+        return follower
+
+    @staticmethod
+    def _normalize_ble_follower(follower):
+        if isinstance(follower, tuple):
+            if len(follower) == 4:
+                return follower[0], follower[1], follower[2], follower[3], None
+            if len(follower) == 5:
+                return follower
+            raise ValueError(f"BLE follower tuple must have length 4 or 5; got {len(follower)}")
+        return follower, DeviceRole.PRIMARY, 1.0, None, None
+
+    @staticmethod
+    def _public_render_params(params: dict | None) -> dict | None:
+        if not params:
+            return params
+        return {
+            key: value
+            for key, value in params.items()
+            if not str(key).startswith("_")
+        }
 
     @staticmethod
     def _render_with_orientation(
@@ -508,3 +626,137 @@ class MultiGoveeLanAdapter:
             return renderer.render(t, intent, beat=beat, params=params)
         finally:
             renderer.mirror = original_mirror
+
+    def _spatialize_colors(
+        self,
+        colors: list[tuple[int, int, int]],
+        *,
+        placement: DevicePlacement | None,
+        t: float,
+        intent: LightingIntent,
+        spec,
+        layers: tuple = (),
+    ) -> list[tuple[int, int, int]]:
+        if placement is None or self._spatial_mapper is None:
+            return colors
+
+        if placement.sections:
+            section_map = {section.index: section for section in placement.sections}
+            result: list[tuple[int, int, int]] = []
+            for index, color in enumerate(colors):
+                section = section_map.get(index)
+                section_placement = placement if section is None else DevicePlacement(
+                    x=section.x,
+                    y=section.y,
+                    z=section.z,
+                    orientation=placement.orientation,
+                    weight=section.weight,
+                    enabled=section.enabled,
+                )
+                sample = self._spatial_mapper.sample_point(t, section_placement, intent, spec)
+                layer_samples = self._layer_samples(
+                    t=t,
+                    placement=section_placement,
+                    intent=intent,
+                    layers=layers,
+                )
+                result.append(self._apply_spatial_sample(color, sample, layer_samples))
+            return result
+
+        sample = self._spatial_mapper.sample_point(t, placement, intent, spec)
+        layer_samples = self._layer_samples(
+            t=t,
+            placement=placement,
+            intent=intent,
+            layers=layers,
+        )
+        return [self._apply_spatial_sample(color, sample, layer_samples) for color in colors]
+
+    def _layer_samples(
+        self,
+        *,
+        t: float,
+        placement: DevicePlacement,
+        intent: LightingIntent,
+        layers: tuple,
+    ) -> list[tuple[object, object]]:
+        if self._spatial_mapper is None:
+            return []
+        samples: list[tuple[object, object]] = []
+        for resolved in layers:
+            sample = self._spatial_mapper.sample_point(t, placement, intent, resolved.spec)
+            samples.append((resolved.layer, sample))
+        return samples
+
+    @staticmethod
+    def _apply_spatial_sample(
+        color: tuple[int, int, int],
+        sample,
+        layer_samples: list[tuple[object, object]] | None = None,
+    ) -> tuple[int, int, int]:
+        base_color = color
+        if sample.color_override:
+            base_color = _parse_hex_color(sample.color_override)
+        result = _scale_rgb(base_color, sample.intensity_scale)
+        if not layer_samples:
+            return result
+
+        for layer, layer_sample in layer_samples:
+            alpha = max(0.0, min(1.0, layer.weight * layer_sample.intensity_scale))
+            if alpha <= 0.0:
+                continue
+            layer_color = color
+            if layer_sample.color_override:
+                layer_color = _parse_hex_color(layer_sample.color_override)
+            elif layer.color_override:
+                layer_color = _parse_hex_color(layer.color_override)
+            tinted = _scale_rgb(layer_color, alpha)
+            blend_mode = str(layer.blend_mode or "max").lower()
+            if blend_mode == "add":
+                result = (
+                    min(255, result[0] + tinted[0]),
+                    min(255, result[1] + tinted[1]),
+                    min(255, result[2] + tinted[2]),
+                )
+            elif blend_mode == "mix":
+                result = (
+                    int(result[0] + ((tinted[0] - result[0]) * alpha)),
+                    int(result[1] + ((tinted[1] - result[1]) * alpha)),
+                    int(result[2] + ((tinted[2] - result[2]) * alpha)),
+                )
+            else:
+                result = (
+                    max(result[0], tinted[0]),
+                    max(result[1], tinted[1]),
+                    max(result[2], tinted[2]),
+                )
+        return result
+
+    @classmethod
+    def _resolve_sampled_color(
+        cls,
+        base_color: str | None,
+        sample,
+        layer_samples: list[tuple[object, object]],
+    ) -> str | None:
+        color = sample.color_override or base_color
+        strongest = 0.0
+        for layer, layer_sample in layer_samples:
+            strength = max(0.0, min(1.0, layer.weight * layer_sample.intensity_scale))
+            if strength < strongest:
+                continue
+            candidate = layer_sample.color_override or layer.color_override
+            if isinstance(candidate, str):
+                color = candidate
+                strongest = strength
+        return color
+
+    @staticmethod
+    def _resolve_sampled_intensity(
+        sample,
+        layer_samples: list[tuple[object, object]],
+    ) -> float:
+        peak = sample.intensity_scale
+        for layer, layer_sample in layer_samples:
+            peak = max(peak, layer.weight * layer_sample.intensity_scale)
+        return max(0.0, min(1.5, peak))

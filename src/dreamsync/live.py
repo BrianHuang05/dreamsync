@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 
 from dreamsync.audio.system_input import _require_sounddevice
-from dreamsync.director import Director, DirectorConfig
+from dreamsync.director import Director, DirectorConfig, EffectMode
 from dreamsync.dsp.features import _estimate_bpm, _estimate_bpm_from_beats, _smooth_signal
 from dreamsync.effects import EffectCycler, EffectCyclerConfig
 from dreamsync.mood import MoodClassifier
@@ -1171,7 +1171,254 @@ class SpectralFeatures:
     kick_spectral_flux: float
     centroid: float
     mag: np.ndarray
+    band_energies: tuple[float, ...] = ()
+    band_ratios: tuple[float, ...] = ()
+    band_fluxes: tuple[float, ...] = ()
     raw_mag: np.ndarray | None = None  # pre-subtraction mag, set when noise_floor is used
+
+
+EQ_BAND_LIMITS_HZ: tuple[tuple[str, float, float], ...] = (
+    ("sub", 20.0, 60.0),
+    ("kick", 50.0, 130.0),
+    ("bass", 60.0, 200.0),
+    ("low_mid", 200.0, 600.0),
+    ("mid", 600.0, 2000.0),
+    ("presence", 2000.0, 5000.0),
+    ("air", 5000.0, 12000.0),
+)
+EQ_BAND_NAMES: tuple[str, ...] = tuple(name for name, _lo, _hi in EQ_BAND_LIMITS_HZ)
+_ZERO_EQ_BANDS: tuple[float, ...] = (0.0,) * len(EQ_BAND_NAMES)
+_EQ_BAND_INDEX = {name: idx for idx, name in enumerate(EQ_BAND_NAMES)}
+
+_LIVE_EQ_ROUTE_DEFAULTS: dict[tuple[str, str], dict[str, object]] = {
+    ("kick", "enter"): {
+        "band": "kick",
+        "when": "enter",
+        "color_bias": "#ff5033",
+        "render_mode": "pulse",
+        "spatial_preset": "ripple_from_center",
+        "intensity_boost": 0.15,
+    },
+    ("sub", "dominant"): {
+        "band": "sub",
+        "when": "dominant",
+        "color_bias": "#ff6b3d",
+        "render_mode": "pulse",
+        "spatial_preset": "flash_floor_only",
+        "intensity_boost": 0.08,
+    },
+    ("sub", "enter"): {
+        "band": "sub",
+        "when": "enter",
+        "color_bias": "#ff6b3d",
+        "render_mode": "pulse",
+        "spatial_preset": "flash_floor_only",
+        "intensity_boost": 0.14,
+    },
+    ("bass", "dominant"): {
+        "band": "bass",
+        "when": "dominant",
+        "color_bias": "#ff8a3d",
+        "render_mode": "pulse",
+        "spatial_preset": "flash_floor_only",
+        "intensity_boost": 0.06,
+    },
+    ("bass", "enter"): {
+        "band": "bass",
+        "when": "enter",
+        "color_bias": "#ff8a3d",
+        "render_mode": "pulse",
+        "spatial_preset": "flash_floor_only",
+        "intensity_boost": 0.15,
+    },
+    ("bass", "drop"): {
+        "band": "bass",
+        "when": "drop",
+        "color_bias": "#ffb24d",
+        "render_mode": "pulse",
+        "spatial_preset": "ripple_from_center",
+        "intensity_boost": 0.18,
+    },
+    ("presence", "dominant"): {
+        "band": "presence",
+        "when": "dominant",
+        "color_bias": "#66ccff",
+        "render_mode": "gradient",
+        "spatial_preset": "flash_top_only",
+        "intensity_boost": 0.05,
+    },
+    ("presence", "lift"): {
+        "band": "presence",
+        "when": "lift",
+        "color_bias": "#66ccff",
+        "render_mode": "gradient",
+        "spatial_preset": "flash_top_only",
+        "intensity_boost": 0.10,
+    },
+    ("air", "dominant"): {
+        "band": "air",
+        "when": "dominant",
+        "color_bias": "#dff6ff",
+        "render_mode": "gradient",
+        "spatial_preset": "blend_left_to_right",
+        "intensity_boost": 0.04,
+    },
+    ("air", "swell"): {
+        "band": "air",
+        "when": "swell",
+        "color_bias": "#dff6ff",
+        "render_mode": "gradient",
+        "spatial_preset": "blend_front_to_back",
+        "intensity_boost": 0.08,
+    },
+}
+
+
+@dataclass(frozen=True)
+class LiveEqState:
+    dominant_band: str | None = None
+    dominant_ratio: float = 0.0
+    band_ratios: tuple[float, ...] = _ZERO_EQ_BANDS
+    band_fluxes: tuple[float, ...] = _ZERO_EQ_BANDS
+    events: tuple[str, ...] = ()
+    trigger_keys: tuple[tuple[str, str], ...] = ()
+
+
+class LiveEqStateTracker:
+    """Track smoothed live EQ state and fire lightweight band events."""
+
+    def __init__(
+        self,
+        *,
+        smoothing: float = 0.35,
+        dominant_threshold: float = 0.14,
+        enter_threshold: float = 0.17,
+        exit_threshold: float = 0.08,
+        presence_lift_threshold: float = 0.34,
+        air_swell_threshold: float = 0.32,
+        event_cooldown_seconds: float = 0.75,
+    ) -> None:
+        self.smoothing = smoothing
+        self.dominant_threshold = dominant_threshold
+        self.enter_threshold = enter_threshold
+        self.exit_threshold = exit_threshold
+        self.presence_lift_threshold = presence_lift_threshold
+        self.air_swell_threshold = air_swell_threshold
+        self.event_cooldown_seconds = event_cooldown_seconds
+        self.reset()
+
+    def reset(self) -> None:
+        self._ready = False
+        self._smoothed_ratios = np.zeros(len(EQ_BAND_NAMES), dtype=np.float32)
+        self._smoothed_fluxes = np.zeros(len(EQ_BAND_NAMES), dtype=np.float32)
+        self._last_event_t: dict[tuple[str, str], float] = {}
+
+    def update(self, spectral: SpectralFeatures, t: float) -> LiveEqState:
+        ratios = np.asarray(spectral.band_ratios or _ZERO_EQ_BANDS, dtype=np.float32)
+        raw_fluxes = np.asarray(spectral.band_fluxes or _ZERO_EQ_BANDS, dtype=np.float32)
+        flux_total = float(raw_fluxes.sum())
+        if flux_total > 1e-8:
+            fluxes = raw_fluxes / flux_total
+        else:
+            fluxes = np.zeros(len(EQ_BAND_NAMES), dtype=np.float32)
+
+        prev_ratios = self._smoothed_ratios.copy()
+        prev_fluxes = self._smoothed_fluxes.copy()
+        if not self._ready:
+            self._smoothed_ratios = ratios.copy()
+            self._smoothed_fluxes = fluxes.copy()
+            self._ready = True
+        else:
+            alpha = float(self.smoothing)
+            self._smoothed_ratios = (alpha * ratios) + ((1.0 - alpha) * self._smoothed_ratios)
+            self._smoothed_fluxes = (alpha * fluxes) + ((1.0 - alpha) * self._smoothed_fluxes)
+
+        events: list[str] = []
+        trigger_keys: list[tuple[str, str]] = []
+
+        for band_name in ("sub", "kick", "bass"):
+            idx = _EQ_BAND_INDEX[band_name]
+            prev_val = float(prev_ratios[idx])
+            curr_val = float(self._smoothed_ratios[idx])
+            if prev_val < self.enter_threshold <= curr_val and self._allow_event(band_name, "enter", t):
+                trigger_keys.append((band_name, "enter"))
+                events.append(f"{band_name}_enter")
+            elif band_name == "bass" and prev_val >= self.enter_threshold and curr_val < self.exit_threshold and self._allow_event("bass", "drop", t):
+                trigger_keys.append(("bass", "drop"))
+                events.append("bass_drop")
+
+        if self._band_flux_event("presence", prev_fluxes, self.presence_lift_threshold, t, "lift"):
+            trigger_keys.append(("presence", "lift"))
+            events.append("presence_lift")
+        if self._band_flux_event("air", prev_fluxes, self.air_swell_threshold, t, "swell"):
+            trigger_keys.append(("air", "swell"))
+            events.append("air_swell")
+
+        dominant_idx = int(np.argmax(self._smoothed_ratios))
+        dominant_ratio = float(self._smoothed_ratios[dominant_idx])
+        dominant_band = EQ_BAND_NAMES[dominant_idx] if dominant_ratio >= self.dominant_threshold else None
+        if dominant_band is not None and (dominant_band, "dominant") not in trigger_keys:
+            trigger_keys.append((dominant_band, "dominant"))
+
+        return LiveEqState(
+            dominant_band=dominant_band,
+            dominant_ratio=dominant_ratio if dominant_band is not None else 0.0,
+            band_ratios=tuple(float(value) for value in self._smoothed_ratios),
+            band_fluxes=tuple(float(value) for value in self._smoothed_fluxes),
+            events=tuple(events),
+            trigger_keys=tuple(trigger_keys),
+        )
+
+    def _band_flux_event(
+        self,
+        band_name: str,
+        prev_fluxes: np.ndarray,
+        threshold: float,
+        t: float,
+        when: str,
+    ) -> bool:
+        idx = _EQ_BAND_INDEX[band_name]
+        ratio_floor = 0.06 if band_name == "presence" else 0.03
+        prev_val = float(prev_fluxes[idx])
+        curr_val = float(self._smoothed_fluxes[idx])
+        if prev_val < threshold <= curr_val and float(self._smoothed_ratios[idx]) >= ratio_floor:
+            return self._allow_event(band_name, when, t)
+        return False
+
+    def _allow_event(self, band_name: str, when: str, t: float) -> bool:
+        key = (band_name, when)
+        last_t = self._last_event_t.get(key, -1e9)
+        if (t - last_t) < self.event_cooldown_seconds:
+            return False
+        self._last_event_t[key] = t
+        return True
+
+
+def _build_eq_band_masks(freqs: np.ndarray) -> tuple[np.ndarray, ...]:
+    """Build boolean masks for the named EQ bands."""
+    return tuple(
+        (freqs >= low_hz) & (freqs <= high_hz)
+        for _name, low_hz, high_hz in EQ_BAND_LIMITS_HZ
+    )
+
+
+def _compute_eq_band_features(
+    mag: np.ndarray,
+    prev_mag: np.ndarray | None,
+    band_masks: tuple[np.ndarray, ...],
+) -> tuple[tuple[float, ...], tuple[float, ...], tuple[float, ...]]:
+    """Compute named band energies, ratios, and positive-delta flux."""
+    total = float(mag.sum()) + 1e-8
+    band_energies = tuple(float(mag[mask].sum()) for mask in band_masks)
+    band_ratios = tuple(energy / total for energy in band_energies)
+    if prev_mag is None:
+        band_fluxes = _ZERO_EQ_BANDS
+    else:
+        band_fluxes = tuple(
+            float(np.maximum(0.0, mag[mask] - prev_mag[mask]).sum())
+            for mask in band_masks
+        )
+    return band_energies, band_ratios, band_fluxes
 
 
 def _prepare_bass_window(
@@ -1223,6 +1470,16 @@ def _spectral_features(
     else:
         spectral_flux = 0.0
 
+    if freqs is not None:
+        band_masks = _build_eq_band_masks(freqs)
+        band_energies, band_ratios, band_fluxes = _compute_eq_band_features(
+            mag, prev_mag, band_masks,
+        )
+    else:
+        band_energies = _ZERO_EQ_BANDS
+        band_ratios = _ZERO_EQ_BANDS
+        band_fluxes = _ZERO_EQ_BANDS
+
     # Kick-band features
     if kick_mask is not None:
         kick_energy = float(mag[kick_mask].sum())
@@ -1240,6 +1497,9 @@ def _spectral_features(
         bass=bass, bass_ratio=bass_ratio, spectral_flux=spectral_flux,
         kick_energy=kick_energy, kick_ratio=kick_ratio,
         kick_spectral_flux=kick_spectral_flux, centroid=centroid, mag=mag,
+        band_energies=band_energies,
+        band_ratios=band_ratios,
+        band_fluxes=band_fluxes,
         raw_mag=raw_mag if noise_floor is not None else None,
     )
 
@@ -1317,6 +1577,125 @@ def _feature_row_from_frame(
     }
 
 
+def _normalize_eq_routes(raw: object) -> list[dict[str, object]]:
+    if not isinstance(raw, list):
+        return []
+    routes: list[dict[str, object]] = []
+    for route in raw:
+        if isinstance(route, dict):
+            routes.append(dict(route))
+    return routes
+
+
+def _merge_eq_routes(base_routes: list[dict[str, object]], override_routes: list[dict[str, object]]) -> list[dict[str, object]]:
+    merged: dict[tuple[str, str], dict[str, object]] = {
+        (str(route.get("band", "")), str(route.get("when", ""))): dict(route)
+        for route in base_routes
+    }
+    order = [
+        (str(route.get("band", "")), str(route.get("when", "")))
+        for route in base_routes
+    ]
+    for route in override_routes:
+        key = (str(route.get("band", "")), str(route.get("when", "")))
+        if key not in merged:
+            order.append(key)
+        existing = dict(merged.get(key, {}))
+        existing.update(route)
+        merged[key] = existing
+    return [merged[key] for key in order if key in merged]
+
+
+def _resolve_live_eq_routes(state: LiveEqState | None, params: dict[str, object] | None) -> list[dict[str, object]]:
+    if state is None or not state.trigger_keys:
+        return []
+    configured_routes = _normalize_eq_routes((params or {}).get("eq_routes"))
+    default_routes = [
+        dict(_LIVE_EQ_ROUTE_DEFAULTS[key])
+        for key in state.trigger_keys
+        if key in _LIVE_EQ_ROUTE_DEFAULTS
+    ]
+    matching_configured = [
+        route for route in configured_routes
+        if (str(route.get("band", "")), str(route.get("when", ""))) in state.trigger_keys
+    ]
+    return _merge_eq_routes(default_routes, matching_configured)
+
+
+def _build_eq_layers(routes: list[dict[str, object]]) -> list[dict[str, object]]:
+    layers: list[dict[str, object]] = []
+    for route in routes:
+        layer: dict[str, object] = {
+            "band": str(route.get("band", "")),
+            "when": str(route.get("when", "")),
+            "layer_blend": str(route.get("layer_blend", "max") or "max"),
+            "layer_weight": round(
+                max(0.15, min(1.0, 0.65 + float(route.get("intensity_boost", 0.0) or 0.0))),
+                3,
+            ),
+        }
+        for key in (
+            "color_bias",
+            "spatial_preset",
+            "spatial_mode",
+            "spatial_origin",
+            "spatial_direction",
+            "spatial_width",
+            "spatial_blend",
+            "spatial_extent",
+            "spatial_delay_ms",
+            "spatial_axis",
+            "spatial_focus",
+        ):
+            if key in route:
+                layer[key] = route[key]
+        if any(
+            key in layer
+            for key in (
+                "color_bias",
+                "spatial_preset",
+                "spatial_mode",
+                "spatial_origin",
+                "spatial_direction",
+                "spatial_width",
+                "spatial_blend",
+                "spatial_extent",
+                "spatial_delay_ms",
+                "spatial_axis",
+                "spatial_focus",
+            )
+        ):
+            layers.append(layer)
+    return layers
+
+
+def _first_route_value(routes: list[dict[str, object]], key: str) -> object | None:
+    for route in routes:
+        value = route.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _apply_live_eq_to_intent(intent: Any, routes: list[dict[str, object]]) -> Any:
+    if not routes:
+        return intent
+    color_bias = _first_route_value(routes, "color_bias")
+    intensity_boost = sum(float(route.get("intensity_boost", 0.0) or 0.0) for route in routes)
+    return dataclasses.replace(
+        intent,
+        intensity=min(1.0, max(0.0, float(intent.intensity) + intensity_boost)),
+        color=str(color_bias) if color_bias is not None else intent.color,
+    )
+
+
+def _band_dict(names: tuple[str, ...], values: tuple[float, ...]) -> dict[str, float]:
+    return {
+        name: round(float(value), 4)
+        for name, value in zip(names, values, strict=False)
+    }
+
+
 def run_live_to_govee(
     multi_adapter: MultiGoveeLanAdapter,
     duration_seconds: float | None,
@@ -1387,6 +1766,8 @@ def run_live_to_govee(
     else:
         effect_cycler = None
     current_params: dict | None = None
+    live_eq_tracker = LiveEqStateTracker()
+    last_live_eq_state: LiveEqState | None = None
     beat_count = 0
     sent_count = 0
     dropped_blocks = 0
@@ -1394,6 +1775,52 @@ def run_live_to_govee(
 
     # Seed with an initial intent so we always have something to render
     last_intent = director.update({"t": 0.0, "rms": 0.0, "zcr": 0.0, "bpm": 120.0, "beat": False, "bass": 0.0})
+
+    def _runtime_params_for_frame(intent: Any) -> tuple[dict[str, Any] | None, list[dict[str, object]]]:
+        runtime_params: dict[str, Any] = dict(current_params or {})
+        if preset is not None:
+            runtime_params.setdefault("_render_mode", preset.render_mode.value)
+        elif intent.mode == EffectMode.RIPPLE:
+            runtime_params.setdefault("_render_mode", "ripple")
+        elif intent.mode == EffectMode.MOTION:
+            runtime_params.setdefault("_render_mode", "wave")
+        elif intent.mode == EffectMode.PULSE:
+            runtime_params.setdefault("_render_mode", "pulse")
+        else:
+            runtime_params.setdefault("_render_mode", "solid")
+
+        if intent.mode == EffectMode.RIPPLE:
+            runtime_params.setdefault("spatial_preset", "ripple_from_center")
+
+        active_routes = _resolve_live_eq_routes(last_live_eq_state, runtime_params)
+        if active_routes:
+            configured_routes = _normalize_eq_routes(runtime_params.get("eq_routes"))
+            active_keys = {
+                (str(route.get("band", "")), str(route.get("when", "")))
+                for route in active_routes
+            }
+            passthrough_routes = [
+                route for route in configured_routes
+                if (str(route.get("band", "")), str(route.get("when", ""))) not in active_keys
+            ]
+            runtime_params["eq_routes"] = active_routes + passthrough_routes
+            runtime_params["active_eq_routes"] = [dict(route) for route in active_routes]
+            eq_layers = _build_eq_layers(active_routes)
+            if eq_layers:
+                runtime_params["eq_layers"] = eq_layers
+            route_spatial_preset = _first_route_value(active_routes, "spatial_preset")
+            if route_spatial_preset is not None and "spatial_preset" not in runtime_params:
+                runtime_params["spatial_preset"] = route_spatial_preset
+            route_render_mode = _first_route_value(active_routes, "render_mode")
+            if route_render_mode is not None:
+                runtime_params["_render_mode"] = str(route_render_mode)
+
+        if last_live_eq_state is not None:
+            runtime_params["dominant_band"] = last_live_eq_state.dominant_band
+            runtime_params["dominant_band_ratio"] = round(last_live_eq_state.dominant_ratio, 4)
+            runtime_params["eq_events"] = list(last_live_eq_state.events)
+
+        return runtime_params or None, active_routes
 
     def _callback(indata, frames, time_info, status) -> None:
         del frames, time_info
@@ -1512,6 +1939,8 @@ def run_live_to_govee(
                         effect_cycler.reset()
                     if crossfade_detector is not None:
                         crossfade_detector.reset()
+                    live_eq_tracker.reset()
+                    last_live_eq_state = None
                     prev_mag = None
                     spectral_mean = None
                     prev_whitened_mag = None
@@ -1537,6 +1966,7 @@ def run_live_to_govee(
                     onset_strength=bpm_estimator.last_onset,
                     centroid=sf.centroid,
                 )
+                last_live_eq_state = live_eq_tracker.update(sf, stream_t)
                 last_intent = director.update(last_features)
 
                 if beat:
@@ -1601,9 +2031,16 @@ def run_live_to_govee(
             # Render and send a frame on every tick (animation-driven)
             if last_intent is not None:
                 frame_intent = last_intent
+                runtime_params, active_live_eq_routes = _runtime_params_for_frame(frame_intent)
+                frame_intent = _apply_live_eq_to_intent(frame_intent, active_live_eq_routes)
                 if max_brightness:
                     frame_intent = dataclasses.replace(frame_intent, intensity=1.0)
-                sent = multi_adapter.send_frame(elapsed, frame_intent, beat=beat_this_tick, params=current_params)
+                sent = multi_adapter.send_frame(
+                    elapsed,
+                    frame_intent,
+                    beat=beat_this_tick,
+                    params=runtime_params,
+                )
                 if sent:
                     sent_count += 1
                 log_row: dict[str, Any] = {
@@ -1624,6 +2061,10 @@ def run_live_to_govee(
                 if auto_cycle and mood_classifier is not None and effect_cycler is not None:
                     log_row["mood"] = mood_classifier.mood.value
                     log_row["effect"] = effect_cycler.current_effect
+                if last_live_eq_state is not None:
+                    log_row["dominant_band"] = last_live_eq_state.dominant_band
+                    log_row["eq_events"] = list(last_live_eq_state.events)
+                    log_row["active_eq_bands"] = [str(route.get("band", "")) for route in active_live_eq_routes]
                 logs.append(log_row)
 
                 if telemetry and mood_classifier is not None:
@@ -1638,6 +2079,13 @@ def run_live_to_govee(
                         "effect": effect_cycler.current_effect if effect_cycler else None,
                         "palette": effect_cycler.current_palette if effect_cycler else None,
                         "render_mode": preset.render_mode.value if preset else None,
+                        "dominant_band": last_live_eq_state.dominant_band if last_live_eq_state else None,
+                        "dominant_band_ratio": round(float(last_live_eq_state.dominant_ratio), 4) if last_live_eq_state else 0.0,
+                        "eq_events": list(last_live_eq_state.events) if last_live_eq_state else [],
+                        "active_eq_bands": [str(route.get("band", "")) for route in active_live_eq_routes],
+                        "active_eq_routes": [dict(route) for route in active_live_eq_routes],
+                        "band_ratios": _band_dict(EQ_BAND_NAMES, last_live_eq_state.band_ratios) if last_live_eq_state else _band_dict(EQ_BAND_NAMES, _ZERO_EQ_BANDS),
+                        "band_fluxes": _band_dict(EQ_BAND_NAMES, last_live_eq_state.band_fluxes) if last_live_eq_state else _band_dict(EQ_BAND_NAMES, _ZERO_EQ_BANDS),
                         # Spectral analysis
                         "bass_ratio": round(float(last_features["bass_ratio"]), 4) if last_features else 0.0,
                         "spectral_flux": round(float(last_features["spectral_flux"]), 4) if last_features else 0.0,

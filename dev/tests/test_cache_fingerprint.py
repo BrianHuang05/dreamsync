@@ -6,6 +6,8 @@ import pytest
 
 from dreamsync.cache import profile_fingerprint
 from dreamsync.profile import (
+    EqRouteRule,
+    InstrumentRouteRule,
     MoodEffectEntry,
     MoodProfileConfig,
     ProfileConfig,
@@ -105,6 +107,39 @@ class TestProfileFingerprint:
             TransitionRule("chill", "groove", "cool"),  # changed palette
             TransitionRule("groove", "hype", "warm"),
         ))
+        assert profile_fingerprint(p1) != profile_fingerprint(p2)
+
+    def test_eq_route_change(self):
+        p1 = _make_profile()
+        p2 = _make_profile(eq_routes=(
+            EqRouteRule("bass", when="dominant", color_bias="#ff6600"),
+        ))
+        assert profile_fingerprint(p1) != profile_fingerprint(p2)
+
+    def test_instrument_route_change(self):
+        p1 = _make_profile()
+        p2 = _make_profile(instrument_routes=(
+            InstrumentRouteRule("bass", when="dominant", color_bias="#ff6600"),
+        ))
+        assert profile_fingerprint(p1) != profile_fingerprint(p2)
+
+    def test_mood_instrument_route_change(self):
+        p1 = _make_profile()
+        moods = dict(p1.moods)
+        moods["groove"] = MoodProfileConfig(
+            palettes=("warm",),
+            effects=(MoodEffectEntry("scroll", 0.7), MoodEffectEntry("wave", 0.3)),
+            params={},
+            instrument_routes=(
+                InstrumentRouteRule(
+                    "vocals",
+                    when="present",
+                    spatial_preset="front_center",
+                    pan_follow=0.75,
+                ),
+            ),
+        )
+        p2 = _make_profile(moods=moods)
         assert profile_fingerprint(p1) != profile_fingerprint(p2)
 
     def test_cosmetic_fields_ignored(self):

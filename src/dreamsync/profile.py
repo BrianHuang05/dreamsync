@@ -15,12 +15,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from dreamsync.analyzer.instruments import INSTRUMENT_PROXY_NAMES
+from dreamsync.live import EQ_BAND_NAMES
+
 _logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Valid mood names (must match Mood enum values)
 # ---------------------------------------------------------------------------
 VALID_MOODS = frozenset({"chill", "groove", "hype", "drop"})
+VALID_EQ_ROUTE_WHENS = frozenset({"dominant", "enter", "drop", "sustain", "exit", "lift", "swell"})
+VALID_INSTRUMENT_ROUTE_WHENS = frozenset({"dominant", "present", "enter", "drop"})
+VALID_RENDER_MODES = frozenset({"solid", "pulse", "breathe", "scroll", "wave", "gradient"})
 
 _HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
@@ -42,11 +48,39 @@ class MoodEffectEntry:
 
 
 @dataclass(frozen=True)
+class EqRouteRule:
+    """Band-aware routing hint that can be attached globally or per mood."""
+    band: str
+    when: str = "dominant"
+    color_bias: str | None = None
+    render_mode: str | None = None
+    spatial_preset: str | None = None
+    intensity_boost: float = 0.0
+
+
+@dataclass(frozen=True)
+class InstrumentRouteRule:
+    """Instrument-aware routing hint that can be attached globally or per mood."""
+    instrument: str
+    when: str = "dominant"
+    color_bias: str | None = None
+    render_mode: str | None = None
+    spatial_preset: str | None = None
+    spatial_zone: str | None = None
+    pan_follow: float = 0.0
+    width_scale: float = 1.0
+    confidence_min: float = 0.45
+    intensity_boost: float = 0.0
+
+
+@dataclass(frozen=True)
 class MoodProfileConfig:
     """Per-mood configuration within a profile."""
     palettes: tuple[str, ...]
     effects: tuple[MoodEffectEntry, ...] = ()
     params: dict[str, Any] = field(default_factory=dict)
+    eq_routes: tuple[EqRouteRule, ...] = ()
+    instrument_routes: tuple[InstrumentRouteRule, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -70,6 +104,8 @@ class ProfileConfig:
     source_path: Path | None = None
     transitions: tuple[TransitionRule, ...] = ()
     cycle_interval: float | None = None
+    eq_routes: tuple[EqRouteRule, ...] = ()
+    instrument_routes: tuple[InstrumentRouteRule, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +119,184 @@ class ProfileError(Exception):
 def _validate_hex_color(color: str, context: str) -> None:
     if not _HEX_RE.match(color):
         raise ProfileError(f"Invalid hex color {color!r} in {context}")
+
+
+def _parse_eq_routes(raw: Any, context: str) -> tuple[EqRouteRule, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ProfileError(f"{context} eq_routes must be a list")
+
+    routes: list[EqRouteRule] = []
+    for idx, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ProfileError(f"{context} eq_routes[{idx}] must be a mapping")
+        band = str(entry.get("band", "")).strip().lower()
+        if band not in EQ_BAND_NAMES:
+            raise ProfileError(
+                f"{context} eq_routes[{idx}] band '{band}' is invalid; "
+                f"expected one of {list(EQ_BAND_NAMES)}"
+            )
+        when = str(entry.get("when", "dominant")).strip().lower()
+        if when not in VALID_EQ_ROUTE_WHENS:
+            raise ProfileError(
+                f"{context} eq_routes[{idx}] when '{when}' is invalid; "
+                f"expected one of {sorted(VALID_EQ_ROUTE_WHENS)}"
+            )
+
+        color_bias = entry.get("color_bias")
+        if color_bias is not None:
+            if not isinstance(color_bias, str):
+                raise ProfileError(f"{context} eq_routes[{idx}] color_bias must be a hex string")
+            _validate_hex_color(color_bias, f"{context} eq_routes[{idx}] color_bias")
+
+        render_mode = entry.get("render_mode")
+        if render_mode is not None:
+            render_mode = str(render_mode).strip().lower()
+            if render_mode not in VALID_RENDER_MODES:
+                raise ProfileError(
+                    f"{context} eq_routes[{idx}] render_mode '{render_mode}' is invalid"
+                )
+
+        spatial_preset = entry.get("spatial_preset")
+        if spatial_preset is not None and not isinstance(spatial_preset, str):
+            raise ProfileError(f"{context} eq_routes[{idx}] spatial_preset must be a string")
+
+        intensity_boost = float(entry.get("intensity_boost", 0.0))
+        routes.append(EqRouteRule(
+            band=band,
+            when=when,
+            color_bias=color_bias,
+            render_mode=render_mode,
+            spatial_preset=spatial_preset,
+            intensity_boost=intensity_boost,
+        ))
+    return tuple(routes)
+
+
+def _eq_route_to_data(route: EqRouteRule) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "band": route.band,
+        "when": route.when,
+    }
+    if route.color_bias is not None:
+        data["color_bias"] = route.color_bias
+    if route.render_mode is not None:
+        data["render_mode"] = route.render_mode
+    if route.spatial_preset is not None:
+        data["spatial_preset"] = route.spatial_preset
+    if route.intensity_boost:
+        data["intensity_boost"] = route.intensity_boost
+    return data
+
+
+def _parse_instrument_routes(raw: Any, context: str) -> tuple[InstrumentRouteRule, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ProfileError(f"{context} instrument_routes must be a list")
+
+    routes: list[InstrumentRouteRule] = []
+    for idx, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ProfileError(f"{context} instrument_routes[{idx}] must be a mapping")
+        instrument = str(entry.get("instrument", "")).strip().lower()
+        if instrument not in INSTRUMENT_PROXY_NAMES:
+            raise ProfileError(
+                f"{context} instrument_routes[{idx}] instrument '{instrument}' is invalid; "
+                f"expected one of {list(INSTRUMENT_PROXY_NAMES)}"
+            )
+        when = str(entry.get("when", "dominant")).strip().lower()
+        if when not in VALID_INSTRUMENT_ROUTE_WHENS:
+            raise ProfileError(
+                f"{context} instrument_routes[{idx}] when '{when}' is invalid; "
+                f"expected one of {sorted(VALID_INSTRUMENT_ROUTE_WHENS)}"
+            )
+
+        color_bias = entry.get("color_bias")
+        if color_bias is not None:
+            if not isinstance(color_bias, str):
+                raise ProfileError(
+                    f"{context} instrument_routes[{idx}] color_bias must be a hex string"
+                )
+            _validate_hex_color(color_bias, f"{context} instrument_routes[{idx}] color_bias")
+
+        render_mode = entry.get("render_mode")
+        if render_mode is not None:
+            render_mode = str(render_mode).strip().lower()
+            if render_mode not in VALID_RENDER_MODES:
+                raise ProfileError(
+                    f"{context} instrument_routes[{idx}] render_mode '{render_mode}' is invalid"
+                )
+
+        spatial_preset = entry.get("spatial_preset")
+        if spatial_preset is not None and not isinstance(spatial_preset, str):
+            raise ProfileError(
+                f"{context} instrument_routes[{idx}] spatial_preset must be a string"
+            )
+
+        spatial_zone = entry.get("spatial_zone")
+        if spatial_zone is not None and not isinstance(spatial_zone, str):
+            raise ProfileError(
+                f"{context} instrument_routes[{idx}] spatial_zone must be a string"
+            )
+
+        pan_follow = float(entry.get("pan_follow", 0.0))
+        if not 0.0 <= pan_follow <= 1.0:
+            raise ProfileError(
+                f"{context} instrument_routes[{idx}] pan_follow must be between 0.0 and 1.0"
+            )
+
+        width_scale = float(entry.get("width_scale", 1.0))
+        if width_scale < 0.0:
+            raise ProfileError(
+                f"{context} instrument_routes[{idx}] width_scale must be >= 0.0"
+            )
+
+        confidence_min = float(entry.get("confidence_min", 0.45))
+        if not 0.0 <= confidence_min <= 1.0:
+            raise ProfileError(
+                f"{context} instrument_routes[{idx}] confidence_min must be between 0.0 and 1.0"
+            )
+
+        intensity_boost = float(entry.get("intensity_boost", 0.0))
+        routes.append(InstrumentRouteRule(
+            instrument=instrument,
+            when=when,
+            color_bias=color_bias,
+            render_mode=render_mode,
+            spatial_preset=spatial_preset,
+            spatial_zone=spatial_zone,
+            pan_follow=pan_follow,
+            width_scale=width_scale,
+            confidence_min=confidence_min,
+            intensity_boost=intensity_boost,
+        ))
+    return tuple(routes)
+
+
+def _instrument_route_to_data(route: InstrumentRouteRule) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "instrument": route.instrument,
+        "when": route.when,
+    }
+    if route.color_bias is not None:
+        data["color_bias"] = route.color_bias
+    if route.render_mode is not None:
+        data["render_mode"] = route.render_mode
+    if route.spatial_preset is not None:
+        data["spatial_preset"] = route.spatial_preset
+    if route.spatial_zone is not None:
+        data["spatial_zone"] = route.spatial_zone
+    if route.pan_follow:
+        data["pan_follow"] = route.pan_follow
+    if route.width_scale != 1.0:
+        data["width_scale"] = route.width_scale
+    if route.confidence_min != 0.45:
+        data["confidence_min"] = route.confidence_min
+    if route.intensity_boost:
+        data["intensity_boost"] = route.intensity_boost
+    return data
 
 
 def load_profile(path: Path) -> ProfileConfig:
@@ -140,6 +354,8 @@ def load_profile(path: Path) -> ProfileConfig:
     # Lazy import to avoid circular dependency at module level
     from dreamsync.effects import EFFECTS, PALETTES
 
+    profile_eq_routes = _parse_eq_routes(raw.get("eq_routes"), "profile")
+    profile_instrument_routes = _parse_instrument_routes(raw.get("instrument_routes"), "profile")
     moods: dict[str, MoodProfileConfig] = {}
     for mood_key, mood_val in moods_raw.items():
         if mood_key not in VALID_MOODS:
@@ -179,11 +395,18 @@ def load_profile(path: Path) -> ProfileConfig:
         params = mood_val.get("params", {})
         if not isinstance(params, dict):
             raise ProfileError(f"Mood '{mood_key}' params must be a mapping")
+        eq_routes = _parse_eq_routes(mood_val.get("eq_routes"), f"mood '{mood_key}'")
+        instrument_routes = _parse_instrument_routes(
+            mood_val.get("instrument_routes"),
+            f"mood '{mood_key}'",
+        )
 
         moods[mood_key] = MoodProfileConfig(
             palettes=tuple(mood_palettes),
             effects=tuple(effects),
             params=dict(params),
+            eq_routes=eq_routes,
+            instrument_routes=instrument_routes,
         )
 
     # Ensure all 4 moods are defined
@@ -226,7 +449,85 @@ def load_profile(path: Path) -> ProfileConfig:
         moods=moods,
         transitions=tuple(transitions),
         cycle_interval=cycle_interval,
+        eq_routes=profile_eq_routes,
+        instrument_routes=profile_instrument_routes,
     )
+
+
+def profile_to_data(profile: ProfileConfig) -> dict[str, Any]:
+    """Convert a loaded profile back to a YAML-friendly mapping."""
+    return {
+        "name": profile.name,
+        "version": profile.version,
+        "description": profile.description,
+        "author": profile.author,
+        "tags": list(profile.tags),
+        "palettes": {name: list(colors) for name, colors in profile.palettes.items()},
+        "moods": {
+            mood: {
+                "palettes": list(config.palettes),
+                "effects": [{"name": effect.name, "weight": effect.weight} for effect in config.effects],
+                "params": dict(config.params),
+                **({"eq_routes": [_eq_route_to_data(route) for route in config.eq_routes]} if config.eq_routes else {}),
+                **({
+                    "instrument_routes": [
+                        _instrument_route_to_data(route) for route in config.instrument_routes
+                    ]
+                } if config.instrument_routes else {}),
+            }
+            for mood, config in profile.moods.items()
+        },
+        **({"eq_routes": [_eq_route_to_data(route) for route in profile.eq_routes]} if profile.eq_routes else {}),
+        **({
+            "instrument_routes": [
+                _instrument_route_to_data(route) for route in profile.instrument_routes
+            ]
+        } if profile.instrument_routes else {}),
+        "transitions": [
+            {"from": rule.from_mood, "to": rule.to_mood, "palette": rule.palette}
+            for rule in profile.transitions
+        ],
+        "cycle_interval": profile.cycle_interval,
+    }
+
+
+def save_profile(profile: ProfileConfig, path: Path | None = None) -> ProfileConfig:
+    """Persist a ProfileConfig and return the reloaded, validated profile."""
+    import yaml
+
+    target = Path(path) if path is not None else profile.source_path
+    if target is None:
+        raise ProfileError("A target path is required to save a profile")
+    data = profile_to_data(profile)
+    if data.get("cycle_interval") is None:
+        data.pop("cycle_interval", None)
+    target.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    return load_profile(target)
+
+
+def update_profile_palette(
+    profile: ProfileConfig,
+    palette_name: str,
+    colors: list[str] | tuple[str, ...],
+    *,
+    path: Path | None = None,
+) -> ProfileConfig:
+    """Update one palette and persist the profile through validation."""
+    next_profile = ProfileConfig(
+        name=profile.name,
+        palettes={**profile.palettes, palette_name: tuple(colors)},
+        moods=dict(profile.moods),
+        description=profile.description,
+        author=profile.author,
+        tags=profile.tags,
+        version=profile.version,
+        source_path=profile.source_path,
+        transitions=profile.transitions,
+        cycle_interval=profile.cycle_interval,
+        eq_routes=profile.eq_routes,
+        instrument_routes=profile.instrument_routes,
+    )
+    return save_profile(next_profile, path=path)
 
 
 # ---------------------------------------------------------------------------

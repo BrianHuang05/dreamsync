@@ -1,4 +1,4 @@
-"""Mp3 Decoder — decode audio files to mono float32 PCM via ffmpeg."""
+"""Mp3 Decoder — decode audio files to float32 PCM via ffmpeg."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from dreamsync.capture.writer import check_ffmpeg
+from dreamsync.ffmpeg import resolve_ffmpeg, resolve_ffprobe
 
 
 class DecodeError(Exception):
@@ -22,14 +23,18 @@ class AudioData:
     sample_rate: int
     duration: float       # seconds
     channels: int         # original channel count (before downmix)
+    stereo_signal: np.ndarray | None = None  # optional Nx2 float32 PCM retained for pan analysis
 
 
 def _probe_file(path: Path) -> dict:
     """Probe an audio file with ffprobe and return stream info."""
+    ffprobe = resolve_ffprobe()
+    if ffprobe is None:
+        raise DecodeError("ffprobe not found on PATH — install ffmpeg")
     try:
         result = subprocess.run(
             [
-                "ffprobe", "-v", "quiet",
+                ffprobe, "-v", "quiet",
                 "-print_format", "json",
                 "-show_streams",
                 str(path),
@@ -56,10 +61,17 @@ def _probe_file(path: Path) -> dict:
     return audio_streams[0]
 
 
-def decode_mp3(path: Path, target_sr: int = 44100) -> AudioData:
-    """Decode an audio file to mono float32 PCM via ffmpeg.
+def decode_mp3(
+    path: Path,
+    target_sr: int = 44100,
+    *,
+    preserve_stereo: bool = True,
+) -> AudioData:
+    """Decode an audio file to float32 PCM via ffmpeg.
 
-    Resamples to *target_sr* and downmixes to mono.
+    Resamples to *target_sr*. By default this retains a stereo PCM view for
+    later pan analysis while also returning a mono downmix in ``signal`` for
+    existing mono consumers.
     Works with mp3, wav, flac, ogg, and any ffmpeg-supported format.
     Raises DecodeError on failure.
     """
@@ -71,20 +83,25 @@ def decode_mp3(path: Path, target_sr: int = 44100) -> AudioData:
 
     if not check_ffmpeg():
         raise DecodeError("ffmpeg not found on PATH — install ffmpeg")
+    ffmpeg = resolve_ffmpeg()
+    if ffmpeg is None:
+        raise DecodeError("ffmpeg not found on PATH — install ffmpeg")
 
     # Probe for original metadata
     stream_info = _probe_file(path)
     original_channels = int(stream_info.get("channels", 2))
 
+    output_channels = 2 if preserve_stereo else 1
+
     # Decode to raw float32 PCM via ffmpeg pipe
     try:
         proc = subprocess.run(
             [
-                "ffmpeg", "-i", str(path),
+                ffmpeg, "-i", str(path),
                 "-f", "f32le",
                 "-acodec", "pcm_f32le",
                 "-ar", str(target_sr),
-                "-ac", "1",
+                "-ac", str(output_channels),
                 "pipe:1",
             ],
             capture_output=True,
@@ -104,12 +121,23 @@ def decode_mp3(path: Path, target_sr: int = 44100) -> AudioData:
             f"ffmpeg output length ({len(raw_bytes)} bytes) is not a multiple of 4"
         )
 
-    signal = np.frombuffer(raw_bytes, dtype=np.float32).copy()
+    pcm = np.frombuffer(raw_bytes, dtype=np.float32).copy()
+    if output_channels > 1:
+        if len(pcm) % output_channels != 0:
+            raise DecodeError(
+                f"ffmpeg output sample count ({len(pcm)}) is not divisible by {output_channels}"
+            )
+        stereo_signal = pcm.reshape(-1, output_channels)[:, :2].copy()
+        signal = stereo_signal.mean(axis=1, dtype=np.float32)
+    else:
+        stereo_signal = None
+        signal = pcm
     duration = len(signal) / target_sr
 
     return AudioData(
-        signal=signal,
+        signal=signal.astype(np.float32, copy=False),
         sample_rate=target_sr,
         duration=duration,
         channels=original_channels,
+        stereo_signal=stereo_signal,
     )

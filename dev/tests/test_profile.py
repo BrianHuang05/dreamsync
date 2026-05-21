@@ -11,6 +11,8 @@ import pytest
 
 from dreamsync.profile import (
     BUILTIN_PROFILES_DIR,
+    EqRouteRule,
+    InstrumentRouteRule,
     MoodEffectEntry,
     MoodProfileConfig,
     ProfileConfig,
@@ -120,6 +122,17 @@ class TestDataclasses:
         tr = TransitionRule(from_mood="chill", to_mood="groove", palette="warm")
         assert tr.from_mood == "chill"
 
+    def test_eq_route_rule_defaults(self):
+        route = EqRouteRule(band="bass")
+        assert route.when == "dominant"
+        assert route.intensity_boost == 0.0
+
+    def test_instrument_route_rule_defaults(self):
+        route = InstrumentRouteRule(instrument="vocals")
+        assert route.when == "dominant"
+        assert route.confidence_min == 0.45
+        assert route.width_scale == 1.0
+
     def test_profile_config_frozen(self):
         pc = ProfileConfig(
             name="test",
@@ -187,6 +200,78 @@ class TestLoadProfileHappy:
         p = _write_yaml(tmp_path, yaml_text)
         profile = load_profile(p)
         assert profile.moods["chill"].palettes == ("warm",)
+
+    def test_profile_eq_routes_load(self, tmp_path: Path):
+        yaml_text = textwrap.dedent("""\
+            name: "EQ Routed"
+            version: 1
+            palettes:
+              warm: ["#ff4400", "#ff8800", "#ffcc00"]
+              cool: ["#2244ff", "#4488ff", "#66ccff"]
+            eq_routes:
+              - band: bass
+                when: dominant
+                color_bias: "#ff6600"
+                spatial_preset: "flash_floor_only"
+                intensity_boost: 0.2
+            moods:
+              chill:
+                palettes: ["warm"]
+              groove:
+                palettes: ["warm"]
+                eq_routes:
+                  - band: presence
+                    when: lift
+                    color_bias: "#66ccff"
+                    render_mode: "gradient"
+              hype:
+                palettes: ["cool"]
+              drop:
+                palettes: ["cool"]
+        """)
+        profile = load_profile(_write_yaml(tmp_path, yaml_text))
+        assert profile.eq_routes[0].band == "bass"
+        assert profile.eq_routes[0].spatial_preset == "flash_floor_only"
+        assert profile.moods["groove"].eq_routes[0].band == "presence"
+        assert profile.moods["groove"].eq_routes[0].render_mode == "gradient"
+
+    def test_profile_instrument_routes_load(self, tmp_path: Path):
+        yaml_text = textwrap.dedent("""\
+            name: "Instrument Routed"
+            version: 1
+            palettes:
+              warm: ["#ff4400", "#ff8800", "#ffcc00"]
+              cool: ["#2244ff", "#4488ff", "#66ccff"]
+            instrument_routes:
+              - instrument: vocals
+                when: dominant
+                color_bias: "#cceeff"
+                render_mode: "gradient"
+                spatial_zone: "front_center"
+                pan_follow: 0.7
+                width_scale: 0.4
+                confidence_min: 0.55
+            moods:
+              chill:
+                palettes: ["warm"]
+              groove:
+                palettes: ["warm"]
+                instrument_routes:
+                  - instrument: drums
+                    when: enter
+                    spatial_preset: "ripple_from_center"
+                    intensity_boost: 0.2
+              hype:
+                palettes: ["cool"]
+              drop:
+                palettes: ["cool"]
+        """)
+        profile = load_profile(_write_yaml(tmp_path, yaml_text))
+        assert profile.instrument_routes[0].instrument == "vocals"
+        assert profile.instrument_routes[0].pan_follow == 0.7
+        assert profile.instrument_routes[0].confidence_min == 0.55
+        assert profile.moods["groove"].instrument_routes[0].instrument == "drums"
+        assert profile.moods["groove"].instrument_routes[0].when == "enter"
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +436,42 @@ class TestLoadProfileErrors:
         yaml_text = MINIMAL_PROFILE_YAML + "cycle_interval: 0.5\n"
         p = _write_yaml(tmp_path, yaml_text)
         with pytest.raises(ProfileError, match="cycle_interval"):
+            load_profile(p)
+
+    def test_eq_route_invalid_band(self, tmp_path: Path):
+        yaml_text = textwrap.dedent("""\
+            name: "Bad EQ Route"
+            version: 1
+            palettes:
+              p: ["#ff0000", "#00ff00", "#0000ff"]
+            eq_routes:
+              - band: vocals
+            moods:
+              chill: {palettes: ["p"]}
+              groove: {palettes: ["p"]}
+              hype: {palettes: ["p"]}
+              drop: {palettes: ["p"]}
+        """)
+        p = _write_yaml(tmp_path, yaml_text)
+        with pytest.raises(ProfileError, match="band"):
+            load_profile(p)
+
+    def test_instrument_route_invalid_instrument(self, tmp_path: Path):
+        yaml_text = textwrap.dedent("""\
+            name: "Bad Instrument Route"
+            version: 1
+            palettes:
+              p: ["#ff0000", "#00ff00", "#0000ff"]
+            instrument_routes:
+              - instrument: guitar
+            moods:
+              chill: {palettes: ["p"]}
+              groove: {palettes: ["p"]}
+              hype: {palettes: ["p"]}
+              drop: {palettes: ["p"]}
+        """)
+        p = _write_yaml(tmp_path, yaml_text)
+        with pytest.raises(ProfileError, match="instrument"):
             load_profile(p)
 
 
@@ -567,6 +688,79 @@ class TestEffectCyclerProfile:
         result = cycler.update(Mood.CHILL, 0.0, False, 120.0, 0.1)
         # Full profile sets wave_rate_mult=0.3 for chill
         assert result.params.get("wave_rate_mult") == 0.3
+
+    def test_profile_eq_routes_merged_into_live_preset_params(self, tmp_path: Path):
+        from dreamsync.effects import EffectCycler
+        from dreamsync.mood import Mood
+
+        yaml_text = """
+name: "EQ Live"
+version: 1
+palettes:
+  a: ["#112233", "#445566", "#778899"]
+eq_routes:
+  - band: "bass"
+    when: "dominant"
+    color_bias: "#ff6600"
+    spatial_preset: "flash_floor_only"
+moods:
+  chill:
+    palettes: ["a"]
+    eq_routes:
+      - band: "presence"
+        when: "lift"
+        color_bias: "#66ccff"
+        spatial_preset: "flash_top_only"
+  groove:
+    palettes: ["a"]
+  hype:
+    palettes: ["a"]
+  drop:
+    palettes: ["a"]
+"""
+        profile = load_profile(_write_yaml(tmp_path, yaml_text, "eq-live.yaml"))
+        cycler = EffectCycler(seed=42, profile=profile)
+
+        result = cycler.update(Mood.CHILL, 0.0, False, 120.0, 0.1)
+        assert [route["band"] for route in result.params["eq_routes"]] == ["bass", "presence"]
+        assert result.params["eq_routes"][0]["spatial_preset"] == "flash_floor_only"
+        assert result.params["eq_routes"][1]["color_bias"] == "#66ccff"
+
+    def test_profile_instrument_routes_merged_into_live_preset_params(self, tmp_path: Path):
+        from dreamsync.effects import EffectCycler
+        from dreamsync.mood import Mood
+
+        yaml_text = """
+name: "Instrument Live"
+version: 1
+palettes:
+  a: ["#112233", "#445566", "#778899"]
+instrument_routes:
+  - instrument: "vocals"
+    when: "dominant"
+    color_bias: "#cceeff"
+    pan_follow: 0.7
+moods:
+  chill:
+    palettes: ["a"]
+    instrument_routes:
+      - instrument: "drums"
+        when: "enter"
+        spatial_preset: "ripple_from_center"
+  groove:
+    palettes: ["a"]
+  hype:
+    palettes: ["a"]
+  drop:
+    palettes: ["a"]
+"""
+        profile = load_profile(_write_yaml(tmp_path, yaml_text, "instrument-live.yaml"))
+        cycler = EffectCycler(seed=42, profile=profile)
+
+        result = cycler.update(Mood.CHILL, 0.0, False, 120.0, 0.1)
+        assert [route["instrument"] for route in result.params["instrument_routes"]] == ["vocals", "drums"]
+        assert result.params["instrument_routes"][0]["pan_follow"] == 0.7
+        assert result.params["instrument_routes"][1]["spatial_preset"] == "ripple_from_center"
 
     def test_profile_transition_rule(self, tmp_path: Path):
         from dreamsync.effects import EffectCycler

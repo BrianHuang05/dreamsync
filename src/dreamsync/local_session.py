@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from dreamsync.analyzer.analyze import analyze_song
+from dreamsync.analyzer.models import SongStructure
 from dreamsync.cache import ShowCache, cached_compile_show, path_based_track_id
 from dreamsync.show.models import ShowTimeline
 from dreamsync.show.player import AudioPlayer
@@ -20,6 +22,26 @@ if TYPE_CHECKING:
     from dreamsync.profile import ProfileConfig
 
 logger = logging.getLogger(__name__)
+ProfileResolver = Callable[[Path, "ProfileConfig | None"], "ProfileConfig | None"]
+_ANALYSIS_CACHE_VERSION = 4
+
+
+def _format_audio_output_label(audio_device: int | None) -> str:
+    return "system default" if audio_device is None else f"device #{audio_device}"
+
+
+def _device_status_for_adapter(adapter) -> str:
+    custom_status = getattr(adapter, "device_status_label", None)
+    if custom_status:
+        return str(custom_status)
+    devices = getattr(adapter, "devices", []) or []
+    if not devices:
+        return "preview mode (no connected devices)"
+    labels = []
+    for device in devices:
+        name = getattr(device, "name", None) or getattr(device, "address", None) or "device"
+        labels.append(str(name))
+    return ", ".join(labels)
 
 
 class LocalShowSession:
@@ -38,6 +60,7 @@ class LocalShowSession:
         *,
         cache: ShowCache,
         profile: ProfileConfig | None = None,
+        profile_resolver: ProfileResolver | None = None,
         sample_rate: int = 44100,
         audio_device: int | None = None,
         debug: bool = False,
@@ -45,6 +68,7 @@ class LocalShowSession:
         self._multi_adapter = multi_adapter
         self._cache = cache
         self._profile = profile
+        self._profile_resolver = profile_resolver
         self._sample_rate = sample_rate
         self._audio_device = audio_device
         self._debug = debug
@@ -53,6 +77,17 @@ class LocalShowSession:
         self._cache_hits: int = 0
         self._cache_misses: int = 0
         self._compile_errors: int = 0
+        self._status_lock = threading.RLock()
+        self._current_track: Path | None = None
+        self._current_player: AudioPlayer | None = None
+        self._current_timeline: ShowTimeline | None = None
+        self._playback_state: str = "idle"
+
+    def _set_playback_state(self, state: str, *, track: Path | None = None) -> None:
+        with self._status_lock:
+            if track is not None:
+                self._current_track = track
+            self._playback_state = state
 
     def run(
         self,
@@ -68,10 +103,12 @@ class LocalShowSession:
         logger.info("local: loading '%s'", audio_path.name)
         if self._debug:
             print(f"[local] Loading: {audio_path.name}")
+        self._set_playback_state("preparing", track=audio_path)
 
         # 2. Compile show (cache-aware)
         timeline = self._compile_for_file(audio_path)
         if timeline is None:
+            self._set_playback_state("compile_failed", track=audio_path)
             self._multi_adapter.deactivate()
             return {
                 "mode": "local",
@@ -84,6 +121,7 @@ class LocalShowSession:
             }
 
         # 3. Create AudioPlayer
+        self._set_playback_state("loading_audio", track=audio_path)
         player = AudioPlayer(
             audio_path,
             sample_rate=self._sample_rate,
@@ -92,9 +130,16 @@ class LocalShowSession:
 
         # 4. Create ShowPlaybackRuntime
         runtime = ShowPlaybackRuntime(timeline, self._multi_adapter)
+        with self._status_lock:
+            self._current_track = audio_path
+            self._current_player = player
+            self._current_timeline = timeline
+            self._playback_state = "starting_audio"
 
         # 5. Start playback
         player.play()
+        with self._status_lock:
+            self._playback_state = "playing"
         if self._debug:
             print(f"[local] Playing: {audio_path.name} ({timeline.duration:.1f}s, {len(timeline.cues)} cues)")
 
@@ -103,12 +148,18 @@ class LocalShowSession:
         try:
             while not stop_event.is_set():
                 if player.finished:
+                    with self._status_lock:
+                        self._playback_state = "finished"
                     break
 
                 if not player.playing:
+                    with self._status_lock:
+                        self._playback_state = "paused"
                     time.sleep(0.05)  # 20 Hz idle (paused)
                     continue
 
+                with self._status_lock:
+                    self._playback_state = "playing"
                 t = player.position_seconds
                 sent = runtime.tick(t)
                 if sent:
@@ -119,6 +170,10 @@ class LocalShowSession:
 
         # 7. Cleanup
         player.stop()
+        with self._status_lock:
+            if self._playback_state != "finished":
+                self._playback_state = "stopped"
+            self._current_player = None
         self._multi_adapter.deactivate()
 
         # 8. Build summary
@@ -138,6 +193,37 @@ class LocalShowSession:
 
         return summary
 
+    def session_snapshot(self) -> dict[str, Any]:
+        with self._status_lock:
+            player = self._current_player
+            timeline = self._current_timeline
+            track = self._current_track
+            state = self._playback_state
+            position_seconds = player.position_seconds if player is not None else 0.0
+            is_playing = player.playing if player is not None else False
+            duration_seconds = timeline.duration if timeline is not None else 0.0
+        return {
+            "mode": "local",
+            "current_track": track,
+            "current_index": 0 if track is not None else -1,
+            "tracks_played": 0,
+            "tracks_skipped": 0,
+            "precompiled": 0,
+            "queue": {"current_index": 0 if track is not None else -1, "tracks": (track,) if track is not None else ()},
+            "playback_state": state,
+            "is_playing": is_playing,
+            "position_seconds": position_seconds,
+            "duration_seconds": duration_seconds,
+            "audio_output": _format_audio_output_label(self._audio_device),
+            "device_status": _device_status_for_adapter(self._multi_adapter),
+        }
+
+    def preview_frame_snapshot(self) -> dict[str, Any]:
+        preview_snapshot = getattr(self._multi_adapter, "preview_snapshot", None)
+        if callable(preview_snapshot):
+            return dict(preview_snapshot())
+        return {"node_colors": {}}
+
     def load_track(self, audio_path: Path | str) -> ShowTimeline | None:
         """Compile (or retrieve from cache) a show for a track.
         Public API for Feature 8 (PlaylistManager) to precompile tracks."""
@@ -146,10 +232,12 @@ class LocalShowSession:
     def _compile_for_file(self, audio_path: Path) -> ShowTimeline | None:
         """Internal: check cache, analyze, compile, cache. Returns None on error."""
         track_id = self._track_id_for_file(audio_path)
+        effective_profile = self._effective_profile_for_track(audio_path)
 
         # 1. Check cache
-        if self._cache.has(track_id, self._profile):
-            timeline = self._cache.get(track_id, self._profile)
+        if self._cache.has(track_id, effective_profile):
+            self._set_playback_state("loading_cached_show", track=audio_path)
+            timeline = self._cache.get(track_id, effective_profile)
             if timeline is not None:
                 self._cache_hits += 1
                 logger.info("local: cache HIT for '%s'", audio_path.name)
@@ -157,16 +245,38 @@ class LocalShowSession:
                     print(f"[local] Cache hit: {audio_path.name}")
                 return timeline
 
+        structure = self._load_analysis_sidecar(audio_path)
+        if structure is not None:
+            self._set_playback_state("loading_cached_analysis", track=audio_path)
+            try:
+                timeline, from_cache = cached_compile_show(
+                    structure,
+                    effective_profile,
+                    cache=self._cache,
+                    track_id=track_id,
+                )
+                if from_cache:
+                    self._cache_hits += 1
+                else:
+                    self._cache_misses += 1
+                logger.info("local: compiled '%s' from cached analysis (%d cues)", audio_path.name, len(timeline.cues))
+                return timeline
+            except Exception as exc:
+                logger.warning("local: cached analysis unusable for '%s': %s", audio_path.name, exc)
+
         # 2. Analyze + compile
         try:
+            self._set_playback_state("analyzing", track=audio_path)
             logger.info("local: analyzing '%s'", audio_path.name)
             if self._debug:
                 print(f"[local] Analyzing: {audio_path.name}...")
 
-            structure = analyze_song(audio_path)
+            structure = self._with_analysis_cache_metadata(analyze_song(audio_path))
+            self._write_analysis_sidecar(audio_path, structure)
+            self._set_playback_state("compiling_show", track=audio_path)
             timeline, from_cache = cached_compile_show(
                 structure,
-                self._profile,
+                effective_profile,
                 cache=self._cache,
                 track_id=track_id,
             )
@@ -183,9 +293,63 @@ class LocalShowSession:
                 print(f"[local] Error compiling '{audio_path.name}': {exc}")
             return None
 
+    @staticmethod
+    def _analysis_sidecar_path(audio_path: Path) -> Path:
+        return audio_path.with_suffix(".analysis.json")
+
+    def _load_analysis_sidecar(self, audio_path: Path) -> SongStructure | None:
+        path = self._analysis_sidecar_path(audio_path)
+        if not path.exists():
+            return None
+        try:
+            structure = SongStructure.from_json(path)
+        except Exception as exc:
+            logger.warning("local: ignoring corrupt analysis sidecar for '%s': %s", audio_path.name, exc)
+            return None
+        version = structure.metadata.get("_analysis_cache_version")
+        if version is not None and int(version) != _ANALYSIS_CACHE_VERSION:
+            logger.info(
+                "local: analysis cache version mismatch for '%s' (found %s, expected %s)",
+                audio_path.name,
+                version,
+                _ANALYSIS_CACHE_VERSION,
+            )
+            return None
+        return structure
+
+    def _write_analysis_sidecar(self, audio_path: Path, structure: SongStructure) -> None:
+        path = self._analysis_sidecar_path(audio_path)
+        try:
+            path.write_text(json.dumps(structure.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception as exc:
+            logger.warning("local: failed to write analysis sidecar for '%s': %s", audio_path.name, exc)
+
+    @staticmethod
+    def _with_analysis_cache_metadata(structure: SongStructure) -> SongStructure:
+        metadata = dict(structure.metadata)
+        metadata["_analysis_cache_version"] = _ANALYSIS_CACHE_VERSION
+        return SongStructure(
+            path=structure.path,
+            duration=structure.duration,
+            bpm=structure.bpm,
+            time_signature=structure.time_signature,
+            beat_grid=structure.beat_grid,
+            tempo_regions=structure.tempo_regions,
+            sections=structure.sections,
+            metadata=metadata,
+            phrases=structure.phrases,
+            instrument_events=structure.instrument_events,
+            instrument_proxies=structure.instrument_proxies,
+        )
+
     def _track_id_for_file(self, audio_path: Path) -> str:
         """Generate a cache-safe track ID from a file path."""
         return path_based_track_id(audio_path)
+
+    def _effective_profile_for_track(self, audio_path: Path) -> ProfileConfig | None:
+        if self._profile_resolver is None:
+            return self._profile
+        return self._profile_resolver(audio_path, self._profile)
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +373,7 @@ class LocalPlaylistSession:
         *,
         cache: ShowCache,
         profile: ProfileConfig | None = None,
+        profile_resolver: ProfileResolver | None = None,
         sample_rate: int = 44100,
         audio_device: int | None = None,
         debug: bool = False,
@@ -217,6 +382,7 @@ class LocalPlaylistSession:
         self._playlist = playlist
         self._cache = cache
         self._profile = profile
+        self._profile_resolver = profile_resolver
         self._sample_rate = sample_rate
         self._audio_device = audio_device
         self._debug = debug
@@ -236,6 +402,7 @@ class LocalPlaylistSession:
             multi_adapter,
             cache=cache,
             profile=profile,
+            profile_resolver=profile_resolver,
             sample_rate=sample_rate,
             audio_device=audio_device,
             debug=debug,
@@ -245,6 +412,17 @@ class LocalPlaylistSession:
         self._tracks_played: int = 0
         self._tracks_skipped: int = 0
         self._precompiled: int = 0
+        self._status_lock = threading.RLock()
+        self._current_track: Path | None = None
+        self._current_player: AudioPlayer | None = None
+        self._current_timeline: ShowTimeline | None = None
+        self._playback_state: str = "idle"
+
+    def _set_playback_state(self, state: str, *, track: Path | None = None) -> None:
+        with self._status_lock:
+            if track is not None:
+                self._current_track = track
+            self._playback_state = state
 
     def run(self, stop_event: threading.Event) -> dict[str, Any]:
         """Play through the playlist. Blocks until exhausted or stopped."""
@@ -324,6 +502,10 @@ class LocalPlaylistSession:
         """Signal to go to the previous track (thread-safe)."""
         self._signal_prev.set()
 
+    def skip_current(self) -> None:
+        """Public alias for GUI and controller code."""
+        self.signal_next()
+
     def queue_snapshot(self) -> dict[str, Any]:
         """Return a stable snapshot of the current queue state."""
         tracks = self._playlist.snapshot()
@@ -332,6 +514,37 @@ class LocalPlaylistSession:
             "current_index": current_index,
             "tracks": tracks,
         }
+
+    def session_snapshot(self) -> dict[str, Any]:
+        """Return a lightweight status snapshot for controller/service consumers."""
+        with self._status_lock:
+            player = self._current_player
+            timeline = self._current_timeline
+            current_track = self._current_track
+            playback_state = self._playback_state
+            position_seconds = player.position_seconds if player is not None else 0.0
+            is_playing = player.playing if player is not None else False
+            duration_seconds = timeline.duration if timeline is not None else 0.0
+        return {
+            "current_track": current_track or self._playlist.current,
+            "current_index": self._playlist.current_index,
+            "tracks_played": self._tracks_played,
+            "tracks_skipped": self._tracks_skipped,
+            "precompiled": self._precompiled,
+            "queue": self.queue_snapshot(),
+            "playback_state": playback_state,
+            "is_playing": is_playing,
+            "position_seconds": position_seconds,
+            "duration_seconds": duration_seconds,
+            "audio_output": _format_audio_output_label(self._audio_device),
+            "device_status": _device_status_for_adapter(self._multi_adapter),
+        }
+
+    def preview_frame_snapshot(self) -> dict[str, Any]:
+        preview_snapshot = getattr(self._multi_adapter, "preview_snapshot", None)
+        if callable(preview_snapshot):
+            return dict(preview_snapshot())
+        return {"node_colors": {}}
 
     def remove_track(self, index: int) -> Path:
         """Remove an upcoming track from the queue."""
@@ -356,6 +569,19 @@ class LocalPlaylistSession:
         with self._control_lock:
             self._playlist.shuffle_upcoming()
 
+    def append_track(self, track: Path | str) -> Path:
+        """Append a new track to the queue and return the normalized path."""
+        with self._control_lock:
+            return self._playlist.append(track)
+
+    def insert_track(self, index: int, track: Path | str) -> Path:
+        """Insert a track into the upcoming queue and return the normalized path."""
+        with self._control_lock:
+            current_index = self._playlist.current_index
+            if index <= current_index:
+                index = current_index + 1
+            return self._playlist.insert(index, track)
+
     def play_now(self, index: int) -> None:
         """Interrupt the current track and jump to the selected queue entry."""
         with self._control_lock:
@@ -378,13 +604,16 @@ class LocalPlaylistSession:
         self._signal_jump.clear()
 
         # Compile show
+        self._set_playback_state("preparing", track=audio_path)
         timeline = self._session.load_track(audio_path)
         if timeline is None:
+            self._set_playback_state("compile_failed", track=audio_path)
             logger.warning("playlist: skipping '%s' (compilation failed)", audio_path.name)
             self._tracks_skipped += 1
             return "next"  # skip to next track
 
         # Create AudioPlayer
+        self._set_playback_state("loading_audio", track=audio_path)
         player = AudioPlayer(
             audio_path,
             sample_rate=self._sample_rate,
@@ -393,32 +622,55 @@ class LocalPlaylistSession:
 
         # Create runtime
         runtime = ShowPlaybackRuntime(timeline, self._multi_adapter)
+        with self._status_lock:
+            self._current_track = audio_path
+            self._current_player = player
+            self._current_timeline = timeline
+            self._playback_state = "starting_audio"
 
         # Play
         player.play()
+        with self._status_lock:
+            self._playback_state = "playing"
 
         try:
             while not stop_event.is_set():
                 # Check control signals
                 if self._signal_next.is_set():
+                    with self._status_lock:
+                        self._playback_state = "skipping"
                     return "next"
                 if self._signal_prev.is_set():
+                    with self._status_lock:
+                        self._playback_state = "rewinding"
                     return "prev"
                 if self._signal_jump.is_set():
+                    with self._status_lock:
+                        self._playback_state = "jumping"
                     return "jump"
 
                 if player.finished:
+                    with self._status_lock:
+                        self._playback_state = "finished"
                     return "finished"
 
                 if not player.playing:
+                    with self._status_lock:
+                        self._playback_state = "paused"
                     time.sleep(0.05)
                     continue
 
+                with self._status_lock:
+                    self._playback_state = "playing"
                 t = player.position_seconds
                 runtime.tick(t)
                 time.sleep(0.005)
         finally:
             player.stop()
+            with self._status_lock:
+                if self._playback_state not in {"finished", "jumping", "skipping", "rewinding"}:
+                    self._playback_state = "stopped"
+                self._current_player = None
 
         return "stopped"
 
@@ -429,7 +681,8 @@ class LocalPlaylistSession:
             try:
                 from dreamsync.playlist import content_hash_track_id
                 track_id = content_hash_track_id(track_path)
-                if not self._cache.has(track_id, self._profile):
+                effective_profile = self._session._effective_profile_for_track(track_path)
+                if not self._cache.has(track_id, effective_profile):
                     timeline = self._session.load_track(track_path)
                     if timeline is not None:
                         self._precompiled += 1
@@ -459,6 +712,7 @@ def run_local_session(
     sample_rate: int = 44100,
     audio_device: int | None = None,
     stop_event: threading.Event,
+    profile_resolver: ProfileResolver | None = None,
     debug: bool = False,
     playlist: PlaylistManager | None = None,
     session_ref: list[Any] | None = None,
@@ -472,6 +726,7 @@ def run_local_session(
             playlist,
             cache=cache,
             profile=profile,
+            profile_resolver=profile_resolver,
             sample_rate=sample_rate,
             audio_device=audio_device,
             debug=debug,
@@ -484,6 +739,7 @@ def run_local_session(
             multi_adapter,
             cache=cache,
             profile=profile,
+            profile_resolver=profile_resolver,
             sample_rate=sample_rate,
             audio_device=audio_device,
             debug=debug,

@@ -8,15 +8,20 @@ import numpy as np
 
 from dreamsync.director import Director
 from dreamsync.live import (
+    EQ_BAND_NAMES,
     LiveBpmEstimator,
     NoiseFloorEstimator,
     PercussiveOnsetTracker,
+    _build_eq_band_masks,
+    _compute_eq_band_features,
     _compute_whitened_flux,
     _feature_row_from_frame,
     _prepare_bass_window,
     _spectral_features,
 )
 from dreamsync.mood import MoodClassifier
+
+_ZERO_EQ_BANDS: tuple[float, ...] = (0.0,) * len(EQ_BAND_NAMES)
 
 
 @dataclass(frozen=True)
@@ -35,6 +40,14 @@ class FeatureRow:
     mood: str               # "chill" | "groove" | "hype" | "drop"
     mfcc: tuple[float, ...] = (0.0,) * 13    # 13 MFCC coefficients
     chroma: tuple[float, ...] = (1/12,) * 12  # 12 chroma pitch-class bins
+    pan_center: float = 0.0
+    pan_width: float = 0.0
+    left_energy: float = 0.0
+    right_energy: float = 0.0
+    band_energies: tuple[float, ...] = _ZERO_EQ_BANDS
+    band_ratios: tuple[float, ...] = _ZERO_EQ_BANDS
+    band_fluxes: tuple[float, ...] = _ZERO_EQ_BANDS
+    band_pan_centers: tuple[float, ...] = _ZERO_EQ_BANDS
 
 
 # ---------------------------------------------------------------------------
@@ -142,10 +155,26 @@ class OfflineFeaturePipeline:
         self.hop_size = hop_size
 
     def extract(self, signal: np.ndarray) -> list[FeatureRow]:
-        """Run the full analysis pipeline on a mono float32 PCM signal.
+        """Run the full analysis pipeline on a mono or stereo float32 PCM signal.
 
         Returns a list of FeatureRow, one per frame.
         """
+        signal_array = np.asarray(signal, dtype=np.float32)
+        if signal_array.ndim == 1:
+            mono_signal = signal_array
+            stereo_signal: np.ndarray | None = None
+        elif signal_array.ndim == 2:
+            if signal_array.shape[1] >= 2:
+                stereo_signal = signal_array[:, :2]
+                mono_signal = stereo_signal.mean(axis=1, dtype=np.float32)
+            elif signal_array.shape[1] == 1:
+                stereo_signal = None
+                mono_signal = signal_array[:, 0]
+            else:
+                return []
+        else:
+            raise ValueError("signal must be 1-D mono or 2-D channel-major PCM")
+
         sr = self.sample_rate
         frame_size = self.frame_size
         hop_size = self.hop_size
@@ -154,6 +183,7 @@ class OfflineFeaturePipeline:
         window, bass_mask, kick_mask, freqs = _prepare_bass_window(frame_size, sr)
         n_bins = frame_size // 2 + 1
         perc_freq_mask = freqs <= 300.0
+        band_masks = _build_eq_band_masks(freqs)
 
         # Pre-compute mel filterbank and DCT matrix for MFCC/chroma
         mel_fb = _mel_filterbank(n_mels=40, n_fft=frame_size, sr=sr)
@@ -182,11 +212,17 @@ class OfflineFeaturePipeline:
         rows: list[FeatureRow] = []
 
         # Frame the signal and process
-        n_samples = len(signal)
+        n_samples = len(mono_signal)
         pos = 0
         while pos + frame_size <= n_samples:
-            frame = signal[pos : pos + frame_size]
+            frame = mono_signal[pos : pos + frame_size]
             rms = float(np.sqrt(np.mean(frame ** 2)))
+            stereo_frame = stereo_signal[pos : pos + frame_size] if stereo_signal is not None else None
+            pan_center, pan_width, left_energy, right_energy, band_pan_centers = _stereo_pan_features(
+                stereo_frame,
+                window,
+                band_masks,
+            )
 
             # Noise floor
             nf = noise_estimator.noise_floor if noise_estimator.ready else None
@@ -254,9 +290,60 @@ class OfflineFeaturePipeline:
                 mood=mood.value,
                 mfcc=mfcc,
                 chroma=chroma,
+                pan_center=pan_center,
+                pan_width=pan_width,
+                left_energy=left_energy,
+                right_energy=right_energy,
+                band_energies=sf.band_energies,
+                band_ratios=sf.band_ratios,
+                band_fluxes=sf.band_fluxes,
+                band_pan_centers=band_pan_centers,
             ))
 
             stream_t += hop_size / sr
             pos += hop_size
 
         return rows
+
+
+def _stereo_pan_features(
+    stereo_frame: np.ndarray | None,
+    window: np.ndarray,
+    band_masks: tuple[np.ndarray, ...],
+) -> tuple[float, float, float, float, tuple[float, ...]]:
+    if stereo_frame is None or stereo_frame.ndim != 2 or stereo_frame.shape[1] < 2:
+        return 0.0, 0.0, 0.0, 0.0, _ZERO_EQ_BANDS
+
+    left = np.asarray(stereo_frame[:, 0], dtype=np.float32)
+    right = np.asarray(stereo_frame[:, 1], dtype=np.float32)
+    left_energy = float(np.mean(left ** 2))
+    right_energy = float(np.mean(right ** 2))
+    total_energy = left_energy + right_energy + 1e-8
+    pan_center = float((right_energy - left_energy) / total_energy)
+    width_num = float(np.mean(np.abs(left - right)))
+    width_den = float(np.mean(np.abs(left) + np.abs(right))) + 1e-8
+    pan_width = max(0.0, min(1.0, width_num / width_den))
+
+    left_mag = np.abs(np.fft.rfft(left * window))
+    right_mag = np.abs(np.fft.rfft(right * window))
+    left_band_energies, _left_ratios, _left_fluxes = _compute_eq_band_features(
+        left_mag,
+        None,
+        band_masks,
+    )
+    right_band_energies, _right_ratios, _right_fluxes = _compute_eq_band_features(
+        right_mag,
+        None,
+        band_masks,
+    )
+    band_pan_centers = tuple(
+        float((right_band - left_band) / (right_band + left_band + 1e-8))
+        for left_band, right_band in zip(left_band_energies, right_band_energies)
+    )
+    return (
+        pan_center,
+        pan_width,
+        left_energy,
+        right_energy,
+        band_pan_centers,
+    )
