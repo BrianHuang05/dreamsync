@@ -9,6 +9,7 @@ from dreamsync.analyzer.separation import (
     NoOpStemSeparationBackend,
     StemArtifact,
     StemBackendRegistry,
+    stem_artifact_metadata,
 )
 
 
@@ -47,3 +48,25 @@ def test_registry_resolves_registered_backend():
     resolved = registry.resolve("dummy")
     assert resolved is backend
     assert registry.names() == ("dummy",)
+
+
+def test_stem_artifact_metadata_preserves_mixed_source_hints():
+    artifact = StemArtifact(
+        name="vocals_hint",
+        sample_rate=44100,
+        kind="enhancement",
+        confidence=0.72,
+        proxy_envelope=(0.1, 0.4, 0.8),
+        pan_hint=0.22,
+        width_hint=0.31,
+        metadata={"source": "mixed"},
+    )
+
+    data = stem_artifact_metadata(artifact)
+    assert data["name"] == "vocals_hint"
+    assert data["kind"] == "enhancement"
+    assert data["confidence"] == 0.72
+    assert data["proxy_envelope"] == [0.1, 0.4, 0.8]
+    assert data["pan_hint"] == 0.22
+    assert data["width_hint"] == 0.31
+    assert data["metadata"]["source"] == "mixed"

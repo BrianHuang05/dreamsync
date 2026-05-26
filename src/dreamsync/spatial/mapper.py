@@ -255,7 +255,9 @@ class SpatialMapper:
     ) -> tuple[SpatialSpec, tuple[ResolvedSpatialLayer, ...]]:
         base_params = dict(params or {})
         base_spec = self.resolve_spatial_spec(intent, params=base_params)
-        raw_layers = base_params.get("eq_layers")
+        raw_layers = base_params.get("scene_layers")
+        if not isinstance(raw_layers, list):
+            raw_layers = base_params.get("eq_layers")
         if not isinstance(raw_layers, list):
             return base_spec, ()
 

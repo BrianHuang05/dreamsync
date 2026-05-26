@@ -12,7 +12,7 @@ from dreamsync.analyzer.features import OfflineFeaturePipeline
 from dreamsync.analyzer.instruments import InstrumentHeuristicAnalyzer
 from dreamsync.analyzer.models import SongStructure
 from dreamsync.analyzer.phrases import InstrumentEventDetector, PhraseSegmenter
-from dreamsync.analyzer.separation import StemSeparationBackend
+from dreamsync.analyzer.separation import StemSeparationBackend, stem_artifact_metadata
 from dreamsync.analyzer.sections import SectionSegmenter
 
 
@@ -74,6 +74,10 @@ def analyze_song(
         result_metadata["stem_backend"] = stem_backend.backend_name
     if stem_artifacts:
         result_metadata["available_stems"] = sorted(stem_artifacts)
+        result_metadata["stem_artifacts"] = {
+            name: stem_artifact_metadata(artifact)
+            for name, artifact in sorted(stem_artifacts.items())
+        }
 
     return SongStructure(
         path=str(mp3_path),

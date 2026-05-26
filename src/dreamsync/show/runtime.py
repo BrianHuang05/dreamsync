@@ -10,6 +10,7 @@ from typing import Any
 from dreamsync.director import EffectMode, LightingIntent
 from dreamsync.output.roles import adapt_render_mode, DeviceType
 from dreamsync.render import RenderMode
+from dreamsync.show.runtime_control import RuntimeControlState, apply_runtime_control_to_cue
 from dreamsync.show.models import ShowCue, ShowTimeline
 
 # Mapping from ShowCue.render_mode → (EffectMode, RenderMode)
@@ -33,11 +34,14 @@ class ShowPlaybackRuntime:
         *,
         beat_tolerance: float | None = None,
         color_cycle_mode: str = "downbeat",
+        control_state_getter=None,
     ) -> None:
         self._timeline = timeline
         self._multi_adapter = multi_adapter
+        self._control_state_getter = control_state_getter
 
         self._current_cue: ShowCue | None = None
+        self._current_source_cue: ShowCue | None = None
         self._color_index: int = 0
         self._prev_color_index: int = 0
         self._beat_fired: bool = False
@@ -72,13 +76,17 @@ class ShowPlaybackRuntime:
         cue = self._timeline.cue_at(t)
         if cue is None:
             return False
+        control_state = self._control_state()
+        effective_cue = apply_runtime_control_to_cue(cue, control_state)
 
         # Handle cue change
-        if cue is not self._current_cue:
-            self._on_cue_change(cue, t)
+        if cue is not self._current_source_cue:
+            self._on_cue_change(effective_cue, t)
+            self._current_source_cue = cue
+        self._current_cue = effective_cue
 
         # Build LightingIntent
-        intent = self._build_intent(cue, t)
+        intent = self._build_intent(effective_cue, t)
 
         # Check beat and downbeat grids
         beat = self._timeline.is_beat(t, tolerance=self._beat_tolerance)
@@ -94,7 +102,7 @@ class ShowPlaybackRuntime:
 
         if should_cycle:
             self._prev_color_index = self._color_index
-            self._color_index = (self._color_index + 1) % len(cue.color_palette)
+            self._color_index = (self._color_index + 1) % len(effective_cue.color_palette)
             self._color_blend_start_t = t
             self._beat_fired = True
             self._beats_hit += 1
@@ -102,7 +110,10 @@ class ShowPlaybackRuntime:
             self._beat_fired = False
 
         # Render + send
-        sent = self._multi_adapter.send_frame(t, intent, beat=beat, params=cue.params)
+        runtime_params = dict(effective_cue.params)
+        runtime_params["_render_mode"] = effective_cue.render_mode
+        runtime_params["_spatial_palette"] = effective_cue.color_palette
+        sent = self._multi_adapter.send_frame(t, intent, beat=beat, params=runtime_params)
         if sent:
             self._frames_sent += 1
         return sent
@@ -213,6 +224,11 @@ class ShowPlaybackRuntime:
             bpm=self._timeline.bpm,
             color=color,
         )
+
+    def _control_state(self) -> RuntimeControlState | None:
+        if self._control_state_getter is None:
+            return None
+        return self._control_state_getter()
 
 
 def _lerp(a: float, b: float, t: float) -> float:

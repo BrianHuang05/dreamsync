@@ -123,6 +123,8 @@ _INSTRUMENT_ROUTE_DEFAULTS: dict[tuple[str, str], dict[str, object]] = {
         "color_bias": "#ff8a3d",
         "render_mode": "pulse",
         "spatial_preset": "flash_floor_only",
+        "pan_follow": 0.18,
+        "width_scale": 1.05,
         "confidence_min": 0.42,
         "intensity_boost": 0.10,
     },
@@ -132,6 +134,8 @@ _INSTRUMENT_ROUTE_DEFAULTS: dict[tuple[str, str], dict[str, object]] = {
         "color_bias": "#ff8a3d",
         "render_mode": "pulse",
         "spatial_preset": "flash_floor_only",
+        "pan_follow": 0.14,
+        "width_scale": 1.0,
         "confidence_min": 0.42,
         "intensity_boost": 0.16,
     },
@@ -141,6 +145,8 @@ _INSTRUMENT_ROUTE_DEFAULTS: dict[tuple[str, str], dict[str, object]] = {
         "color_bias": "#cceeff",
         "render_mode": "gradient",
         "spatial_preset": "blend_left_to_right",
+        "pan_follow": 0.72,
+        "width_scale": 1.35,
         "confidence_min": 0.48,
         "intensity_boost": 0.08,
     },
@@ -150,6 +156,8 @@ _INSTRUMENT_ROUTE_DEFAULTS: dict[tuple[str, str], dict[str, object]] = {
         "color_bias": "#cceeff",
         "render_mode": "gradient",
         "spatial_preset": "blend_front_to_back",
+        "pan_follow": 0.52,
+        "width_scale": 1.22,
         "confidence_min": 0.48,
         "intensity_boost": 0.04,
     },
@@ -159,6 +167,8 @@ _INSTRUMENT_ROUTE_DEFAULTS: dict[tuple[str, str], dict[str, object]] = {
         "color_bias": "#b38cff",
         "render_mode": "wave",
         "spatial_preset": "blend_front_to_back",
+        "pan_follow": 0.38,
+        "width_scale": 1.28,
         "confidence_min": 0.45,
         "intensity_boost": 0.04,
     },
@@ -168,6 +178,8 @@ _INSTRUMENT_ROUTE_DEFAULTS: dict[tuple[str, str], dict[str, object]] = {
         "color_bias": "#ffd07a",
         "render_mode": "pulse",
         "spatial_preset": "ripple_from_center",
+        "pan_follow": 0.10,
+        "width_scale": 1.08,
         "confidence_min": 0.48,
         "intensity_boost": 0.06,
     },
@@ -384,7 +396,9 @@ class TimelineAssembler:
 
         all_active_routes = active_instrument_routes + active_eq_routes
         if all_active_routes:
-            params["eq_layers"] = self._build_route_layers(all_active_routes)
+            scene_layers = self._build_route_layers(all_active_routes)
+            params["scene_layers"] = scene_layers
+            params["eq_layers"] = scene_layers
             intensity = self._apply_route_intensity(intensity, all_active_routes)
             route_render_mode = self._first_route_value(all_active_routes, "render_mode")
             route_spatial_preset = self._first_route_value(all_active_routes, "spatial_preset")
@@ -785,9 +799,11 @@ class TimelineAssembler:
             "end_t": proxy.end_t,
             "parent_section_index": proxy.parent_section_index,
             "dominant_proxy": proxy.dominant_proxy,
+            "secondary_proxy": proxy.secondary_proxy,
             "drums": proxy.drums,
             "bass": proxy.bass,
             "vocals": proxy.vocals,
             "harmonic": proxy.harmonic,
             "percussive": proxy.percussive,
+            "active_proxies": tuple(proxy.active_proxies),
         }

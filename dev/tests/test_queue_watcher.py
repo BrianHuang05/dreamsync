@@ -185,3 +185,22 @@ class TestLifecycle:
         _ = watcher.auth_failed
 
         watcher.stop()
+
+    def test_snapshot_returns_combined_state(self):
+        track = _track("a")
+        client = MagicMock()
+        client.get_playback_state = MagicMock(return_value=_playback(track))
+        client.get_queue = MagicMock(return_value=_queue_snap(track))
+
+        watcher = SpotifyQueueWatcher(client, poll_interval=0.05)
+        watcher.start()
+        time.sleep(0.2)
+
+        snapshot = watcher.snapshot()
+
+        assert snapshot["current_track"] is not None
+        assert snapshot["playback_state"] is not None
+        assert snapshot["queue"] is not None
+        assert snapshot["auth_failed"] is False
+
+        watcher.stop()

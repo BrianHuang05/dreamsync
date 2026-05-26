@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+from dreamsync.ffmpeg import resolve_ffmpeg
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +30,13 @@ class WriterConfig:
 
 
 def check_ffmpeg() -> bool:
-    """Return True if ffmpeg is available on PATH."""
+    """Return True if ffmpeg is available."""
+    ffmpeg = resolve_ffmpeg()
+    if ffmpeg is None:
+        return False
     try:
         subprocess.run(
-            ["ffmpeg", "-version"],
+            [ffmpeg, "-version"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=True,
@@ -123,6 +127,9 @@ class SongFileWriter:
 
     def _encode_mp3(self, pcm: np.ndarray, output_path: Path) -> None:
         """Pipe raw PCM to ffmpeg, produce mp3 file."""
+        ffmpeg = resolve_ffmpeg()
+        if ffmpeg is None:
+            raise EncodeError("ffmpeg not found on PATH — install ffmpeg")
         # Flatten to 1-D for mono, interleave for multi-channel
         if pcm.ndim == 2:
             # (channels, frames) → interleaved (frames * channels,)
@@ -132,7 +139,7 @@ class SongFileWriter:
         pcm_int16 = (np.clip(pcm, -1.0, 1.0) * 32767).astype(np.int16)
 
         cmd = [
-            "ffmpeg",
+            ffmpeg,
             "-f", "s16le",
             "-ar", str(self._config.sample_rate),
             "-ac", str(self._config.channels),

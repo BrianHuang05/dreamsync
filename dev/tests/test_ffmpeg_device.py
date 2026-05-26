@@ -89,8 +89,9 @@ class TestParseDeviceList:
 # ---------------------------------------------------------------------------
 
 class TestDiscoverAudioDevice:
+    @patch("dreamsync.capture.ffmpeg_device.resolve_ffmpeg", return_value="ffmpeg")
     @patch("dreamsync.capture.ffmpeg_device.subprocess.run")
-    def test_returns_device_name(self, mock_run):
+    def test_returns_device_name(self, mock_run, _mock_resolve):
         mock_run.return_value = MagicMock(
             stderr=STDERR_MULTIPLE_DEVICES,
             returncode=1,  # ffmpeg exits non-zero with -i dummy
@@ -99,28 +100,32 @@ class TestDiscoverAudioDevice:
         assert result == "CABLE Output (VB-Audio Virtual Cable)"
         mock_run.assert_called_once()
 
+    @patch("dreamsync.capture.ffmpeg_device.resolve_ffmpeg", return_value="ffmpeg")
     @patch("dreamsync.capture.ffmpeg_device.subprocess.run")
-    def test_returns_none_when_not_found(self, mock_run):
+    def test_returns_none_when_not_found(self, mock_run, _mock_resolve):
         mock_run.return_value = MagicMock(
             stderr=STDERR_NO_CABLE, returncode=1,
         )
         result = discover_audio_device("CABLE Output")
         assert result is None
 
+    @patch("dreamsync.capture.ffmpeg_device.resolve_ffmpeg", return_value=None)
     @patch("dreamsync.capture.ffmpeg_device.subprocess.run")
-    def test_handles_ffmpeg_not_found(self, mock_run):
-        mock_run.side_effect = FileNotFoundError
+    def test_handles_ffmpeg_not_found(self, mock_run, _mock_resolve):
         result = discover_audio_device()
         assert result is None
+        mock_run.assert_not_called()
 
+    @patch("dreamsync.capture.ffmpeg_device.resolve_ffmpeg", return_value="ffmpeg")
     @patch("dreamsync.capture.ffmpeg_device.subprocess.run")
-    def test_handles_timeout(self, mock_run):
+    def test_handles_timeout(self, mock_run, _mock_resolve):
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="ffmpeg", timeout=10)
         result = discover_audio_device()
         assert result is None
 
+    @patch("dreamsync.capture.ffmpeg_device.resolve_ffmpeg", return_value="ffmpeg")
     @patch("dreamsync.capture.ffmpeg_device.subprocess.run")
-    def test_custom_pattern(self, mock_run):
+    def test_custom_pattern(self, mock_run, _mock_resolve):
         mock_run.return_value = MagicMock(
             stderr=STDERR_MULTIPLE_DEVICES, returncode=1,
         )

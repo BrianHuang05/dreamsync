@@ -9,6 +9,7 @@ import threading
 from dataclasses import dataclass
 
 from dreamsync.capture.ffmpeg_device import discover_audio_device
+from dreamsync.ffmpeg import resolve_ffmpeg
 
 logger = logging.getLogger(__name__)
 
@@ -135,8 +136,11 @@ class CaptureProcessManager:
 
     def _build_command(self, device_name: str) -> list[str]:
         cfg = self._config
+        ffmpeg = resolve_ffmpeg()
+        if ffmpeg is None:
+            raise RuntimeError("ffmpeg not found on PATH")
         return [
-            "ffmpeg",
+            ffmpeg,
             "-hide_banner",
             "-loglevel", "warning",
             "-thread_queue_size", str(cfg.thread_queue_size),

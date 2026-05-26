@@ -120,7 +120,7 @@ class TestInstrumentHeuristicAnalyzer:
 
         proxy = InstrumentHeuristicAnalyzer().analyze([phrase], features)[0]
         assert proxy.dominant_proxy in {"drums", "percussive"}
-        assert proxy.drums >= 0.5
+        assert proxy.drums >= 0.3
         assert proxy.percussive >= 0.45
         assert proxy.drums > proxy.vocals
 
@@ -153,6 +153,7 @@ class TestInstrumentHeuristicAnalyzer:
         assert proxy.vocals > proxy.drums
         assert proxy.vocals > proxy.bass
         assert proxy.vocals >= 0.45
+        assert proxy.active_proxies[0] == "vocals"
 
     def test_proxy_preserves_phrase_pan_summary(self):
         phrase = Phrase(
@@ -182,3 +183,93 @@ class TestInstrumentHeuristicAnalyzer:
         assert proxy.pan_width == pytest.approx(0.36, abs=1e-4)
         pan_map = dict(zip(EQ_BAND_NAMES, proxy.band_pan_centers))
         assert pan_map["presence"] > pan_map["mid"]
+
+    def test_high_flux_phrase_does_not_saturate_all_proxy_scores(self):
+        phrase = Phrase(
+            start_t=32.0,
+            end_t=40.0,
+            parent_section_index=4,
+            phrase_type="steady",
+            energy_delta=0.0,
+            has_kick=True,
+            band_ratios=_band_vector(
+                sub=0.08,
+                kick=0.12,
+                bass=0.23,
+                low_mid=0.22,
+                mid=0.16,
+                presence=0.11,
+                air=0.08,
+            ),
+            band_fluxes=_band_vector(
+                sub=11.0,
+                kick=31.0,
+                bass=49.0,
+                low_mid=32.0,
+                mid=29.0,
+                presence=14.0,
+                air=7.0,
+            ),
+            dominant_band="bass",
+        )
+        features = _make_features(
+            32.0,
+            40.0,
+            bass_ratio=0.24,
+            kick_flux=31.0,
+            onset_strength=0.42,
+            spectral_flux=48.0,
+            pan_center=0.03,
+            pan_width=0.41,
+            band_ratios=phrase.band_ratios,
+            band_fluxes=phrase.band_fluxes,
+            band_pan_centers=_band_vector(bass=-0.04, presence=0.03),
+            chroma=_chroma_vector(5),
+        )
+
+        proxy = InstrumentHeuristicAnalyzer().analyze([phrase], features)[0]
+        scores = {
+            "drums": proxy.drums,
+            "bass": proxy.bass,
+            "vocals": proxy.vocals,
+            "harmonic": proxy.harmonic,
+            "percussive": proxy.percussive,
+        }
+
+        assert scores["drums"] < 1.0
+        assert scores["vocals"] < 1.0
+        assert scores["percussive"] < 1.0
+        assert len({round(value, 4) for value in scores.values()}) >= 4
+        assert proxy.dominant_proxy in {"drums", "bass", "percussive", "harmonic"}
+
+    def test_specific_proxy_can_lead_when_drums_are_only_slightly_higher(self):
+        phrase = Phrase(
+            start_t=40.0,
+            end_t=48.0,
+            parent_section_index=5,
+            phrase_type="steady",
+            energy_delta=0.0,
+            has_kick=True,
+            band_ratios=_band_vector(kick=0.08, bass=0.16, low_mid=0.16, mid=0.20, presence=0.23),
+            band_fluxes=_band_vector(kick=0.22, presence=0.08, mid=0.06),
+            dominant_band="presence",
+        )
+        features = _make_features(
+            40.0,
+            48.0,
+            bass_ratio=0.14,
+            kick_flux=14.0,
+            onset_strength=0.28,
+            spectral_flux=24.0,
+            pan_center=0.05,
+            pan_width=0.22,
+            band_ratios=phrase.band_ratios,
+            band_fluxes=phrase.band_fluxes,
+            chroma=_chroma_vector(4, value=0.9),
+        )
+
+        proxy = InstrumentHeuristicAnalyzer().analyze([phrase], features)[0]
+        assert proxy.drums > proxy.vocals
+        assert proxy.dominant_proxy == "vocals"
+        assert proxy.secondary_proxy in {"drums", "harmonic"}
+        assert proxy.active_proxies[0] == "vocals"

@@ -13,6 +13,7 @@ import pytest
 from dreamsync.director import EffectMode, LightingIntent
 from dreamsync.render import RenderMode
 from dreamsync.show.models import ShowCue, ShowTimeline
+from dreamsync.show.runtime_control import RuntimeControlState
 from dreamsync.show.runtime import (
     ShowPlaybackRuntime, _interpolate_hex, _lerp, run_show_playback,
 )
@@ -175,6 +176,46 @@ class TestIntentConstruction:
         runtime.tick(5.0)
         intent = adapter.send_frame.call_args[0][1]
         assert intent.color in ("#ff0000", "#00ff00", "#0000ff")
+
+    def test_runtime_params_include_spatial_render_metadata(self):
+        cue = _make_cue(
+            0.0,
+            render_mode="gradient",
+            params={"spatial_mode": "blend"},
+            color_palette=("#111111", "#222222", "#333333"),
+        )
+        tl = _make_timeline(cues=(cue,))
+        adapter = _mock_multi_adapter()
+        runtime = ShowPlaybackRuntime(tl, adapter)
+        runtime.tick(0.0)
+        params = adapter.send_frame.call_args[1]["params"]
+        assert params["_render_mode"] == "gradient"
+        assert params["_spatial_palette"] == cue.color_palette
+        assert params["spatial_mode"] == "blend"
+
+    def test_runtime_control_can_override_cue_palette_and_render_mode(self):
+        cue = _make_cue(
+            0.0,
+            render_mode="scroll",
+            intensity=0.4,
+            color_palette=("#111111", "#222222", "#333333"),
+        )
+        tl = _make_timeline(cues=(cue,))
+        adapter = _mock_multi_adapter()
+        state = RuntimeControlState(
+            palette_override=("#abcdef", "#123456", "#654321"),
+            render_mode="gradient",
+            intensity_multiplier=1.25,
+        )
+        runtime = ShowPlaybackRuntime(tl, adapter, control_state_getter=lambda: state)
+        runtime.tick(0.0)
+        intent = adapter.send_frame.call_args[0][1]
+        params = adapter.send_frame.call_args[1]["params"]
+        assert runtime.current_cue is not None
+        assert runtime.current_cue.render_mode == "gradient"
+        assert intent.intensity == pytest.approx(0.5)
+        assert params["_render_mode"] == "gradient"
+        assert params["_spatial_palette"][0] == "#abcdef"
 
 
 # ---------------------------------------------------------------------------

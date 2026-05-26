@@ -45,6 +45,29 @@ palettes:
 #     render_mode: "scroll"
 #     color_bias: "#00ccff"
 
+# Instrument routing rules (optional)
+# Route heuristic instrument proxies to lighting and spatial behavior.
+# Valid instruments: drums, bass, vocals, harmonic, percussive
+# Valid "when" values: dominant, present, enter, drop
+# Useful pan-aware fields:
+#   spatial_preset: choose a spatial behavior such as blend_left_to_right
+#   pan_follow:     0.0-1.0, how strongly stereo pan shifts the route left/right
+#   width_scale:    expands or narrows placement based on detected pan width
+# instrument_routes:
+#   - instrument: "vocals"
+#     when: "dominant"
+#     render_mode: "gradient"
+#     color_bias: "#cceeff"
+#     spatial_preset: "blend_left_to_right"
+#     pan_follow: 0.7
+#     width_scale: 1.3
+#   - instrument: "harmonic"
+#     when: "present"
+#     render_mode: "wave"
+#     spatial_preset: "blend_front_to_back"
+#     pan_follow: 0.35
+#     width_scale: 1.2
+
 # Per-mood configuration — all 4 moods must be defined
 moods:
   chill:
@@ -63,6 +86,10 @@ moods:
     #   - band: "bass"
     #     when: "dominant"
     #     color_bias: "#ff8800"
+    # instrument_routes:
+    #   - instrument: "vocals"
+    #     when: "present"
+    #     pan_follow: 0.55
 
   hype:
     palettes: ["my_intense", "my_accent"]

@@ -27,12 +27,14 @@ class ShowPipelineWorker:
         max_workers: int = 2,
         ready_queue: queue.Queue | None = None,
         debug: bool = False,
+        state_callback=None,
     ) -> None:
         self._cache = cache
         self._profile = profile
         self._sample_rate = sample_rate
         self._debug = debug
         self._ready_queue = ready_queue or queue.Queue()
+        self._state_callback = state_callback
 
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="show-pipeline"
@@ -80,12 +82,15 @@ class ShowPipelineWorker:
         from .cache import ShowCache, cached_compile_show, path_based_track_id
 
         try:
+            self._emit_state(mp3_path, "analyzing")
             structure = analyze_song(mp3_path, sample_rate=self._sample_rate)
+            self._emit_state(mp3_path, "compiling")
             track_id = path_based_track_id(mp3_path)
             timeline, _from_cache = cached_compile_show(
                 structure, self._profile, cache=self._cache, track_id=track_id
             )
             self._ready_queue.put((mp3_path, timeline))
+            self._emit_state(mp3_path, "ready", timeline=timeline)
             with self._lock:
                 self._processed += 1
             if self._debug:
@@ -96,5 +101,11 @@ class ShowPipelineWorker:
         except Exception as exc:
             with self._lock:
                 self._errors.append((mp3_path, str(exc)))
+            self._emit_state(mp3_path, "failed", error=exc)
             if self._debug:
                 print(f"[pipeline] Failed: {mp3_path.name}: {exc}")
+
+    def _emit_state(self, mp3_path: Path, state: str, *, timeline=None, error: Exception | None = None) -> None:
+        if self._state_callback is None:
+            return
+        self._state_callback(mp3_path, state, timeline=timeline, error=error)

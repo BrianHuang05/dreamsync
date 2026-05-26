@@ -211,6 +211,24 @@ class TestMutableQueue:
         assert shuffled[0] == original[0]
         assert shuffled[1:] == list(reversed(original[1:]))
 
+    def test_append_adds_track_to_end(self, tmp_path):
+        for name in ("a.mp3", "b.mp3", "c.mp3"):
+            (tmp_path / name).touch()
+
+        pl = PlaylistManager.from_tracks([tmp_path / "a.mp3", tmp_path / "b.mp3"])
+        pl.append(tmp_path / "c.mp3")
+
+        assert [t.name for t in pl.snapshot()] == ["a.mp3", "b.mp3", "c.mp3"]
+
+    def test_insert_adds_track_at_absolute_index(self, tmp_path):
+        for name in ("a.mp3", "b.mp3", "c.mp3"):
+            (tmp_path / name).touch()
+
+        pl = PlaylistManager.from_tracks([tmp_path / "a.mp3", tmp_path / "c.mp3"])
+        pl.insert(1, tmp_path / "b.mp3")
+
+        assert [t.name for t in pl.snapshot()] == ["a.mp3", "b.mp3", "c.mp3"]
+
 
 # ---------------------------------------------------------------------------
 # Content Hash

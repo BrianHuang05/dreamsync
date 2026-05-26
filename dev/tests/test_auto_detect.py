@@ -1,6 +1,7 @@
 """Tests for the auto-detection module."""
 
 import socket
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -15,12 +16,15 @@ from dreamsync.output.auto_detect import (
     _probe_lan_batch,
     build_multi_adapter,
     classify_role,
+    device_config_to_mapping,
     detect_all_devices,
     load_device_config,
+    save_device_config,
 )
 from dreamsync.output.govee_lan import MultiGoveeLanAdapter, TransportMode
 from dreamsync.output.roles import DeviceRole
 from dreamsync.render import RenderMode
+from dreamsync.spatial.models import DevicePlacement, SectionPlacement
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +216,57 @@ class LoadDeviceConfigTests(unittest.TestCase):
         self.assertIsNone(configs[0].role)
         self.assertEqual(configs[0].max_fps, 5.0)
 
+    def test_device_config_to_mapping_includes_spatial_z(self) -> None:
+        cfg = DeviceConfig(
+            name="Desk",
+            address="10.0.0.1",
+            placement=DevicePlacement(x=0.2, y=-0.3, z=0.4),
+        )
+        mapping = device_config_to_mapping(cfg)
+
+        self.assertEqual(mapping["z"], 0.4)
+
+    def test_save_device_config_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "devices.yaml"
+            configs = [
+                DeviceConfig(
+                    name="Desk",
+                    address="10.0.0.1",
+                    placement=DevicePlacement(x=0.2, y=-0.3, z=0.4),
+                )
+            ]
+            save_device_config(path, configs)
+            loaded = load_device_config(path)
+
+        self.assertEqual(loaded[0].placement, DevicePlacement(x=0.2, y=-0.3, z=0.4))
+
+    def test_save_device_config_round_trip_with_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "devices.yaml"
+            configs = [
+                DeviceConfig(
+                    name="Desk",
+                    address="10.0.0.1",
+                    placement=DevicePlacement(
+                        x=0.0,
+                        y=0.0,
+                        z=0.0,
+                        sections=(
+                            SectionPlacement(index=0, x=-1.0, y=0.0, z=-0.5),
+                            SectionPlacement(index=1, x=1.0, y=1.0, z=0.5),
+                        ),
+                    ),
+                )
+            ]
+            save_device_config(path, configs)
+            loaded = load_device_config(path)
+
+        assert loaded[0].placement is not None
+        self.assertEqual(len(loaded[0].placement.sections), 2)
+        self.assertEqual(loaded[0].placement.sections[0].index, 0)
+        self.assertEqual(loaded[0].placement.sections[1].z, 0.5)
+
 
 # ---------------------------------------------------------------------------
 # build_multi_adapter tests
@@ -239,6 +294,7 @@ class BuildMultiAdapterTests(unittest.TestCase):
         self.assertEqual(adapter.config.segments, 15)
         self.assertEqual(role, DeviceRole.PRIMARY)
         self.assertIsNone(placement)
+        self.assertIsNone(multi._spatial_mapper)
 
     def test_unreachable_skipped(self) -> None:
         detected = [
@@ -306,6 +362,10 @@ class BuildMultiAdapterTests(unittest.TestCase):
         multi = build_multi_adapter(detected)
         self.assertEqual(len(multi.devices), 1)  # only LAN device
         self.assertEqual(len(multi._ble_followers), 1)
+        follower = multi._ble_followers[0]
+        self.assertIsInstance(follower, tuple)
+        self.assertEqual(follower[1], DeviceRole.PRIMARY)
+        self.assertIsNotNone(follower[4])
 
     def test_custom_role_from_config(self) -> None:
         detected = [
@@ -339,6 +399,26 @@ class BuildMultiAdapterTests(unittest.TestCase):
         _, renderer, _, _bs, _placement = multi.devices[0]
         self.assertEqual(renderer.mode, RenderMode.PULSE)
         self.assertFalse(renderer.mirror)
+
+    def test_spatial_mapper_enabled_when_config_has_placement(self) -> None:
+        detected = [
+            DetectedDevice(
+                name="Placed",
+                address="192.168.1.10",
+                connection_type="lan",
+                latency=LatencyStats(samples=[5.0]),
+                role="realtime",
+                config=DeviceConfig(
+                    name="Placed",
+                    address="192.168.1.10",
+                    placement=DevicePlacement(x=0.2, y=0.3, z=-0.4),
+                ),
+                transport=TransportMode.PTREAL,
+            ),
+        ]
+        multi = build_multi_adapter(detected)
+        self.assertIsNotNone(multi._spatial_mapper)
+        self.assertTrue(multi._spatial_mapper.enabled)
 
 
 # ---------------------------------------------------------------------------

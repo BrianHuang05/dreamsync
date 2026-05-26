@@ -1,0 +1,84 @@
+name: split_complementary_282_warm
+description: Generated split_complementary profile at hue 282 (warm/muted) — exported
+  from seed 42 index 3
+author: dreamsync-generator
+tags:
+- generated
+- primary:I
+- secondary:Y
+- warm
+- muted
+- split_complementary
+version: 1
+palettes:
+  calm:
+  - '#a18cba'
+  - '#bcbd85'
+  - '#7cbc80'
+  - '#9e74b8'
+  - '#a7b170'
+  - '#73ab7f'
+  energy:
+  - '#8964b4'
+  - '#b9ba5a'
+  - '#4cba53'
+  - '#8845b3'
+  - '#96a545'
+  - '#4b9b5c'
+  intense:
+  - '#7141aa'
+  - '#acae37'
+  - '#2fa736'
+  - '#6e2a98'
+  - '#79882b'
+  - '#307e40'
+moods:
+  chill:
+    palettes:
+    - calm
+    effects:
+    - name: wave_drift
+      weight: 3.0
+    - name: slow_breathe
+      weight: 2.0
+    - name: gradient_flow
+      weight: 2.0
+    params:
+      wave_rate_mult: 0.3
+  groove:
+    palettes:
+    - calm
+    - energy
+    effects:
+    - name: beat_pulse
+      weight: 3.0
+    - name: color_scroll
+      weight: 2.0
+  hype:
+    palettes:
+    - energy
+    - intense
+    effects:
+    - name: fast_scroll
+      weight: 2.0
+    - name: beat_pulse
+      weight: 1.0
+  drop:
+    palettes:
+    - intense
+    effects:
+    - name: drop_blast
+      weight: 1.0
+    params:
+      pulse_decay: 3.5
+transitions:
+- from: chill
+  to: groove
+  palette: calm
+- from: groove
+  to: hype
+  palette: energy
+- from: hype
+  to: drop
+  palette: intense
+cycle_interval: 22.0

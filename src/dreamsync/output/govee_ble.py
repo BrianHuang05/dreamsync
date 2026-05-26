@@ -210,6 +210,7 @@ class GoveeBleConfig:
 
 # Sentinel to signal the BLE thread to shut down
 _SHUTDOWN = object()
+_SEGMENT_FRAME = "segment_frame"
 
 
 @dataclass
@@ -236,8 +237,8 @@ class GoveeBleAdapter:
         self._started = False
         self._state = _BleState()
         self._lock = threading.Lock()
-        # Track last color to avoid redundant writes
-        self._last_color: tuple[int, int, int, int] | None = None
+        # Track last payload to avoid redundant writes
+        self._last_payload: object | None = None
         self.paused: bool = False
 
     @property
@@ -285,12 +286,12 @@ class GoveeBleAdapter:
         """
         if self.paused:
             return
-        key = (r, g, b, brightness)
-        if key == self._last_color:
+        payload = (r, g, b, brightness)
+        if payload == self._last_payload:
             return  # skip identical update
-        self._last_color = key
+        self._last_payload = payload
         try:
-            self._queue.put_nowait(key)
+            self._queue.put_nowait(payload)
         except queue.Full:
             # Drop oldest, enqueue latest
             try:
@@ -298,7 +299,35 @@ class GoveeBleAdapter:
             except queue.Empty:
                 pass
             try:
-                self._queue.put_nowait(key)
+                self._queue.put_nowait(payload)
+            except queue.Full:
+                pass
+
+    def send_segment_colors(
+        self,
+        colors: list[tuple[int, int, int]],
+        brightness: int = 100,
+    ) -> None:
+        """Queue a per-segment color update for BLE strip devices."""
+        if self.paused:
+            return
+        normalized = tuple(
+            (int(r) & 0xFF, int(g) & 0xFF, int(b) & 0xFF)
+            for r, g, b in colors
+        )
+        payload = (_SEGMENT_FRAME, normalized, int(max(0, min(100, brightness))))
+        if payload == self._last_payload:
+            return
+        self._last_payload = payload
+        try:
+            self._queue.put_nowait(payload)
+        except queue.Full:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._queue.put_nowait(payload)
             except queue.Full:
                 pass
 
@@ -391,7 +420,7 @@ class GoveeBleAdapter:
                 # Reset duplicate-suppression so the first post-reconnect
                 # color update always reaches the device, even if the mood
                 # hasn't changed while we were disconnected.
-                self._last_color = None
+                self._last_payload = None
 
                 # Initialize: power on + brightness
                 await self._ble_write(client, build_ptreal_power_packet(True))
@@ -425,7 +454,15 @@ class GoveeBleAdapter:
                             pass
                         return
 
-                    r, g, b, brightness = item
+                    is_segment_frame = (
+                        isinstance(item, tuple)
+                        and len(item) == 3
+                        and item[0] == _SEGMENT_FRAME
+                    )
+                    if is_segment_frame:
+                        _tag, colors, brightness = item
+                    else:
+                        r, g, b, brightness = item
 
                     # Rate limit
                     now = time.monotonic()
@@ -439,7 +476,16 @@ class GoveeBleAdapter:
                         last_brightness = brightness
 
                     # Set color using the appropriate protocol
-                    if self.config.protocol == BleProtocol.BULB:
+                    if is_segment_frame:
+                        if self.config.protocol == BleProtocol.BULB:
+                            colors_list = list(colors)
+                            mid = colors_list[len(colors_list) // 2] if colors_list else (0, 0, 0)
+                            await self._ble_write(client, build_ble_bulb_color_packet(*mid))
+                        else:
+                            packets = build_ptreal_segment_packets(list(colors))
+                            for pkt in packets:
+                                await self._ble_write(client, pkt)
+                    elif self.config.protocol == BleProtocol.BULB:
                         await self._ble_write(client, build_ble_bulb_color_packet(r, g, b))
                     else:
                         # SEGMENT: ptreal segment packets (H617A, H612F family)

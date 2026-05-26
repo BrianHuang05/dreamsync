@@ -203,6 +203,23 @@ class SpatialMapperTests(unittest.TestCase):
         self.assertEqual(layers[0].spec.origin, (0.55, 0.0, -1.0))
         self.assertEqual(layers[0].spec.width, 0.42)
 
+    def test_resolve_spatial_layers_prefers_scene_layers_when_present(self) -> None:
+        mapper = SpatialMapper(enabled=True)
+        _base_spec, layers = mapper.resolve_spatial_layers(
+            _intent(mode=EffectMode.AMBIENT),
+            params={
+                "spatial_mode": "wash",
+                "scene_layers": [
+                    {"instrument": "vocals", "spatial_preset": "blend_front_to_back", "color_bias": "#ddeeff"},
+                ],
+                "eq_layers": [
+                    {"band": "bass", "spatial_preset": "flash_floor_only", "color_bias": "#ff8800"},
+                ],
+            },
+        )
+        self.assertEqual(len(layers), 1)
+        self.assertEqual(layers[0].layer.instrument, "vocals")
+
     def test_mapping_is_deterministic(self) -> None:
         mapper = SpatialMapper(enabled=True)
         scene_a = mapper.map_show_cue(0.0, _cue("wave"), _intent())

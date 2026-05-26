@@ -218,6 +218,28 @@ class PlaylistManager:
             elif to_index <= self._index < from_index:
                 self._index += 1
 
+    def append(self, track: Path | str) -> Path:
+        """Append a track to the end of the playlist."""
+        path = Path(track)
+        if not path.is_file():
+            raise FileNotFoundError(f"Audio file not found: {path}")
+        with self._lock:
+            self._tracks.append(path)
+        return path
+
+    def insert(self, index: int, track: Path | str) -> Path:
+        """Insert a track at an absolute index."""
+        path = Path(track)
+        if not path.is_file():
+            raise FileNotFoundError(f"Audio file not found: {path}")
+        with self._lock:
+            if index < 0 or index > len(self._tracks):
+                raise IndexError(f"Track index out of range: {index}")
+            self._tracks.insert(index, path)
+            if index <= self._index:
+                self._index += 1
+        return path
+
     def shuffle_upcoming(self) -> None:
         """Shuffle tracks after the current one, keeping the current track fixed."""
         with self._lock:

@@ -86,6 +86,62 @@ class TestWriteFrame:
         assert row["active_eq_routes"][0]["when"] == "enter"
         assert row["band_ratios"]["bass"] == 0.24
 
+    def test_frame_preserves_live_stereo_pan_fields(self, tmp_path: Path) -> None:
+        writer = SongTelemetryWriter(tmp_path)
+        frame = _make_frame(0.5)
+        frame.update({
+            "input_channels": 2,
+            "stereo_preserved": True,
+            "pan_center": -0.42,
+            "pan_width": 0.37,
+            "left_energy": 0.08125,
+            "right_energy": 0.02475,
+            "band_pan_centers": {"bass": -0.51, "presence": 0.12},
+        })
+        writer.write_frame(frame)
+        writer.close()
+
+        song_file = list(tmp_path.glob("session-*/song-001.jsonl"))[0]
+        row = json.loads(song_file.read_text().strip().split("\n")[0])
+        assert row["input_channels"] == 2
+        assert row["stereo_preserved"] is True
+        assert row["pan_center"] == -0.42
+        assert row["pan_width"] == 0.37
+        assert row["left_energy"] == 0.08125
+        assert row["band_pan_centers"]["bass"] == -0.51
+
+    def test_frame_preserves_live_instrument_proxy_fields(self, tmp_path: Path) -> None:
+        writer = SongTelemetryWriter(tmp_path)
+        frame = _make_frame(0.75)
+        frame.update({
+            "dominant_proxy": "vocals",
+            "instrument_events": ["vocals_enter"],
+            "active_instruments": ["vocals"],
+            "active_instrument_routes": [
+                {"instrument": "vocals", "when": "dominant", "color_bias": "#99ddff"}
+            ],
+            "instrument_scores": {
+                "drums": 0.22,
+                "bass": 0.18,
+                "vocals": 0.71,
+                "harmonic": 0.49,
+                "percussive": 0.16,
+            },
+            "instrument_pan_center": 0.03,
+            "instrument_pan_width": 0.11,
+        })
+        writer.write_frame(frame)
+        writer.close()
+
+        song_file = list(tmp_path.glob("session-*/song-001.jsonl"))[0]
+        row = json.loads(song_file.read_text().strip().split("\n")[0])
+        assert row["dominant_proxy"] == "vocals"
+        assert row["instrument_events"] == ["vocals_enter"]
+        assert row["active_instruments"] == ["vocals"]
+        assert row["active_instrument_routes"][0]["when"] == "dominant"
+        assert row["instrument_scores"]["vocals"] == 0.71
+        assert row["instrument_pan_width"] == 0.11
+
 
 class TestOnBoundary:
     def test_rotates_file(self, tmp_path: Path) -> None:

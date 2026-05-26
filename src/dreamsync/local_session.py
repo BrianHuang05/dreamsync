@@ -16,6 +16,7 @@ from dreamsync.cache import ShowCache, cached_compile_show, path_based_track_id
 from dreamsync.show.models import ShowTimeline
 from dreamsync.show.player import AudioPlayer
 from dreamsync.show.runtime import ShowPlaybackRuntime
+from dreamsync.show.runtime_control import RuntimeControlBus, runtime_control_to_dict
 
 if TYPE_CHECKING:
     from dreamsync.playlist import PlaylistManager
@@ -23,7 +24,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 ProfileResolver = Callable[[Path, "ProfileConfig | None"], "ProfileConfig | None"]
-_ANALYSIS_CACHE_VERSION = 4
+TimelineResolver = Callable[[Path, ShowTimeline], ShowTimeline]
+_ANALYSIS_CACHE_VERSION = 5
 
 
 def _format_audio_output_label(audio_device: int | None) -> str:
@@ -61,17 +63,21 @@ class LocalShowSession:
         cache: ShowCache,
         profile: ProfileConfig | None = None,
         profile_resolver: ProfileResolver | None = None,
+        timeline_resolver: TimelineResolver | None = None,
         sample_rate: int = 44100,
         audio_device: int | None = None,
         debug: bool = False,
+        runtime_control: RuntimeControlBus | None = None,
     ) -> None:
         self._multi_adapter = multi_adapter
         self._cache = cache
         self._profile = profile
         self._profile_resolver = profile_resolver
+        self._timeline_resolver = timeline_resolver
         self._sample_rate = sample_rate
         self._audio_device = audio_device
         self._debug = debug
+        self._runtime_control = runtime_control or RuntimeControlBus()
 
         # Stats
         self._cache_hits: int = 0
@@ -81,6 +87,7 @@ class LocalShowSession:
         self._current_track: Path | None = None
         self._current_player: AudioPlayer | None = None
         self._current_timeline: ShowTimeline | None = None
+        self._current_runtime: ShowPlaybackRuntime | None = None
         self._playback_state: str = "idle"
 
     def _set_playback_state(self, state: str, *, track: Path | None = None) -> None:
@@ -129,11 +136,16 @@ class LocalShowSession:
         )
 
         # 4. Create ShowPlaybackRuntime
-        runtime = ShowPlaybackRuntime(timeline, self._multi_adapter)
+        runtime = ShowPlaybackRuntime(
+            timeline,
+            self._multi_adapter,
+            control_state_getter=self._runtime_control.snapshot,
+        )
         with self._status_lock:
             self._current_track = audio_path
             self._current_player = player
             self._current_timeline = timeline
+            self._current_runtime = runtime
             self._playback_state = "starting_audio"
 
         # 5. Start playback
@@ -174,6 +186,7 @@ class LocalShowSession:
             if self._playback_state != "finished":
                 self._playback_state = "stopped"
             self._current_player = None
+            self._current_runtime = None
         self._multi_adapter.deactivate()
 
         # 8. Build summary
@@ -199,9 +212,11 @@ class LocalShowSession:
             timeline = self._current_timeline
             track = self._current_track
             state = self._playback_state
+            runtime = self._current_runtime
             position_seconds = player.position_seconds if player is not None else 0.0
             is_playing = player.playing if player is not None else False
             duration_seconds = timeline.duration if timeline is not None else 0.0
+            current_cue = runtime.current_cue if runtime is not None else None
         return {
             "mode": "local",
             "current_track": track,
@@ -216,6 +231,29 @@ class LocalShowSession:
             "duration_seconds": duration_seconds,
             "audio_output": _format_audio_output_label(self._audio_device),
             "device_status": _device_status_for_adapter(self._multi_adapter),
+            "runtime_control": runtime_control_to_dict(self._runtime_control.snapshot()),
+            "current_render_mode": current_cue.render_mode if current_cue is not None else "",
+            "current_palette": tuple(current_cue.color_palette) if current_cue is not None else (),
+            "runtime_state": {
+                "active_eq_routes": tuple(
+                    current_cue.params.get("active_eq_routes", ())
+                    if current_cue is not None
+                    else ()
+                ),
+                "active_instrument_routes": tuple(
+                    current_cue.params.get("active_instrument_routes", ())
+                    if current_cue is not None
+                    else ()
+                ),
+                "active_scene_layers": tuple(
+                    current_cue.params.get(
+                        "scene_layers",
+                        current_cue.params.get("eq_layers", ()),
+                    )
+                    if current_cue is not None
+                    else ()
+                ),
+            },
         }
 
     def preview_frame_snapshot(self) -> dict[str, Any]:
@@ -223,6 +261,15 @@ class LocalShowSession:
         if callable(preview_snapshot):
             return dict(preview_snapshot())
         return {"node_colors": {}}
+
+    def update_runtime_control(self, **changes: Any) -> dict[str, Any]:
+        return runtime_control_to_dict(self._runtime_control.update(**changes))
+
+    def clear_runtime_control(self) -> dict[str, Any]:
+        return runtime_control_to_dict(self._runtime_control.clear())
+
+    def runtime_control_snapshot(self) -> dict[str, Any]:
+        return runtime_control_to_dict(self._runtime_control.snapshot())
 
     def load_track(self, audio_path: Path | str) -> ShowTimeline | None:
         """Compile (or retrieve from cache) a show for a track.
@@ -243,7 +290,7 @@ class LocalShowSession:
                 logger.info("local: cache HIT for '%s'", audio_path.name)
                 if self._debug:
                     print(f"[local] Cache hit: {audio_path.name}")
-                return timeline
+                return self._resolve_timeline_for_track(audio_path, timeline)
 
         structure = self._load_analysis_sidecar(audio_path)
         if structure is not None:
@@ -260,7 +307,7 @@ class LocalShowSession:
                 else:
                     self._cache_misses += 1
                 logger.info("local: compiled '%s' from cached analysis (%d cues)", audio_path.name, len(timeline.cues))
-                return timeline
+                return self._resolve_timeline_for_track(audio_path, timeline)
             except Exception as exc:
                 logger.warning("local: cached analysis unusable for '%s': %s", audio_path.name, exc)
 
@@ -285,7 +332,7 @@ class LocalShowSession:
             else:
                 self._cache_misses += 1
             logger.info("local: compiled '%s' (%d cues)", audio_path.name, len(timeline.cues))
-            return timeline
+            return self._resolve_timeline_for_track(audio_path, timeline)
         except Exception as exc:
             self._compile_errors += 1
             logger.error("local: compile failed for '%s': %s", audio_path.name, exc)
@@ -351,6 +398,11 @@ class LocalShowSession:
             return self._profile
         return self._profile_resolver(audio_path, self._profile)
 
+    def _resolve_timeline_for_track(self, audio_path: Path, timeline: ShowTimeline) -> ShowTimeline:
+        if self._timeline_resolver is None:
+            return timeline
+        return self._timeline_resolver(audio_path, timeline)
+
 
 # ---------------------------------------------------------------------------
 # D7.2 — Top-level entry point
@@ -374,18 +426,22 @@ class LocalPlaylistSession:
         cache: ShowCache,
         profile: ProfileConfig | None = None,
         profile_resolver: ProfileResolver | None = None,
+        timeline_resolver: TimelineResolver | None = None,
         sample_rate: int = 44100,
         audio_device: int | None = None,
         debug: bool = False,
+        runtime_control: RuntimeControlBus | None = None,
     ) -> None:
         self._multi_adapter = multi_adapter
         self._playlist = playlist
         self._cache = cache
         self._profile = profile
         self._profile_resolver = profile_resolver
+        self._timeline_resolver = timeline_resolver
         self._sample_rate = sample_rate
         self._audio_device = audio_device
         self._debug = debug
+        self._runtime_control = runtime_control or RuntimeControlBus()
 
         # Control signals
         self._signal_next = threading.Event()
@@ -403,9 +459,11 @@ class LocalPlaylistSession:
             cache=cache,
             profile=profile,
             profile_resolver=profile_resolver,
+            timeline_resolver=timeline_resolver,
             sample_rate=sample_rate,
             audio_device=audio_device,
             debug=debug,
+            runtime_control=self._runtime_control,
         )
 
         # Stats
@@ -416,6 +474,7 @@ class LocalPlaylistSession:
         self._current_track: Path | None = None
         self._current_player: AudioPlayer | None = None
         self._current_timeline: ShowTimeline | None = None
+        self._current_runtime: ShowPlaybackRuntime | None = None
         self._playback_state: str = "idle"
 
     def _set_playback_state(self, state: str, *, track: Path | None = None) -> None:
@@ -522,9 +581,11 @@ class LocalPlaylistSession:
             timeline = self._current_timeline
             current_track = self._current_track
             playback_state = self._playback_state
+            runtime = self._current_runtime
             position_seconds = player.position_seconds if player is not None else 0.0
             is_playing = player.playing if player is not None else False
             duration_seconds = timeline.duration if timeline is not None else 0.0
+            current_cue = runtime.current_cue if runtime is not None else None
         return {
             "current_track": current_track or self._playlist.current,
             "current_index": self._playlist.current_index,
@@ -538,6 +599,29 @@ class LocalPlaylistSession:
             "duration_seconds": duration_seconds,
             "audio_output": _format_audio_output_label(self._audio_device),
             "device_status": _device_status_for_adapter(self._multi_adapter),
+            "runtime_control": runtime_control_to_dict(self._runtime_control.snapshot()),
+            "current_render_mode": current_cue.render_mode if current_cue is not None else "",
+            "current_palette": tuple(current_cue.color_palette) if current_cue is not None else (),
+            "runtime_state": {
+                "active_eq_routes": tuple(
+                    current_cue.params.get("active_eq_routes", ())
+                    if current_cue is not None
+                    else ()
+                ),
+                "active_instrument_routes": tuple(
+                    current_cue.params.get("active_instrument_routes", ())
+                    if current_cue is not None
+                    else ()
+                ),
+                "active_scene_layers": tuple(
+                    current_cue.params.get(
+                        "scene_layers",
+                        current_cue.params.get("eq_layers", ()),
+                    )
+                    if current_cue is not None
+                    else ()
+                ),
+            },
         }
 
     def preview_frame_snapshot(self) -> dict[str, Any]:
@@ -545,6 +629,15 @@ class LocalPlaylistSession:
         if callable(preview_snapshot):
             return dict(preview_snapshot())
         return {"node_colors": {}}
+
+    def update_runtime_control(self, **changes: Any) -> dict[str, Any]:
+        return runtime_control_to_dict(self._runtime_control.update(**changes))
+
+    def clear_runtime_control(self) -> dict[str, Any]:
+        return runtime_control_to_dict(self._runtime_control.clear())
+
+    def runtime_control_snapshot(self) -> dict[str, Any]:
+        return runtime_control_to_dict(self._runtime_control.snapshot())
 
     def remove_track(self, index: int) -> Path:
         """Remove an upcoming track from the queue."""
@@ -621,11 +714,16 @@ class LocalPlaylistSession:
         )
 
         # Create runtime
-        runtime = ShowPlaybackRuntime(timeline, self._multi_adapter)
+        runtime = ShowPlaybackRuntime(
+            timeline,
+            self._multi_adapter,
+            control_state_getter=self._runtime_control.snapshot,
+        )
         with self._status_lock:
             self._current_track = audio_path
             self._current_player = player
             self._current_timeline = timeline
+            self._current_runtime = runtime
             self._playback_state = "starting_audio"
 
         # Play
@@ -671,6 +769,7 @@ class LocalPlaylistSession:
                 if self._playback_state not in {"finished", "jumping", "skipping", "rewinding"}:
                     self._playback_state = "stopped"
                 self._current_player = None
+                self._current_runtime = None
 
         return "stopped"
 
@@ -713,9 +812,11 @@ def run_local_session(
     audio_device: int | None = None,
     stop_event: threading.Event,
     profile_resolver: ProfileResolver | None = None,
+    timeline_resolver: TimelineResolver | None = None,
     debug: bool = False,
     playlist: PlaylistManager | None = None,
     session_ref: list[Any] | None = None,
+    runtime_control: RuntimeControlBus | None = None,
 ) -> dict[str, Any]:
     """Top-level entry point for local session. Called from run_session() or CLI."""
     cache = ShowCache(cache_dir)
@@ -727,9 +828,11 @@ def run_local_session(
             cache=cache,
             profile=profile,
             profile_resolver=profile_resolver,
+            timeline_resolver=timeline_resolver,
             sample_rate=sample_rate,
             audio_device=audio_device,
             debug=debug,
+            runtime_control=runtime_control,
         )
         if session_ref is not None:
             session_ref[:] = [session]
@@ -740,9 +843,11 @@ def run_local_session(
             cache=cache,
             profile=profile,
             profile_resolver=profile_resolver,
+            timeline_resolver=timeline_resolver,
             sample_rate=sample_rate,
             audio_device=audio_device,
             debug=debug,
+            runtime_control=runtime_control,
         )
         if session_ref is not None:
             session_ref[:] = [session]

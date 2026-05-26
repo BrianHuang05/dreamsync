@@ -9,17 +9,25 @@ from dreamsync.live import (
     HARMONIC_RATIOS,
     IOIHistogram,
     LiveEqStateTracker,
+    LiveInstrumentState,
+    LiveInstrumentStateTracker,
+    LivePanFrame,
     LiveBpmEstimator,
     NoiseFloorEstimator,
     PercussiveOnsetTracker,
+    _apply_live_routes_to_intent,
     SpectralBeatTemplate,
     SpectralFeatures,
     _apply_live_eq_to_intent,
     _build_eq_layers,
-    _resolve_live_eq_routes,
-    _spectral_features,
-    _prepare_bass_window,
     _compute_whitened_flux,
+    _feature_row_from_frame,
+    _prepare_bass_window,
+    _prepare_live_audio_chunk,
+    _resolve_live_eq_routes,
+    _resolve_live_instrument_routes,
+    _spectral_features,
+    _stereo_pan_features_live,
 )
 
 
@@ -443,6 +451,245 @@ class TestLiveEqRouting(unittest.TestCase):
         intent = _apply_live_eq_to_intent(_Intent(intensity=0.5, color="#123456"), routes)
         self.assertEqual(intent.color, "#66ccff")
         self.assertAlmostEqual(intent.intensity, 0.66, places=2)
+
+
+class TestLiveStereoPreservation(unittest.TestCase):
+    def test_prepare_live_audio_chunk_preserves_stereo(self) -> None:
+        indata = np.array(
+            [
+                [0.8, 0.2],
+                [0.6, 0.4],
+                [0.2, 0.8],
+            ],
+            dtype=np.float32,
+        )
+        mono, stereo, preserved = _prepare_live_audio_chunk(indata)
+        self.assertTrue(preserved)
+        self.assertIsNotNone(stereo)
+        self.assertEqual(stereo.shape, (3, 2))
+        np.testing.assert_allclose(mono, np.array([0.5, 0.5, 0.5], dtype=np.float32))
+
+    def test_prepare_live_audio_chunk_falls_back_to_mono(self) -> None:
+        indata = np.array([0.2, -0.1, 0.5], dtype=np.float32)
+        mono, stereo, preserved = _prepare_live_audio_chunk(indata)
+        self.assertFalse(preserved)
+        self.assertIsNone(stereo)
+        np.testing.assert_allclose(mono, indata)
+
+    def test_stereo_pan_features_live_detects_left_bias(self) -> None:
+        frame_size = 2048
+        sample_rate = 44100
+        window, _bass_mask, _kick_mask, freqs = _prepare_bass_window(frame_size, sample_rate)
+        band_masks = tuple((freqs >= low_hz) & (freqs <= high_hz) for _, low_hz, high_hz in (
+            ("sub", 20.0, 60.0),
+            ("kick", 50.0, 130.0),
+            ("bass", 60.0, 250.0),
+            ("low_mid", 250.0, 500.0),
+            ("mid", 500.0, 2000.0),
+            ("presence", 2000.0, 6000.0),
+            ("air", 6000.0, 16000.0),
+        ))
+        t = np.arange(frame_size, dtype=np.float32) / sample_rate
+        left = (0.9 * np.sin(2 * np.pi * 110 * t)).astype(np.float32)
+        right = (0.2 * np.sin(2 * np.pi * 110 * t)).astype(np.float32)
+        stereo = np.column_stack([left, right]).astype(np.float32)
+
+        result = _stereo_pan_features_live(stereo, window, band_masks)
+        self.assertIsInstance(result, LivePanFrame)
+        self.assertTrue(result.stereo_preserved)
+        self.assertLess(result.pan_center, -0.4)
+        self.assertGreaterEqual(result.pan_width, 0.0)
+        self.assertGreater(result.left_energy, result.right_energy)
+        self.assertTrue(any(abs(value) > 0.05 for value in result.band_pan_centers))
+
+    def test_feature_row_from_frame_carries_pan_fields(self) -> None:
+        frame = np.array([0.1, -0.1, 0.2, -0.2], dtype=np.float32)
+        row = _feature_row_from_frame(
+            frame,
+            rms=0.15,
+            t=1.0,
+            bpm=128.0,
+            beat=True,
+            pan_center=0.35,
+            pan_width=0.28,
+            left_energy=0.12,
+            right_energy=0.25,
+            band_pan_centers=_band_vector(bass=-0.2, presence=0.4),
+            stereo_preserved=True,
+        )
+        self.assertEqual(row["pan_center"], 0.35)
+        self.assertEqual(row["pan_width"], 0.28)
+        self.assertEqual(row["left_energy"], 0.12)
+        self.assertEqual(row["right_energy"], 0.25)
+        self.assertEqual(row["band_pan_centers"][2], -0.2)
+        self.assertTrue(row["stereo_preserved"])
+
+
+class TestLiveInstrumentProxyTracking(unittest.TestCase):
+    def test_tracker_detects_bass_presence_and_enter(self) -> None:
+        tracker = LiveInstrumentStateTracker(smoothing=1.0, event_cooldown_seconds=0.0)
+        tracker.update(
+            _spectral_stub(ratios=_band_vector(mid=0.06, presence=0.05)),
+            {
+                "onset_strength": 0.05,
+                "spectral_flux": 0.1,
+                "pan_center": 0.0,
+                "pan_width": 0.1,
+                "band_pan_centers": _band_vector(),
+            },
+            percussive_onset=0.0,
+            t=0.0,
+        )
+        state = tracker.update(
+            _spectral_stub(
+                ratios=_band_vector(sub=0.16, bass=0.28, low_mid=0.05),
+                fluxes=_band_vector(bass=0.2, kick=0.1),
+            ),
+            {
+                "onset_strength": 0.9,
+                "spectral_flux": 12.0,
+                "pan_center": -0.08,
+                "pan_width": 0.18,
+                "band_pan_centers": _band_vector(bass=-0.22),
+            },
+            percussive_onset=0.4,
+            t=0.1,
+        )
+        self.assertEqual(state.dominant_proxy, "bass")
+        self.assertGreater(state.bass, state.vocals)
+        self.assertIn("bass_enter", state.events)
+        self.assertIn(("bass", "dominant"), state.trigger_keys)
+        self.assertIn(("bass", "present"), state.trigger_keys)
+
+    def test_tracker_prefers_centered_vocals(self) -> None:
+        tracker = LiveInstrumentStateTracker(smoothing=1.0, event_cooldown_seconds=0.0)
+        state = tracker.update(
+            _spectral_stub(
+                ratios=_band_vector(mid=0.22, presence=0.31, low_mid=0.08),
+                fluxes=_band_vector(presence=0.4, mid=0.2),
+            ),
+            {
+                "onset_strength": 0.3,
+                "spectral_flux": 3.0,
+                "pan_center": 0.02,
+                "pan_width": 0.08,
+                "band_pan_centers": _band_vector(mid=0.04, presence=0.06),
+            },
+            percussive_onset=0.05,
+            t=0.0,
+        )
+        self.assertEqual(state.dominant_proxy, "vocals")
+        self.assertGreater(state.vocals, state.percussive)
+        self.assertGreater(state.vocals, state.harmonic)
+
+    def test_tracker_holds_dominant_proxy_briefly_during_dense_transition(self) -> None:
+        tracker = LiveInstrumentStateTracker(
+            smoothing=1.0,
+            dominant_hold_seconds=0.8,
+            dominant_margin=0.08,
+            event_cooldown_seconds=0.0,
+        )
+        first = tracker.update(
+            _spectral_stub(
+                ratios=_band_vector(sub=0.14, bass=0.3),
+                fluxes=_band_vector(bass=0.12, kick=0.05),
+            ),
+            {
+                "onset_strength": 0.35,
+                "spectral_flux": 4.0,
+                "pan_center": -0.12,
+                "pan_width": 0.2,
+                "band_pan_centers": _band_vector(bass=-0.18),
+            },
+            percussive_onset=0.1,
+            t=0.0,
+        )
+        second = tracker.update(
+            _spectral_stub(
+                ratios=_band_vector(mid=0.18, presence=0.24, low_mid=0.12),
+                fluxes=_band_vector(presence=0.3, kick=0.18),
+            ),
+            {
+                "onset_strength": 0.45,
+                "spectral_flux": 6.0,
+                "pan_center": 0.01,
+                "pan_width": 0.15,
+                "band_pan_centers": _band_vector(presence=0.04),
+            },
+            percussive_onset=0.12,
+            t=0.2,
+        )
+        self.assertEqual(first.dominant_proxy, "bass")
+        self.assertEqual(second.dominant_proxy, "bass")
+
+    def test_resolve_live_instrument_routes_merges_override_and_enriches_pan(self) -> None:
+        state = LiveInstrumentState(
+            dominant_proxy="vocals",
+            vocals=0.74,
+            harmonic=0.31,
+            pan_center=0.62,
+            pan_width=0.28,
+            band_pan_centers=_band_vector(presence=0.35),
+            trigger_keys=(("vocals", "dominant"), ("vocals", "present")),
+        )
+        routes = _resolve_live_instrument_routes(
+            state,
+            {
+                "instrument_routes": [
+                    {
+                        "instrument": "vocals",
+                        "when": "dominant",
+                        "spatial_zone": "right",
+                        "pan_follow": 0.75,
+                        "width_scale": 1.2,
+                        "color_bias": "#99ddff",
+                    }
+                ]
+            },
+        )
+        self.assertEqual(len(routes), 1)
+        route = routes[0]
+        self.assertEqual(route["instrument"], "vocals")
+        self.assertEqual(route["when"], "dominant")
+        self.assertEqual(route["color_bias"], "#99ddff")
+        self.assertGreater(route["spatial_origin"]["x"], 0.9)
+        self.assertGreater(route["spatial_width"], 0.18)
+        self.assertEqual(route["band_pan_centers"][5], 0.35)
+
+    def test_build_eq_layers_carries_instrument_metadata(self) -> None:
+        layers = _build_eq_layers([
+            {
+                "instrument": "bass",
+                "when": "dominant",
+                "spatial_preset": "flash_floor_only",
+                "pan_follow": 0.8,
+                "width_scale": 1.1,
+                "color_bias": "#ff8a3d",
+            }
+        ])
+        self.assertEqual(len(layers), 1)
+        self.assertEqual(layers[0]["instrument"], "bass")
+        self.assertEqual(layers[0]["when"], "dominant")
+        self.assertEqual(layers[0]["pan_follow"], 0.8)
+
+    def test_apply_live_routes_to_intent_uses_route_bias_and_boost(self) -> None:
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class _Intent:
+            intensity: float
+            color: str
+
+        intent = _Intent(intensity=0.4, color="#123456")
+        result = _apply_live_routes_to_intent(
+            intent,
+            [
+                {"instrument": "vocals", "when": "dominant", "color_bias": "#99ddff", "intensity_boost": 0.08},
+                {"band": "presence", "when": "lift", "color_bias": "#66ccff", "intensity_boost": 0.04},
+            ],
+        )
+        self.assertEqual(result.color, "#99ddff")
+        self.assertAlmostEqual(result.intensity, 0.52, places=2)
 
     def test_compute_whitened_flux_first_frame(self) -> None:
         """First frame: spectral_mean initializes from mag, no prev → flux=0."""

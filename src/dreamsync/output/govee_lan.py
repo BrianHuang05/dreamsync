@@ -10,7 +10,7 @@ from enum import Enum
 from typing import Callable
 
 from dreamsync.director import LightingIntent
-from dreamsync.output.roles import DeviceRole, transform_intent
+from dreamsync.output.roles import DeviceRole, DeviceType, adapt_render_mode, transform_intent
 from dreamsync.render import RenderMode, SegmentRenderer
 from dreamsync.spatial.grid import resolve_grid_cell
 from dreamsync.spatial.models import DevicePlacement, GridCell, SpatialCellState
@@ -438,6 +438,7 @@ class MultiGoveeLanAdapter:
         any_sent = False
         for adapter, renderer, role, bs, _placement in self.devices:
             device_intent = transform_intent(intent, role, brightness_scale=bs)
+            self._apply_render_mode_override(renderer, params)
             colors = renderer.render(t, device_intent, beat=beat, params=params)
             if adapter.send_frame(colors):
                 any_sent = True
@@ -469,6 +470,7 @@ class MultiGoveeLanAdapter:
                 role,
                 brightness_scale=bs,
             )
+            self._apply_render_mode_override(renderer, cell_state.params)
             colors = self._render_with_orientation(
                 renderer,
                 t,
@@ -504,6 +506,7 @@ class MultiGoveeLanAdapter:
 
         for adapter, renderer, role, bs, placement in self.devices:
             device_intent = transform_intent(intent, role, brightness_scale=bs)
+            self._apply_render_mode_override(renderer, params)
             colors = self._render_with_orientation(
                 renderer,
                 t,
@@ -527,6 +530,7 @@ class MultiGoveeLanAdapter:
             follower_adapter, follower_role, follower_bs, follower_placement, follower_renderer = self._normalize_ble_follower(follower)
             follower_intent = transform_intent(intent, follower_role, brightness_scale=follower_bs)
             if follower_renderer is not None:
+                self._apply_render_mode_override(follower_renderer, params)
                 follower_colors = self._render_with_orientation(
                     follower_renderer,
                     t,
@@ -626,6 +630,26 @@ class MultiGoveeLanAdapter:
             return renderer.render(t, intent, beat=beat, params=params)
         finally:
             renderer.mirror = original_mirror
+
+    @staticmethod
+    def _apply_render_mode_override(
+        renderer: SegmentRenderer,
+        params: dict | None,
+    ) -> None:
+        if not params or "_render_mode" not in params:
+            return
+        raw_mode = str(params.get("_render_mode", "")).strip().lower()
+        if not raw_mode:
+            return
+        if renderer.device_type is not None:
+            try:
+                raw_mode = adapt_render_mode(raw_mode, DeviceType(renderer.device_type))
+            except ValueError:
+                pass
+        try:
+            renderer.mode = RenderMode(raw_mode)
+        except ValueError:
+            return
 
     def _spatialize_colors(
         self,

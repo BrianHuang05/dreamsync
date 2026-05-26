@@ -6,6 +6,8 @@ import logging
 import re
 import subprocess
 
+from dreamsync.ffmpeg import resolve_ffmpeg
+
 logger = logging.getLogger(__name__)
 
 
@@ -16,10 +18,14 @@ def discover_audio_device(pattern: str = "CABLE Output") -> str | None:
     audio devices.  Returns the full device name (e.g.
     ``"CABLE Output (VB-Audio Virtual Cable)"``) or ``None`` if no match.
     """
+    ffmpeg = resolve_ffmpeg()
+    if ffmpeg is None:
+        logger.error("ffmpeg not found on PATH")
+        return None
     try:
         result = subprocess.run(
             [
-                "ffmpeg",
+                ffmpeg,
                 "-hide_banner",
                 "-list_devices", "true",
                 "-f", "dshow",

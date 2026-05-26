@@ -145,3 +145,37 @@ class TestSeekPause:
         assert player._stream is None
         mock_stream.stop.assert_called_once()
         mock_stream.close.assert_called_once()
+
+
+class TestClockFallback:
+    def test_position_advances_from_monotonic_clock_while_playing(self):
+        player = _make_player(duration_s=5.0, sr=44100)
+        mock_stream = MagicMock()
+
+        with patch("time.monotonic", side_effect=[100.0, 101.25]):
+            player._stream = mock_stream
+            player.play()
+            assert abs(player.position_seconds - 1.25) < 0.01
+
+    def test_pause_freezes_clock_based_position(self):
+        player = _make_player(duration_s=5.0, sr=44100)
+        mock_stream = MagicMock()
+
+        with patch("time.monotonic", side_effect=[100.0, 101.5, 101.5, 110.0]):
+            player._stream = mock_stream
+            player.play()
+            player.pause()
+            paused = player.position_seconds
+            later = player.position_seconds
+
+        assert abs(paused - 1.5) < 0.02
+        assert abs(later - paused) < 0.001
+
+    def test_finished_turns_true_when_clock_reaches_duration(self):
+        player = _make_player(duration_s=1.0, sr=44100)
+        mock_stream = MagicMock()
+
+        with patch("time.monotonic", side_effect=[50.0, 51.1]):
+            player._stream = mock_stream
+            player.play()
+            assert player.finished is True

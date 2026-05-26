@@ -1,5 +1,6 @@
 """Tests for dreamsync.capture.encoder_process — per-segment FFmpeg encoder."""
 
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 import io
 
@@ -28,8 +29,9 @@ class TestInit:
 
 
 class TestLifecycle:
+    @patch("dreamsync.capture.encoder_process.resolve_ffmpeg", return_value="ffmpeg")
     @patch("dreamsync.capture.encoder_process.subprocess.Popen")
-    def test_start(self, mock_popen, encoder):
+    def test_start(self, mock_popen, _mock_resolve, encoder):
         mock_proc = MagicMock()
         mock_proc.stderr = io.BytesIO(b"")
         mock_popen.return_value = mock_proc
@@ -39,12 +41,13 @@ class TestLifecycle:
         mock_popen.assert_called_once()
         call_args = mock_popen.call_args
         cmd = call_args[0][0]
-        assert cmd[0] == "ffmpeg"
+        assert Path(cmd[0]).name.lower() in {"ffmpeg", "ffmpeg.exe"}
         assert "pipe:0" in cmd
         assert "libmp3lame" in cmd
 
+    @patch("dreamsync.capture.encoder_process.resolve_ffmpeg", return_value="ffmpeg")
     @patch("dreamsync.capture.encoder_process.subprocess.Popen")
-    def test_start_raises_if_already_started(self, mock_popen, encoder):
+    def test_start_raises_if_already_started(self, mock_popen, _mock_resolve, encoder):
         mock_proc = MagicMock()
         mock_proc.stderr = io.BytesIO(b"")
         mock_popen.return_value = mock_proc
@@ -53,8 +56,9 @@ class TestLifecycle:
         with pytest.raises(RuntimeError, match="already started"):
             encoder.start()
 
+    @patch("dreamsync.capture.encoder_process.resolve_ffmpeg", return_value="ffmpeg")
     @patch("dreamsync.capture.encoder_process.subprocess.Popen")
-    def test_write(self, mock_popen, encoder):
+    def test_write(self, mock_popen, _mock_resolve, encoder):
         mock_proc = MagicMock()
         mock_proc.stderr = io.BytesIO(b"")
         mock_popen.return_value = mock_proc
@@ -68,8 +72,9 @@ class TestLifecycle:
         with pytest.raises(RuntimeError, match="not started"):
             encoder.write(b"\x00")
 
+    @patch("dreamsync.capture.encoder_process.resolve_ffmpeg", return_value="ffmpeg")
     @patch("dreamsync.capture.encoder_process.subprocess.Popen")
-    def test_close(self, mock_popen, encoder):
+    def test_close(self, mock_popen, _mock_resolve, encoder):
         mock_proc = MagicMock()
         mock_proc.stderr = io.BytesIO(b"")
         mock_popen.return_value = mock_proc
@@ -79,8 +84,9 @@ class TestLifecycle:
 
         mock_proc.stdin.close.assert_called_once()
 
+    @patch("dreamsync.capture.encoder_process.resolve_ffmpeg", return_value="ffmpeg")
     @patch("dreamsync.capture.encoder_process.subprocess.Popen")
-    def test_wait(self, mock_popen, encoder):
+    def test_wait(self, mock_popen, _mock_resolve, encoder):
         mock_proc = MagicMock()
         mock_proc.stderr = io.BytesIO(b"")
         mock_proc.returncode = 0
@@ -92,8 +98,9 @@ class TestLifecycle:
 
         assert rc == 0
 
+    @patch("dreamsync.capture.encoder_process.resolve_ffmpeg", return_value="ffmpeg")
     @patch("dreamsync.capture.encoder_process.subprocess.Popen")
-    def test_is_alive(self, mock_popen, encoder):
+    def test_is_alive(self, mock_popen, _mock_resolve, encoder):
         mock_proc = MagicMock()
         mock_proc.stderr = io.BytesIO(b"")
         mock_proc.poll.return_value = None
@@ -107,3 +114,8 @@ class TestLifecycle:
 
     def test_is_alive_before_start(self, encoder):
         assert not encoder.is_alive()
+
+    @patch("dreamsync.capture.encoder_process.resolve_ffmpeg", return_value=None)
+    def test_start_raises_when_ffmpeg_missing(self, _mock_resolve, encoder):
+        with pytest.raises(RuntimeError, match="ffmpeg not found"):
+            encoder.start()

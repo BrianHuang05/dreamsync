@@ -7,6 +7,8 @@ import subprocess
 import sys
 import threading
 
+from dreamsync.ffmpeg import resolve_ffmpeg
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,9 +45,12 @@ class EncoderProcess:
         """Spawn the FFmpeg encoder subprocess."""
         if self._process is not None:
             raise RuntimeError("Encoder already started")
+        ffmpeg = resolve_ffmpeg()
+        if ffmpeg is None:
+            raise RuntimeError("ffmpeg not found on PATH")
 
         cmd = [
-            "ffmpeg",
+            ffmpeg,
             "-hide_banner",
             "-loglevel", "warning",
             "-f", "s16le",

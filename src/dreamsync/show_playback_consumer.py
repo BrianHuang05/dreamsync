@@ -47,12 +47,12 @@ class ShowPlaybackConsumer:
                     continue
 
                 self._play_one(mp3_path, timeline, stop_event)
-                self._tracks_played += 1
 
                 if self._purge:
                     self._purge_files(Path(mp3_path))
                     self._tracks_purged += 1
 
+                self._tracks_played += 1
                 self._queue.task_done()
         finally:
             self._adapter.deactivate()

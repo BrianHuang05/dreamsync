@@ -580,6 +580,7 @@ def test_multiple_active_eq_routes_emit_runtime_eq_layers():
 
     micro = [c for c in tl.cues if c.t == 8.0][0]
     assert [layer["band"] for layer in micro.params["eq_layers"][:2]] == ["presence", "bass"]
+    assert [layer["band"] for layer in micro.params["scene_layers"][:2]] == ["presence", "bass"]
     assert micro.params["eq_layers"][0]["spatial_preset"] == "flash_top_only"
     assert micro.params["eq_layers"][1]["spatial_preset"] == "flash_floor_only"
     assert len(micro.params["active_eq_routes"]) == 2
@@ -593,7 +594,7 @@ def test_instrument_dominant_phrase_adds_instrument_route_metadata():
     ])
     proxies = (
         InstrumentProxy(0.0, 8.0, 0, "harmonic", harmonic=0.52),
-        InstrumentProxy(8.0, 16.0, 0, "vocals", vocals=0.74, harmonic=0.38),
+        InstrumentProxy(8.0, 16.0, 0, "vocals", vocals=0.74, harmonic=0.38, pan_center=0.62, pan_width=0.31),
     )
     structure = _make_structure_with_phrases(
         sections,
@@ -616,6 +617,10 @@ def test_instrument_dominant_phrase_adds_instrument_route_metadata():
     assert micro.render_mode == "gradient"
     assert micro.params["spatial_preset"] == "blend_left_to_right"
     assert micro.color_palette[0] == "#cceeff"
+    assert micro.params["active_instrument_routes"][0]["pan_follow"] == pytest.approx(0.72)
+    assert micro.params["active_instrument_routes"][0]["width_scale"] == pytest.approx(1.35)
+    assert micro.params["active_instrument_routes"][0]["spatial_origin"]["x"] > 0.4
+    assert micro.params["active_instrument_routes"][0]["spatial_width"] > 0.55
 
 
 def test_profile_instrument_route_overrides_eq_route_on_micro_cue():
@@ -678,6 +683,7 @@ def test_profile_instrument_route_overrides_eq_route_on_micro_cue():
     assert micro.params["spatial_preset"] == "blend_front_to_back"
     assert micro.params["active_eq_routes"][0]["band"] == "bass"
     assert micro.params["active_instrument_routes"][0]["instrument"] == "vocals"
+    assert micro.params["scene_layers"][0]["instrument"] == "vocals"
     assert micro.params["eq_layers"][0]["instrument"] == "vocals"
     assert micro.params["eq_layers"][1]["band"] == "bass"
     assert micro.color_palette[0] == "#ddeeff"

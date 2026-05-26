@@ -200,6 +200,25 @@ class TestSingleSectionSong:
         assert timeline.cues[0].transition == "cut"
         assert timeline.cues[0].transition_beats == 0
 
+    def test_single_section_zero_bpm_uses_fallback(self):
+        sections = (make_section(0, 0.75, "verse", 0.2, "chill", 0.0, "A"),)
+        structure = SongStructure(
+            path="/tmp/short.mp3",
+            duration=0.75,
+            bpm=0.0,
+            time_signature=4,
+            beat_grid=BeatGrid(bpm=0.0, beat_times=(), downbeat_times=(), time_signature=4),
+            tempo_regions=(TempoRegion(0.0, 0.75, 0.0, 0.0),),
+            sections=sections,
+            metadata={},
+        )
+
+        timeline = compile_show(structure, seed=42)
+
+        assert isinstance(timeline, ShowTimeline)
+        assert timeline.bpm == 120.0
+        assert len(timeline.cues) == 1
+
 
 class TestManySections:
     """Test 7: Song with 10 sections produces a valid timeline."""

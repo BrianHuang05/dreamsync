@@ -74,6 +74,29 @@ class TestShowPipelineWorker:
         assert result[1] is timeline
         mock_analyze.assert_called_once()
 
+    @patch("dreamsync.cache.cached_compile_show")
+    @patch("dreamsync.cache.path_based_track_id", return_value="test_id")
+    @patch("dreamsync.analyzer.analyze.analyze_song")
+    def test_state_callback_reports_progress(
+        self, mock_analyze, mock_track_id, mock_compile
+    ):
+        mock_analyze.return_value = _fake_structure()
+        timeline = _fake_timeline()
+        mock_compile.return_value = (timeline, False)
+        states = []
+        worker = ShowPipelineWorker(
+            cache=MagicMock(),
+            ready_queue=queue.Queue(),
+            state_callback=lambda path, state, **kwargs: states.append((Path(path), state, kwargs)),
+        )
+
+        worker.on_segment_saved("/tmp/song.mp3", {})
+        worker.ready_queue.get(timeout=5)
+        worker.shutdown()
+
+        assert [state for _path, state, _kwargs in states] == ["analyzing", "compiling", "ready"]
+        assert states[-1][2]["timeline"] is timeline
+
     def test_ready_queue_empty_initially(self):
         worker = _make_worker()
         assert worker.ready_queue.empty()

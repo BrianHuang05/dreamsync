@@ -2,20 +2,104 @@
 
 ## Planned Workstream
 
-### Instrument-aware spatial follow-through
+### GUI and operator validation
 
-The biggest functional gap is no longer offline analysis or compiled routing.
-Those foundations are now in place. The next product work on this thread should
-focus on finishing the live/runtime side and validating the behavior on real
-music.
+The control-surface implementation phase is now in place across backend and GUI
+for:
+
+- structured profile editing of palettes, mood effects, params, EQ routes,
+  instrument routes, and transitions
+- non-destructive per-song / per-show `ShowControlPatch` authoring from the GUI
+- temporary runtime overrides during local preview, saved-show playback, and
+  reactive/live sessions
+- richer telemetry and diagnostics for active palette, render mode, routes,
+  layers, pan, and override state
+- preview-time patch application through the local session / runtime supervisor
+
+The next product phase on this thread should be:
+
+- **Validation Phase 1: GUI and simulation-first testing**
 
 Immediate follow-through targets:
 
-- preserve stereo in live capture instead of collapsing to mono at ingest
-- let live mode emit instrument-aware pan layers, not just EQ-driven layers
+- validate the full GUI editing flow without lights:
+  profile edit -> preview -> show override -> runtime override -> clear/revert
+- verify local preview and saved-show playback reflect GUI edits and patches
+- confirm diagnostics make active routes, layers, palette, pan, and overrides
+  understandable in practice
+- capture operator friction points before any more implementation work
+
+After that, move to:
+
+- **Validation Phase 2: physical-device and live-pipeline testing**
+
+This second validation phase should focus on:
+
+- confirming simulation behavior translates cleanly to real fixtures
+- checking live-session override ergonomics while audio is running
+- tuning route visibility, color control, and fallback behavior using actual
+  lights in the room
+
+See `dev/plans/gui-show-control-surface-refinement-plan.md` for the completed
+GUI implementation phase and the operator-facing behaviors now available.
+
+### Backend show control follow-through
+
+The backend control-surface implementation phase is now in place for:
+
+- structured profile editing of mood effects, params, EQ routes, instrument routes, and transitions
+- non-destructive per-show control patches over compiled cues
+- generic `scene_layers` with backward compatibility for older `eq_layers`
+- runtime hot overrides for playback and live sessions
+- richer runtime telemetry snapshots for active musical/control state
+- reactive mode alignment for `wave` and `gradient`
+
+The next product phase on this thread should be:
+
+- **Completed**
+
+Immediate follow-through targets:
+
+- use the GUI implementation and validation phases above to determine whether
+  the current layered control surface is sufficient before considering optional
+  true multi-effect compositing
+
+See `dev/plans/backend-show-control-surface-plan.md` for the completed backend phase and the remaining optional compositing track.
+
+### Instrument-aware spatial follow-through
+
+The core implementation phase is now in place for:
+
+- offline stereo pan analysis
+- live stereo preservation
+- live mixed-source instrument proxy tracking
+- live instrument-aware route activation
+- pan-aware runtime layer emission
+- separation seam metadata for mixed-source enhancement hooks
+
+The next product phase on this thread should be:
+
+- **Phase 7: real-material validation and tuning**
+
+Immediate follow-through targets:
+
 - validate compiled instrument panning against real stereo songs in local preview
-- decide whether to add a real optional stem backend (Demucs-style) behind the
-  new analyzer separation seam
+- validate live stereo panning and mixed-source proxy behavior on physical devices
+- tune proxy thresholds and precedence rules against real songs with obvious
+  bass, drum, vocal, and wide-harmonic content
+- document failure modes where the system should intentionally fall back toward
+  EQ-driven behavior instead of over-claiming instrument confidence
+
+Assumption going forward:
+
+- true isolated stems are out of scope
+- all current and future instrument-aware routing must begin from mixed-source
+  audio and derive usable proxies from there
+
+See `dev/plans/live-instrument-pan-and-mixed-separation.md` for the detailed
+implementation history and remaining validation targets, and
+`dev/plans/continuous-spatial-runtime-followup.md` for the shared runtime
+spatial layer this work plugs into.
 
 ### Desktop GUI migration
 
@@ -32,6 +116,73 @@ Primary GUI targets:
 See `dev/plans/gui-desktop-migration.md` for the detailed implementation plan.
 
 ## What to Test Next
+
+### Test 40. GUI control surface validation (no lights)
+
+**Prerequisites:**
+- `dev/devices-dummy.yaml`
+- a few already-analyzed stereo MP3s or compiled shows
+- the desktop GUI launch path you normally use for local testing
+
+```bash
+# GUI smoke/regression coverage
+python -m pytest dev/tests/test_gui_mode_switching.py \
+  dev/tests/test_gui_palette_editor.py \
+  dev/tests/test_gui_runtime_supervisor.py \
+  dev/tests/test_gui_services.py \
+  dev/tests/test_gui_show_patch_store.py -q
+```
+
+**What to check manually in the GUI:**
+- open a profile and edit:
+  - palette colors
+  - mood effects
+  - EQ routes
+  - instrument routes
+  - transitions
+- save and reload the profile, confirming edits persist
+- load a song or show, add a show override rule, and preview it in simulation
+- apply a live runtime override:
+  - render mode
+  - color bias
+  - intensity/speed trim
+  - route mutes
+- clear the live override and confirm the session falls back cleanly
+- verify diagnostics show:
+  - active palette
+  - render mode
+  - dominant band / proxy
+  - active EQ routes
+  - active instrument routes
+  - active scene layers
+  - pan center / width
+  - runtime override state
+
+---
+
+### Test 41. GUI control surface validation (with lights)
+
+**Prerequisites:**
+- Govee devices on LAN with `dev/devices.yaml` configured
+- a few representative compiled songs and stereo tracks
+- a known-good live or saved-show playback path
+
+```bash
+# Keep automation coverage handy while doing the hardware pass
+python -m pytest dev/tests/test_runtime_control.py \
+  dev/tests/test_show_control_patch.py \
+  dev/tests/test_local_session.py -q
+```
+
+**What to check manually with hardware:**
+- profile edits visibly affect saved-show playback as expected
+- show overrides affect the targeted cues without mutating the base profile
+- runtime overrides apply during playback without restarting the session
+- pan-aware placement still feels correct on real fixtures
+- route mute controls do what the operator expects in the room
+- simulation expectations match hardware closely enough to trust preview-first workflows
+
+---
 
 ### Test 37. Compiled instrument/pan validation (offline stereo songs)
 
@@ -56,6 +207,48 @@ python -m pytest dev/tests/test_preview_simulation.py -q
 - pan-aware instrument layers produce sensible `spatial_origin.x` shifts
 - EQ and instrument routes coexist, with instrument routes taking precedence when active
 - cached `.analysis.json` sidecars invalidate cleanly because cache version is now `4`
+
+---
+
+### Test 38. Live stereo preservation and pan telemetry
+
+**Prerequisites:**
+- VB-Cable or another known stereo capture path
+- A stereo-heavy track with obvious left/right motion
+- `dev/devices-dummy.yaml` for dry verification or a real device config
+
+```bash
+# Run live mode with debug telemetry enabled
+python -m dreamsync govee-live --config dev/devices-dummy.yaml --debug-mood
+
+# Focused automation coverage
+python -m pytest dev/tests/test_live_bpm.py dev/tests/test_telemetry.py -q
+```
+
+**What to check:**
+- live ingest no longer averages left/right channels before feature extraction
+- telemetry shows `pan_center`, `pan_width`, and active stereo-driven bands/routes
+- hard-left / hard-right moments produce sensible `spatial_origin.x` movement
+- behavior falls back cleanly on mono sources
+
+---
+
+### Test 39. Live mixed-source instrument routing
+
+**Prerequisites:**
+- A song with obvious drum hits, bass entrances, and centered vocals
+- Real devices preferred for this test
+
+```bash
+# Live instrument/proxy validation run
+python -m dreamsync session --config dev/devices.yaml --debug-mood
+```
+
+**What to check:**
+- live runtime emits `active_instrument_routes` from mixed-source analysis
+- drums and bass react independently enough to drive distinct spatial layers
+- vocals bias toward center/front without requiring isolated stems
+- simultaneous proxies blend consistently instead of flickering ownership
 
 ---
 
@@ -147,6 +340,27 @@ python -m dreamsync session --config dev/devices.yaml \
 
 ## Completed
 
+- GUI show control surface refinement (2026-05-22)
+  - expanded the profile GUI into a structured editor for palettes, effects,
+    params, EQ routes, instrument routes, and transitions
+  - added GUI-managed `ShowControlPatch` authoring and preview-time application
+  - added runtime override controls for palette, color bias, render mode,
+    intensity/speed trims, route mutes, and spatial overrides
+  - expanded diagnostics with active routes, scene layers, pan, palette, render
+    mode, and override state
+  - wired local preview / saved-show playback through timeline resolvers so GUI
+    patches apply without mutating source timelines
+  - focused and broad GUI/control-surface regression coverage passed:
+    `70 passed`, then `88 passed`
+
+- Backend show control surface implementation (2026-05-22)
+  - added structured backend profile-edit APIs for effects, params, transitions, EQ routes, and instrument routes
+  - added `ShowControlPatch` for non-destructive per-show cue overrides
+  - generalized runtime/compiler/live layering around `scene_layers` while preserving `eq_layers` compatibility
+  - added a runtime control bus for playback/live sessions plus richer GUI telemetry snapshots
+  - aligned reactive settings with `wave` and `gradient`
+  - focused and broad regression coverage passed: `459` tests in the final sweep
+
 - Instrument-aware VFX and offline pan foundations (2026-05-20)
   - profile/compiler support for `instrument_routes`
   - stereo-preserving offline decode plus frame-level pan metadata
@@ -154,6 +368,19 @@ python -m dreamsync session --config dev/devices.yaml \
   - pan-aware compiled spatial layers for instrument routes
   - optional stem-backend seam in `analyzer/separation.py`
   - targeted/broad regression coverage passed: `390` tests in the final sweep
+
+- Instrument-aware routing cache coverage and follow-on planning refresh (2026-05-21)
+  - cache fingerprints now track `instrument_routes` at profile and mood level
+  - regression sweep passed: `401` tests in the final sweep
+  - next-step planning now assumes mixed-source analysis, not true isolated stems
+
+- Live instrument pan and mixed-source separation implementation (2026-05-21)
+  - live ingest now preserves stereo frames instead of immediately collapsing to mono
+  - live feature frames now carry `pan_center`, `pan_width`, left/right energy, and band pan centers
+  - live mixed-source instrument proxy tracker now emits stable `drums` / `bass` / `vocals` / `harmonic` / `percussive` scores
+  - live runtime now resolves `active_instrument_routes`, emits pan-aware route layers, and applies deterministic route precedence
+  - separation seam metadata now supports mixed-source enhancement hints such as confidence, envelopes, and stereo pan/width hints
+  - broad regression sweep passed: `429` tests
 
 - Tests 7-8: Auto-palette live test with tags + profile export round-trip — passed
 

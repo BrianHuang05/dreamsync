@@ -48,18 +48,27 @@ def _mock_ffmpeg_success(cmd, stdin, stdout, stderr):
 
 class TestCheckFfmpeg:
     def test_ffmpeg_available(self):
-        with patch("dreamsync.capture.writer.subprocess.run") as mock_run:
+        with patch("dreamsync.capture.writer.resolve_ffmpeg", return_value="ffmpeg"), \
+             patch("dreamsync.capture.writer.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             assert check_ffmpeg() is True
 
     def test_ffmpeg_not_found(self):
-        with patch("dreamsync.capture.writer.subprocess.run", side_effect=FileNotFoundError):
+        with patch("dreamsync.capture.writer.resolve_ffmpeg", return_value="ffmpeg"), \
+             patch("dreamsync.capture.writer.subprocess.run", side_effect=FileNotFoundError):
             assert check_ffmpeg() is False
 
     def test_ffmpeg_error(self):
-        with patch("dreamsync.capture.writer.subprocess.run",
-                    side_effect=subprocess.CalledProcessError(1, "ffmpeg")):
+        with patch("dreamsync.capture.writer.resolve_ffmpeg", return_value="ffmpeg"), \
+             patch("dreamsync.capture.writer.subprocess.run",
+                   side_effect=subprocess.CalledProcessError(1, "ffmpeg")):
             assert check_ffmpeg() is False
+
+    def test_ffmpeg_missing_before_subprocess(self):
+        with patch("dreamsync.capture.writer.resolve_ffmpeg", return_value=None), \
+             patch("dreamsync.capture.writer.subprocess.run") as mock_run:
+            assert check_ffmpeg() is False
+            mock_run.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +126,8 @@ class TestFinalize:
         writer = SongFileWriter(cfg)
         pcm = _sine_pcm(duration=2.0)
 
-        with patch("dreamsync.capture.writer.subprocess.Popen", side_effect=_mock_ffmpeg_success):
+        with patch("dreamsync.capture.writer.resolve_ffmpeg", return_value="ffmpeg"), \
+             patch("dreamsync.capture.writer.subprocess.Popen", side_effect=_mock_ffmpeg_success):
             result = writer.finalize(pcm)
 
         assert result is not None
@@ -129,7 +139,8 @@ class TestFinalize:
         writer = SongFileWriter(cfg)
         pcm = _sine_pcm(duration=2.0)
 
-        with patch("dreamsync.capture.writer.subprocess.Popen", side_effect=_mock_ffmpeg_success):
+        with patch("dreamsync.capture.writer.resolve_ffmpeg", return_value="ffmpeg"), \
+             patch("dreamsync.capture.writer.subprocess.Popen", side_effect=_mock_ffmpeg_success):
             result = writer.finalize(pcm)
             assert isinstance(result, Path)
 
@@ -145,7 +156,8 @@ class TestNaming:
         writer = SongFileWriter(cfg)
         pcm = _sine_pcm(duration=2.0)
 
-        with patch("dreamsync.capture.writer.subprocess.Popen", side_effect=_mock_ffmpeg_success):
+        with patch("dreamsync.capture.writer.resolve_ffmpeg", return_value="ffmpeg"), \
+             patch("dreamsync.capture.writer.subprocess.Popen", side_effect=_mock_ffmpeg_success):
             result = writer.finalize(pcm)
 
         # Should be like 20260303_142015.mp3
@@ -158,7 +170,8 @@ class TestNaming:
         pcm = _sine_pcm(duration=2.0)
         meta = {"track_name": "Around the World", "artist": "Daft Punk"}
 
-        with patch("dreamsync.capture.writer.subprocess.Popen", side_effect=_mock_ffmpeg_success):
+        with patch("dreamsync.capture.writer.resolve_ffmpeg", return_value="ffmpeg"), \
+             patch("dreamsync.capture.writer.subprocess.Popen", side_effect=_mock_ffmpeg_success):
             result = writer.finalize(pcm, metadata=meta)
 
         assert result is not None
@@ -170,7 +183,8 @@ class TestNaming:
         writer = SongFileWriter(cfg)
         pcm = _sine_pcm(duration=2.0)
 
-        with patch("dreamsync.capture.writer.subprocess.Popen", side_effect=_mock_ffmpeg_success):
+        with patch("dreamsync.capture.writer.resolve_ffmpeg", return_value="ffmpeg"), \
+             patch("dreamsync.capture.writer.subprocess.Popen", side_effect=_mock_ffmpeg_success):
             result = writer.finalize(pcm, metadata=None)
 
         assert result is not None
@@ -183,7 +197,8 @@ class TestNaming:
         pcm = _sine_pcm(duration=2.0)
         meta = {"track_name": "Test", "artist": "Artist"}
 
-        with patch("dreamsync.capture.writer.subprocess.Popen", side_effect=_mock_ffmpeg_success):
+        with patch("dreamsync.capture.writer.resolve_ffmpeg", return_value="ffmpeg"), \
+             patch("dreamsync.capture.writer.subprocess.Popen", side_effect=_mock_ffmpeg_success):
             p1 = writer.finalize(pcm, metadata=meta)
             p2 = writer.finalize(pcm, metadata=meta)
 
@@ -209,7 +224,8 @@ class TestEncodeErrors:
             mock_proc.returncode = 1
             return mock_proc
 
-        with patch("dreamsync.capture.writer.subprocess.Popen", side_effect=_mock_ffmpeg_fail):
+        with patch("dreamsync.capture.writer.resolve_ffmpeg", return_value="ffmpeg"), \
+             patch("dreamsync.capture.writer.subprocess.Popen", side_effect=_mock_ffmpeg_fail):
             with pytest.raises(EncodeError, match="ffmpeg exited"):
                 writer.finalize(pcm)
 
@@ -225,7 +241,8 @@ class TestEncodeErrors:
             # Don't create the output file
             return mock_proc
 
-        with patch("dreamsync.capture.writer.subprocess.Popen", side_effect=_mock_ffmpeg_no_output):
+        with patch("dreamsync.capture.writer.resolve_ffmpeg", return_value="ffmpeg"), \
+             patch("dreamsync.capture.writer.subprocess.Popen", side_effect=_mock_ffmpeg_no_output):
             with pytest.raises(EncodeError, match="missing or empty"):
                 writer.finalize(pcm)
 
@@ -254,7 +271,8 @@ class TestPcmConversion:
             mock_proc.returncode = 0
             return mock_proc
 
-        with patch("dreamsync.capture.writer.subprocess.Popen", side_effect=_capture_popen):
+        with patch("dreamsync.capture.writer.resolve_ffmpeg", return_value="ffmpeg"), \
+             patch("dreamsync.capture.writer.subprocess.Popen", side_effect=_capture_popen):
             writer.finalize(pcm)
 
         # Verify the int16 data was clipped

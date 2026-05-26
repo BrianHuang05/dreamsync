@@ -786,6 +786,21 @@ class MultiGoveeLanAdapterTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(len(sent), 1)
 
+    def test_render_mode_can_be_overridden_per_frame(self) -> None:
+        sent: list = []
+        adapter = self._make_adapter(sent, ip="192.168.1.10", segments=3)
+        renderer = SegmentRenderer(segments=3, mode=RenderMode.SOLID)
+        multi = MultiGoveeLanAdapter([
+            (adapter, renderer, DeviceRole.PRIMARY),
+        ])
+
+        intent = LightingIntent(
+            mode=EffectMode.AMBIENT, intensity=0.5, speed=0.4, bpm=120.0,
+            color="#00ff00",
+        )
+        multi.send_frame(0.0, intent, params={"_render_mode": "gradient"})
+        self.assertEqual(renderer.mode, RenderMode.GRADIENT)
+
 
 if __name__ == "__main__":
     unittest.main()

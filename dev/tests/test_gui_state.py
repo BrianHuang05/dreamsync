@@ -1,0 +1,84 @@
+from __future__ import annotations
+
+import time
+from pathlib import Path
+
+from dreamsync.gui.models.capture_settings import CaptureSettings
+from dreamsync.gui.models.reactive_settings import ReactiveSettings
+from dreamsync.gui.settings import GuiSettings, GuiSettingsStore
+from dreamsync.gui.state import AppState
+from dreamsync.gui.workers import WorkerPool
+
+
+def test_settings_round_trip(tmp_path: Path):
+    store = GuiSettingsStore(tmp_path / "gui-settings.json")
+    settings = GuiSettings(
+        last_config_path="dev/devices-dummy.yaml",
+        last_profile_path="src/dreamsync/profiles/aurora.yaml",
+        last_tab="Queue",
+        window_geometry="abc123",
+        splitter_sizes=(240, 880),
+        output_target_mode="hardware",
+        selected_output_audio_device_id=7,
+        selected_live_input_device_id=3,
+        hardware_fallback_to_simulation=False,
+        recent_saved_show_paths=("a.show.json", "b.show.json"),
+        capture_settings=CaptureSettings(
+            capture_dir="captures",
+            naming_mode="metadata",
+            max_capture_buffer=12,
+            device_pattern="Cable",
+            sample_rate=48000,
+            channels=2,
+            pipeline_playback_device_id=7,
+            purge_after_playback=True,
+        ),
+        reactive_settings=ReactiveSettings(
+            render_mode="pulse",
+            sample_rate=48000,
+            frame_size=4096,
+            hop_size=1024,
+            blocksize=2048,
+            telemetry_dir="telemetry",
+            profile_strategy="profile_rotation",
+            rotation_profiles=("aurora", "sunset"),
+            smart_rotation=True,
+        ),
+    )
+
+    store.save(settings)
+    loaded = store.load()
+
+    assert loaded == settings
+
+
+def test_app_state_transitions():
+    state = AppState()
+    state = state.with_tab("Palettes").with_diagnostic("ready")
+
+    assert state.selected_tab == "Palettes"
+    assert state.diagnostics[-1] == "ready"
+
+
+def test_reactive_settings_accept_wave_and_gradient():
+    assert ReactiveSettings(render_mode="wave").validate() == ()
+    assert ReactiveSettings(render_mode="gradient").validate() == ()
+
+
+def test_worker_pool_success_and_failure():
+    pool = WorkerPool(max_workers=2)
+    try:
+        pool.submit("ok", lambda: 7)
+        pool.submit("fail", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        events = []
+        for _ in range(20):
+            time.sleep(0.01)
+            events = pool.drain_events()
+            if len(events) >= 2:
+                break
+        names = {event.name for event in events}
+        assert names == {"ok", "fail"}
+        assert any(getattr(event, "result", None) == 7 for event in events)
+        assert any(str(getattr(event, "error", "")) == "boom" for event in events)
+    finally:
+        pool.shutdown()

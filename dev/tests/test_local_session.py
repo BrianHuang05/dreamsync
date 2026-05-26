@@ -117,6 +117,68 @@ class TestCacheIntegration:
         assert result is None
         assert session._compile_errors == 1
 
+    @patch("dreamsync.local_session.analyze_song")
+    @patch("dreamsync.local_session.cached_compile_show")
+    def test_profile_resolver_applies_per_track_compile(self, mock_compile, mock_analyze):
+        """Track-specific profile resolution is used for cache and compile calls."""
+        timeline = _make_timeline()
+        mock_analyze.return_value = MagicMock()
+        mock_compile.return_value = (timeline, False)
+
+        cache = MagicMock()
+        cache.has = MagicMock(return_value=False)
+        cache.get = MagicMock(return_value=None)
+        resolved_profile = MagicMock(name="resolved_profile")
+        resolver = MagicMock(return_value=resolved_profile)
+
+        adapter = MagicMock()
+        adapter.activate = MagicMock()
+        adapter.deactivate = MagicMock()
+        adapter.send_frame = MagicMock(return_value=True)
+        adapter.devices = []
+
+        session = LocalShowSession(
+            adapter,
+            cache=cache,
+            profile=None,
+            profile_resolver=resolver,
+        )
+
+        result = session.load_track(Path("test.mp3"))
+
+        assert result is not None
+        resolver.assert_called_once()
+        cache.has.assert_called_once_with(session._track_id_for_file(Path("test.mp3")), resolved_profile)
+        mock_compile.assert_called_once()
+        assert mock_compile.call_args.args[1] is resolved_profile
+
+    def test_timeline_resolver_applies_after_cache_lookup(self):
+        """Cached timelines still pass through the track-level timeline resolver."""
+        timeline = _make_timeline()
+        patched_timeline = _make_timeline(metadata={"patched": True})
+        cache = MagicMock()
+        cache.has = MagicMock(return_value=True)
+        cache.get = MagicMock(return_value=timeline)
+        resolver = MagicMock(return_value=patched_timeline)
+
+        adapter = MagicMock()
+        adapter.activate = MagicMock()
+        adapter.deactivate = MagicMock()
+        adapter.send_frame = MagicMock(return_value=True)
+        adapter.devices = []
+
+        session = LocalShowSession(
+            adapter,
+            cache=cache,
+            profile=None,
+            timeline_resolver=resolver,
+        )
+
+        result = session.load_track(Path("test.mp3"))
+
+        assert result is patched_timeline
+        resolver.assert_called_once_with(Path("test.mp3"), timeline)
+
 
 # ---------------------------------------------------------------------------
 # Playback Tests
@@ -228,6 +290,43 @@ class TestPlayback:
 
         assert result is not None
         assert result.duration == 180.0
+
+    def test_local_session_snapshot_defaults(self):
+        session, _, _ = _make_session()
+        snapshot = session.session_snapshot()
+
+        assert snapshot["playback_state"] == "idle"
+        assert snapshot["audio_output"] == "system default"
+
+    def test_local_session_snapshot_exposes_runtime_control_fields(self):
+        session, _, _ = _make_session()
+        cue = ShowCue(
+            t=0.0,
+            render_mode="gradient",
+            color_palette=("#111111", "#222222"),
+            intensity=0.8,
+            speed=1.0,
+            params={
+                "active_eq_routes": [{"band": "bass", "when": "dominant"}],
+                "active_instrument_routes": [{"instrument": "vocals", "when": "dominant"}],
+                "scene_layers": [{"instrument": "vocals"}],
+            },
+            transition="cut",
+            transition_beats=0,
+        )
+        session._current_track = Path("song.mp3")
+        session._current_timeline = _make_timeline(cues=(cue,))
+        session._current_runtime = MagicMock(current_cue=cue)
+        session.update_runtime_control(render_mode="wave")
+
+        snapshot = session.session_snapshot()
+
+        assert snapshot["runtime_control"]["active"] is True
+        assert snapshot["current_render_mode"] == "gradient"
+        assert snapshot["current_palette"] == ("#111111", "#222222")
+        assert snapshot["runtime_state"]["active_eq_routes"][0]["band"] == "bass"
+        assert snapshot["runtime_state"]["active_instrument_routes"][0]["instrument"] == "vocals"
+        assert snapshot["runtime_state"]["active_scene_layers"][0]["instrument"] == "vocals"
 
 
 # ---------------------------------------------------------------------------
@@ -461,6 +560,40 @@ class TestLocalPlaylistSession:
 
         # Both tracks were played (finished -> next -> finished -> exhausted)
         assert session._tracks_played == 2
+
+    def test_precompile_upcoming_uses_profile_resolver(self, tmp_path):
+        """Upcoming-track precompile checks the effective per-track profile."""
+        from dreamsync.playlist import content_hash_track_id
+
+        for name in ("a.mp3", "b.mp3"):
+            (tmp_path / name).touch()
+
+        playlist = PlaylistManager.from_directory(tmp_path)
+        adapter = MagicMock()
+        adapter.activate = MagicMock()
+        adapter.deactivate = MagicMock()
+        adapter.send_frame = MagicMock(return_value=True)
+        adapter.devices = []
+        cache = MagicMock()
+        cache.has = MagicMock(return_value=False)
+        resolved_profile = MagicMock(name="resolved_profile")
+        resolver = MagicMock(return_value=resolved_profile)
+
+        session = LocalPlaylistSession(
+            adapter,
+            playlist,
+            cache=cache,
+            profile=None,
+            profile_resolver=resolver,
+        )
+        session._session.load_track = MagicMock(return_value=_make_timeline())
+
+        session._precompile_upcoming()
+
+        upcoming = playlist.peek_next(count=2)[0]
+        expected_track_id = content_hash_track_id(upcoming)
+        cache.has.assert_any_call(expected_track_id, resolved_profile)
+        resolver.assert_called()
 
     @patch("dreamsync.local_session.AudioPlayer")
     def test_signal_next_skips_track(self, MockPlayer, tmp_path):
@@ -708,6 +841,23 @@ class TestLocalPlaylistSession:
         with pytest.raises(ValueError):
             session.remove_track(0)
 
+    def test_session_snapshot_reports_runtime_queue_state(self, tmp_path):
+        for name in ("a.mp3", "b.mp3"):
+            (tmp_path / name).touch()
+
+        playlist = PlaylistManager.from_directory(tmp_path)
+        adapter = MagicMock()
+        adapter.activate = MagicMock()
+        adapter.deactivate = MagicMock()
+        adapter.devices = []
+
+        session = LocalPlaylistSession(adapter, playlist, cache=MagicMock(), profile=None)
+        snapshot = session.session_snapshot()
+
+        assert snapshot["current_track"].name == "a.mp3"
+        assert snapshot["current_index"] == 0
+        assert snapshot["queue"]["current_index"] == 0
+
     def test_move_track_reorders_upcoming_items(self, tmp_path):
         for name in ("a.mp3", "b.mp3", "c.mp3", "d.mp3"):
             (tmp_path / name).touch()
@@ -740,6 +890,71 @@ class TestLocalPlaylistSession:
 
         assert session._signal_jump.is_set() is True
         assert session._consume_jump_target() == 2
+
+    def test_playlist_session_snapshot_defaults(self, tmp_path):
+        for name in ("a.mp3", "b.mp3"):
+            (tmp_path / name).touch()
+
+        playlist = PlaylistManager.from_directory(tmp_path)
+        adapter = MagicMock()
+        adapter.activate = MagicMock()
+        adapter.deactivate = MagicMock()
+        adapter.devices = []
+
+        session = LocalPlaylistSession(adapter, playlist, cache=MagicMock(), profile=None)
+        snapshot = session.session_snapshot()
+
+        assert snapshot["playback_state"] == "idle"
+        assert snapshot["current_track"].name == "a.mp3"
+
+    def test_append_track_adds_to_queue(self, tmp_path):
+        for name in ("a.mp3", "b.mp3", "c.mp3"):
+            (tmp_path / name).touch()
+
+        playlist = PlaylistManager.from_tracks([tmp_path / "a.mp3", tmp_path / "b.mp3"])
+        adapter = MagicMock()
+        adapter.activate = MagicMock()
+        adapter.deactivate = MagicMock()
+        adapter.devices = []
+
+        session = LocalPlaylistSession(adapter, playlist, cache=MagicMock(), profile=None)
+        appended = session.append_track(tmp_path / "c.mp3")
+
+        assert appended.name == "c.mp3"
+        assert [p.name for p in session.queue_snapshot()["tracks"]] == ["a.mp3", "b.mp3", "c.mp3"]
+
+    def test_insert_track_places_item_into_upcoming_queue(self, tmp_path):
+        for name in ("a.mp3", "b.mp3", "c.mp3", "d.mp3"):
+            (tmp_path / name).touch()
+
+        playlist = PlaylistManager.from_tracks(
+            [tmp_path / "a.mp3", tmp_path / "b.mp3", tmp_path / "d.mp3"]
+        )
+        adapter = MagicMock()
+        adapter.activate = MagicMock()
+        adapter.deactivate = MagicMock()
+        adapter.devices = []
+
+        session = LocalPlaylistSession(adapter, playlist, cache=MagicMock(), profile=None)
+        inserted = session.insert_track(1, tmp_path / "c.mp3")
+
+        assert inserted.name == "c.mp3"
+        assert [p.name for p in session.queue_snapshot()["tracks"]] == ["a.mp3", "c.mp3", "b.mp3", "d.mp3"]
+
+    def test_skip_current_alias_sets_next_signal(self, tmp_path):
+        for name in ("a.mp3", "b.mp3"):
+            (tmp_path / name).touch()
+
+        playlist = PlaylistManager.from_directory(tmp_path)
+        adapter = MagicMock()
+        adapter.activate = MagicMock()
+        adapter.deactivate = MagicMock()
+        adapter.devices = []
+
+        session = LocalPlaylistSession(adapter, playlist, cache=MagicMock(), profile=None)
+        session.skip_current()
+
+        assert session._signal_next.is_set() is True
 
 
 # ---------------------------------------------------------------------------

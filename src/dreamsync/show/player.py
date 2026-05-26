@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import numpy as np
@@ -35,6 +36,7 @@ class AudioPlayer:
         self._playing: bool = False
         self._finished: bool = False
         self._stream = None  # created lazily in play()
+        self._clock_anchor: float | None = None
 
     # -- sounddevice callback ------------------------------------------------
 
@@ -77,11 +79,14 @@ class AudioPlayer:
                 callback=self._audio_callback,
             )
             self._stream.start()
+        self._clock_anchor = time.monotonic() - (self._position / self._sr)
         self._playing = True
 
     def pause(self) -> None:
         """Pause playback (audio stops, position freezes)."""
+        self._sync_position_to_clock()
         self._playing = False
+        self._clock_anchor = None
 
     def seek(self, t: float) -> None:
         """Jump to time *t* (seconds).  Clamps to [0, duration]."""
@@ -90,10 +95,14 @@ class AudioPlayer:
         self._position = sample
         if sample < len(self._signal):
             self._finished = False
+        if self._playing:
+            self._clock_anchor = time.monotonic() - (self._position / self._sr)
 
     def stop(self) -> None:
         """Stop playback and release the audio stream."""
+        self._sync_position_to_clock()
         self._playing = False
+        self._clock_anchor = None
         if self._stream is not None:
             self._stream.stop()
             self._stream.close()
@@ -102,7 +111,11 @@ class AudioPlayer:
     @property
     def position_seconds(self) -> float:
         """Current playback position in seconds."""
-        return self._position / self._sr
+        position = self._position / self._sr
+        if self._playing and self._clock_anchor is not None:
+            estimated = max(0.0, time.monotonic() - self._clock_anchor)
+            position = max(position, estimated)
+        return min(position, self.duration)
 
     @property
     def duration(self) -> float:
@@ -117,4 +130,14 @@ class AudioPlayer:
     @property
     def finished(self) -> bool:
         """True if playback reached the end of the file."""
+        if not self._finished and self.position_seconds >= self.duration:
+            self._finished = True
         return self._finished
+
+    def _sync_position_to_clock(self) -> None:
+        if not self._playing or self._clock_anchor is None:
+            return
+        estimated_samples = int(max(0.0, time.monotonic() - self._clock_anchor) * self._sr)
+        self._position = max(self._position, min(estimated_samples, len(self._signal)))
+        if self._position >= len(self._signal):
+            self._finished = True

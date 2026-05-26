@@ -2,46 +2,73 @@
 
 from __future__ import annotations
 
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from dreamsync.output.auto_detect import load_device_config
-from dreamsync.spatial.models import DeviceOrientation, DevicePlacement, parse_device_placement
+from dreamsync.spatial.models import (
+    DeviceOrientation,
+    DevicePlacement,
+    SectionPlacement,
+    parse_device_placement,
+    placement_to_mapping,
+)
 
 
 class ParseDevicePlacementTests(unittest.TestCase):
     def test_no_spatial_fields_returns_none(self) -> None:
         self.assertIsNone(parse_device_placement({"address": "10.0.0.1"}))
 
-    def test_left_front_alias_parses_to_negative_coordinates(self) -> None:
-        placement = parse_device_placement({"x_position": "left", "y_position": "front"})
-        self.assertEqual(placement, DevicePlacement(x=-1.0, y=-1.0))
+    def test_left_top_front_aliases_parse_to_canonical_axes(self) -> None:
+        placement = parse_device_placement(
+            {"x_position": "left", "y_position": "top", "z_position": "front"}
+        )
+        self.assertEqual(placement, DevicePlacement(x=-1.0, y=1.0, z=-1.0))
 
     def test_center_alias_parses_to_zero(self) -> None:
-        placement = parse_device_placement({"x_position": "center", "y_position": "center"})
+        placement = parse_device_placement(
+            {"x_position": "center", "y_position": "center", "z_position": "center"}
+        )
         assert placement is not None
         self.assertEqual(placement.x, 0.0)
         self.assertEqual(placement.y, 0.0)
+        self.assertEqual(placement.z, 0.0)
 
-    def test_right_back_alias_parses_to_positive_coordinates(self) -> None:
-        placement = parse_device_placement({"x_position": "right", "y_position": "back"})
+    def test_right_bottom_back_aliases_parse_to_positive_depth(self) -> None:
+        placement = parse_device_placement(
+            {"x_position": "right", "y_position": "bottom", "z_position": "back"}
+        )
         assert placement is not None
         self.assertEqual(placement.x, 1.0)
-        self.assertEqual(placement.y, 1.0)
+        self.assertEqual(placement.y, -1.0)
+        self.assertEqual(placement.z, 1.0)
+
+    def test_legacy_front_back_y_alias_maps_to_depth_for_compatibility(self) -> None:
+        placement = parse_device_placement({"x_position": "left", "y_position": "front"})
+        self.assertEqual(placement, DevicePlacement(x=-1.0, y=0.0, z=-1.0))
 
     def test_numeric_coordinates_parse(self) -> None:
         placement = parse_device_placement({"x": 0.25, "y": -0.75})
         self.assertEqual(placement, DevicePlacement(x=0.25, y=-0.75))
+
+    def test_numeric_coordinates_parse_with_z(self) -> None:
+        placement = parse_device_placement({"x": 0.25, "y": -0.75, "z": 0.5})
+        self.assertEqual(placement, DevicePlacement(x=0.25, y=-0.75, z=0.5))
 
     def test_invalid_x_alias_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "x_position"):
             parse_device_placement({"x_position": "west", "y_position": "front"})
 
     def test_invalid_y_alias_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "y_position"):
+        with self.assertRaisesRegex(ValueError, "y_position|z"):
             parse_device_placement({"x_position": "left", "y_position": "north"})
+
+    def test_invalid_z_alias_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "z_position"):
+            parse_device_placement(
+                {"x_position": "left", "y_position": "center", "z_position": "north"}
+            )
 
     def test_out_of_range_x_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "x must be"):
@@ -52,7 +79,7 @@ class ParseDevicePlacementTests(unittest.TestCase):
             parse_device_placement({"x": 0.0, "y": -1.1})
 
     def test_default_orientation_applied(self) -> None:
-        placement = parse_device_placement({"x_position": "left", "y_position": "front"})
+        placement = parse_device_placement({"x_position": "left", "y_position": "center"})
         assert placement is not None
         self.assertEqual(placement.orientation, DeviceOrientation.LEFT_TO_RIGHT)
 
@@ -60,12 +87,12 @@ class ParseDevicePlacementTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "orientation"):
             parse_device_placement({
                 "x_position": "left",
-                "y_position": "front",
+                "y_position": "center",
                 "orientation": "backwards",
             })
 
     def test_default_weight_applied(self) -> None:
-        placement = parse_device_placement({"x_position": "left", "y_position": "front"})
+        placement = parse_device_placement({"x_position": "left", "y_position": "center"})
         assert placement is not None
         self.assertEqual(placement.weight, 1.0)
 
@@ -73,17 +100,62 @@ class ParseDevicePlacementTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "weight"):
             parse_device_placement({
                 "x_position": "left",
-                "y_position": "front",
+                "y_position": "center",
                 "weight": 0.0,
             })
+
+    def test_out_of_range_z_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "z must be"):
+            parse_device_placement({"x": 0.0, "y": 0.0, "z": 1.1})
 
     def test_both_alias_and_numeric_axis_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "x_position"):
             parse_device_placement({
                 "x_position": "left",
                 "x": -1.0,
-                "y_position": "front",
+                "y_position": "center",
             })
+
+    def test_placement_to_mapping_includes_z(self) -> None:
+        mapping = placement_to_mapping(DevicePlacement(x=0.2, y=-0.2, z=0.8))
+        self.assertEqual(mapping["z"], 0.8)
+
+    def test_sections_are_parsed_and_serialized(self) -> None:
+        placement = parse_device_placement(
+            {
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0,
+                "sections": [
+                    {"index": 0, "x": -1.0, "y": 0.2, "z": -0.5},
+                    {"index": 1, "x": 1.0, "y": 0.8, "z": 0.5},
+                ],
+            }
+        )
+        assert placement is not None
+        self.assertEqual(
+            placement.sections,
+            (
+                SectionPlacement(index=0, x=-1.0, y=0.2, z=-0.5),
+                SectionPlacement(index=1, x=1.0, y=0.8, z=0.5),
+            ),
+        )
+        mapping = placement_to_mapping(placement)
+        self.assertEqual(len(mapping["sections"]), 2)
+
+    def test_sections_without_root_position_average_to_device_position(self) -> None:
+        placement = parse_device_placement(
+            {
+                "sections": [
+                    {"index": 0, "x": -1.0, "y": -1.0, "z": -1.0},
+                    {"index": 1, "x": 1.0, "y": 1.0, "z": 1.0},
+                ]
+            }
+        )
+        self.assertEqual(placement, DevicePlacement(x=0.0, y=0.0, z=0.0, sections=(
+            SectionPlacement(index=0, x=-1.0, y=-1.0, z=-1.0),
+            SectionPlacement(index=1, x=1.0, y=1.0, z=1.0),
+        )))
 
 
 class LoadDeviceConfigSpatialTests(unittest.TestCase):

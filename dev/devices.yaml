@@ -1,78 +1,335 @@
-# DreamSync Device Configuration
-# Updated from BLE scan results (2/27).
-#
-# Excluded (unknown / likely neighbors):
-#   H612F  DD:6E:05:86:6A:53  — same device as LAN H612F (couch), redundant
-#   H808A  DA:B9:84:C6:35:57  — same device as LAN H808A, redundant or neighbor's
-#   H6199  D6:36:34:39:35:3C  — unknown owner
-#   H6053  A4:C1:38:12:E5:5F  — unknown owner
-#   H612F  DE:99:C1:C6:5B:34  — very weak signal (-95), likely neighbor's
-
 devices:
-  # --- LAN devices -----------------------------------------------------------
-
-  - name: "Couch strip (H612F)"
-    address: "10.126.166.180"
-    type: lan
-    segments: 7
-    transport: ptreal
-    role: primary
-
-  - name: "Overhead strip (H808A)"
-    address: "10.126.166.156"
-    type: lan
-    segments: 25
-    transport: razer
-    role: primary
-
-  # --- BLE devices (strips) ---------------------------------------------------
-
-  - name: "Counter strip (H617A)"
-    address: "C7:90:80:C6:44:74"
-    type: ble
-    protocol: segment
-    role: accent
-
-  - name: "TV backlight (H6097)"
-    address: "D7:01:86:46:44:59"
-    type: ble
-    protocol: segment
-    role: accent
-
-  # --- BLE devices (smart bulbs) ----------------------------------------------
-
-  - name: "Smart bulb 1 (H6006)"
-    address: "D0:C9:07:95:15:DB"
-    type: ble
-    protocol: bulb
-    role: accent
-
-  - name: "Smart bulb 2 (H6006)"
-    address: "98:17:3C:09:7E:ED"
-    type: ble
-    protocol: bulb
-    role: accent
-
-  - name: "Smart bulb 3 (H6006)"
-    address: "D0:C9:07:95:14:8B"
-    type: ble
-    protocol: bulb
-    role: accent
-
-  - name: "Smart bulb 4 (H6006)"
-    address: "D0:C9:07:C5:14:45"
-    type: ble
-    protocol: bulb
-    role: accent
-
-  - name: "Smart bulb 5 (H6006)"
-    address: "D0:C9:07:70:AD:A3"
-    type: ble
-    protocol: bulb
-    role: accent
-
-  - name: "Smart bulb 6 (H6006)"
-    address: "98:17:3C:07:BA:47"
-    type: ble
-    protocol: bulb
-    role: accent
+- name: Couch strip (H612F)
+  address: 10.126.166.180
+  type: lan
+  segments: 7
+  transport: ptreal
+  role: primary
+  sections:
+  - index: 0
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 1
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 2
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 3
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 4
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 5
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 6
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  x: 0.0
+  y: 0.0
+  z: 0.0
+- name: Overhead strip (H808A)
+  address: 10.126.166.156
+  type: lan
+  segments: 25
+  transport: razer
+  role: primary
+  sections:
+  - index: 0
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 1
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 2
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 3
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 4
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 5
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 6
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 7
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 8
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 9
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 10
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 11
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 12
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 13
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 14
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 15
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 16
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 17
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 18
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 19
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 20
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 21
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 22
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 23
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 24
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  x: 0.0
+  y: 0.0
+  z: 0.0
+- name: Counter strip (H617A)
+  address: C7:90:80:C6:44:74
+  type: ble
+  protocol: segment
+  role: accent
+  sections:
+  - index: 0
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 1
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 2
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 3
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 4
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 5
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 6
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 7
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 8
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 9
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 10
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 11
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 12
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 13
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 14
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  x: 0.0
+  y: 0.0
+  z: 0.0
+- name: TV backlight (H6097)
+  address: D7:01:86:46:44:59
+  type: ble
+  protocol: segment
+  role: accent
+  sections:
+  - index: 0
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 1
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 2
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  - index: 3
+    x: 0.0
+    y: 0.0
+    z: -0.04285714285714286
+  - index: 4
+    x: 0.0
+    y: 0.0
+    z: 0.41071428571428575
+  - index: 5
+    x: 0.0
+    y: 0.0
+    z: 0.3178571428571429
+  - index: 6
+    x: 0.0
+    y: 0.0
+    z: 0.4928571428571428
+  - index: 7
+    x: 0.0
+    y: 0.0
+    z: 0.6999999999999998
+  - index: 8
+    x: 0.0
+    y: 0.0
+    z: 0.22857142857142854
+  - index: 9
+    x: 0.9857142857142858
+    y: 0.0
+    z: -0.15357142857142855
+  - index: 10
+    x: 0.0
+    y: 0.0
+    z: -0.26428571428571423
+  - index: 11
+    x: 0.0
+    y: 0.0
+    z: -0.7428571428571429
+  - index: 12
+    x: 0.0
+    y: 0.0
+    z: -0.2714285714285714
+  - index: 13
+    x: 0.6821428571428567
+    y: 0.0
+    z: -0.49999999999999983
+  - index: 14
+    x: 1.0
+    y: 0.0
+    z: 0.85
+  x: 0.17785714285714285
+  y: 0.0
+  z: 0.06833333333333334
+- name: Smart bulb 1 (H6006)
+  address: D0:C9:07:95:15:DB
+  type: ble
+  protocol: bulb
+  role: accent
+  x: 0.4571428571428572
+  y: 0.0
+  z: -0.8599330357142857
+- name: Smart bulb 2 (H6006)
+  address: 98:17:3C:09:7E:ED
+  type: ble
+  protocol: bulb
+  role: accent
+  x: 0.22142857142857145
+  y: 0.9875
+  z: 0.0
+- name: Smart bulb 3 (H6006)
+  address: D0:C9:07:95:14:8B
+  type: ble
+  protocol: bulb
+  role: accent
+  x: -0.7392857142857135
+  y: 0.0
+  z: 0.2178571428571428
+- name: Smart bulb 4 (H6006)
+  address: D0:C9:07:C5:14:45
+  type: ble
+  protocol: bulb
+  role: accent
+  x: -1.0
+  y: 0.0
+  z: 0.8107142857142856
+- name: Smart bulb 5 (H6006)
+  address: D0:C9:07:70:AD:A3
+  type: ble
+  protocol: bulb
+  role: accent
+  x: 0.15357142857142855
+  y: -0.9125
+  z: 0.40122767857142894
+- name: Smart bulb 6 (H6006)
+  address: 98:17:3C:07:BA:47
+  type: ble
+  protocol: bulb
+  role: accent
+  x: 0.692857142857143
+  y: 0.0
+  z: -0.5664062499999999

@@ -94,6 +94,17 @@ class SpotifyQueueWatcher:
         with self._lock:
             return self._auth_failed
 
+    def snapshot(self) -> dict[str, object]:
+        """Return a thread-safe snapshot of the current watcher state."""
+        with self._lock:
+            return {
+                "current_track": self._current_track,
+                "playback_state": self._playback_state,
+                "queue": self._queue,
+                "auth_failed": self._auth_failed,
+                "consecutive_errors": self._consecutive_errors,
+            }
+
     # -- Lifecycle -----------------------------------------------------------
 
     def start(self) -> None:

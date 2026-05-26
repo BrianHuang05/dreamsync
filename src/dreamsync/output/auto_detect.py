@@ -26,7 +26,9 @@ from dreamsync.output.govee_lan import (
 )
 from dreamsync.output.roles import DeviceRole, default_device_config, infer_device_type
 from dreamsync.render import RenderMode, SegmentRenderer
+from dreamsync.spatial.mapper import SpatialMapper
 from dreamsync.spatial.models import DevicePlacement, parse_device_placement
+from dreamsync.spatial.models import placement_to_mapping
 
 _logger = logging.getLogger(__name__)
 
@@ -367,6 +369,36 @@ def load_device_config(path: Path) -> list[DeviceConfig]:
     return configs
 
 
+def save_device_config(path: Path, configs: list[DeviceConfig]) -> None:
+    """Write a list of DeviceConfig objects back to a YAML file."""
+    yaml = _require_yaml()
+    payload = {"devices": [device_config_to_mapping(cfg) for cfg in configs]}
+    with open(path, "w", encoding="utf-8") as handle:
+        yaml.safe_dump(payload, handle, sort_keys=False)
+
+
+def device_config_to_mapping(config: DeviceConfig) -> dict[str, object]:
+    """Serialize a DeviceConfig to a YAML-friendly mapping."""
+    data: dict[str, object] = {
+        "name": config.name,
+        "address": config.address,
+        "type": config.type,
+        "segments": config.segments,
+        "max_fps": config.max_fps,
+    }
+    if config.transport is not None:
+        data["transport"] = config.transport
+    if config.protocol is not None:
+        data["protocol"] = config.protocol
+    if config.role is not None:
+        data["role"] = config.role
+    if config.brightness_scale is not None:
+        data["brightness_scale"] = config.brightness_scale
+    if config.placement is not None:
+        data.update(placement_to_mapping(config.placement))
+    return data
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -606,12 +638,16 @@ def build_multi_adapter(
         _logger.warning("No reachable devices — falling back to null adapter (audio only).")
         return NullMultiAdapter()
 
+    spatial_enabled = False
+
     for dev in detected:
         if dev.role == "unreachable":
             _logger.warning("Skipping unreachable device: %s (%s)", dev.name, dev.address)
             continue
 
         cfg = dev.config
+        if cfg.placement is not None:
+            spatial_enabled = True
 
         # Resolve role and brightness_scale: explicit config wins, else defaults
         device_type = infer_device_type(cfg.segments, cfg.name)
@@ -658,9 +694,22 @@ def build_multi_adapter(
                 segments=cfg.segments,
                 max_fps=cfg.max_fps,
             )
-            ble_followers.append(GoveeBleAdapter(ble_config))
+            renderer = None
+            if proto == BleProtocol.SEGMENT:
+                renderer = SegmentRenderer(
+                    segments=cfg.segments,
+                    mode=render_mode,
+                    mirror=mirror,
+                    device_type=device_type.value,
+                )
+            ble_followers.append((GoveeBleAdapter(ble_config), device_role, device_bs, cfg.placement, renderer))
 
-    return MultiGoveeLanAdapter(device_triples, ble_followers=ble_followers)
+    spatial_mapper = SpatialMapper(enabled=spatial_enabled) if spatial_enabled else None
+    return MultiGoveeLanAdapter(
+        device_triples,
+        ble_followers=ble_followers,
+        spatial_mapper=spatial_mapper,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -288,6 +288,19 @@ class GoveeBleAdapterSendColorTests(unittest.TestCase):
     def test_connected_default_false(self) -> None:
         self.assertFalse(self.adapter.connected)
 
+    def test_send_segment_colors_queues_segment_frame(self) -> None:
+        self.adapter.send_segment_colors([(255, 0, 0), (0, 255, 0)], 85)
+        item = self.adapter._queue.get_nowait()
+        self.assertEqual(item[0], "segment_frame")
+        self.assertEqual(item[1], ((255, 0, 0), (0, 255, 0)))
+        self.assertEqual(item[2], 85)
+
+    def test_duplicate_segment_frame_skipped(self) -> None:
+        frame = [(255, 0, 0), (0, 255, 0)]
+        self.adapter.send_segment_colors(frame, 90)
+        self.adapter.send_segment_colors(frame, 90)
+        self.assertEqual(self.adapter._queue.qsize(), 1)
+
 
 class GoveeBleAdapterEmitTests(unittest.TestCase):
     """Test the OutputAdapter-compatible emit method."""
@@ -451,6 +464,48 @@ class MultiAdapterBleFollowerTests(unittest.TestCase):
 
         multi = MultiGoveeLanAdapter([])
         multi.deactivate()  # should not raise
+
+    def test_continuous_spatial_frame_queues_segment_payload_for_ble_strip(self) -> None:
+        from dreamsync.output.govee_lan import MultiGoveeLanAdapter
+        from dreamsync.output.roles import DeviceRole
+        from dreamsync.render import SegmentRenderer
+        from dreamsync.spatial.mapper import SpatialMapper
+        from dreamsync.spatial.models import DevicePlacement, SectionPlacement
+
+        ble_adapter = GoveeBleAdapter(
+            GoveeBleConfig(address="AA:BB:CC:DD:EE:FF", protocol=BleProtocol.SEGMENT, segments=3)
+        )
+        renderer = SegmentRenderer(segments=3)
+        placement = DevicePlacement(
+            x=0.0,
+            y=0.0,
+            z=0.0,
+            sections=(
+                SectionPlacement(index=0, x=-1.0, y=0.0, z=0.0),
+                SectionPlacement(index=1, x=0.0, y=0.0, z=0.0),
+                SectionPlacement(index=2, x=1.0, y=0.0, z=0.0),
+            ),
+        )
+        multi = MultiGoveeLanAdapter(
+            [],
+            ble_followers=[(ble_adapter, DeviceRole.PRIMARY, 1.0, placement, renderer)],
+            spatial_mapper=SpatialMapper(enabled=True),
+        )
+
+        intent = LightingIntent(
+            mode=EffectMode.MOTION, intensity=1.0, speed=1.0, bpm=60.0, color="#ff0000",
+        )
+        multi.send_frame(
+            0.0,
+            intent,
+            params={"spatial_mode": "blend", "spatial_direction": "x+", "_spatial_palette": ("#0000ff", "#ff0000")},
+        )
+
+        item = ble_adapter._queue.get_nowait()
+        self.assertEqual(item[0], "segment_frame")
+        self.assertEqual(len(item[1]), 3)
+        self.assertLess(item[1][0][0], item[1][2][0])
+        self.assertGreater(item[1][0][2], item[1][2][2])
 
 
 # ---------------------------------------------------------------------------

@@ -162,11 +162,13 @@ class TestSerialization:
                     end_t=24.0,
                     parent_section_index=1,
                     dominant_proxy="bass",
+                    secondary_proxy="harmonic",
                     drums=0.21,
                     bass=0.82,
                     vocals=0.18,
                     harmonic=0.24,
                     percussive=0.29,
+                    active_proxies=("bass", "harmonic"),
                     pan_center=-0.35,
                     pan_width=0.42,
                     band_pan_centers=_band_vector(sub=-0.4, bass=-0.22, presence=0.18),
@@ -178,6 +180,8 @@ class TestSerialization:
         assert d["phrases"][0]["dominant_band"] == "bass"
         assert d["instrument_events"][0]["band"] == "presence"
         assert d["instrument_proxies"][0]["dominant_proxy"] == "bass"
+        assert d["instrument_proxies"][0]["secondary_proxy"] == "harmonic"
+        assert d["instrument_proxies"][0]["active_proxies"] == ["bass", "harmonic"]
         assert d["instrument_proxies"][0]["pan_center"] == -0.35
 
         loaded = SongStructure.from_dict(d)
@@ -186,6 +190,8 @@ class TestSerialization:
         assert loaded.instrument_events[0].band == "presence"
         assert loaded.instrument_proxies[0].bass == pytest.approx(0.82)
         assert loaded.instrument_proxies[0].dominant_proxy == "bass"
+        assert loaded.instrument_proxies[0].secondary_proxy == "harmonic"
+        assert loaded.instrument_proxies[0].active_proxies == ("bass", "harmonic")
         assert loaded.instrument_proxies[0].pan_center == pytest.approx(-0.35)
         assert loaded.instrument_proxies[0].band_pan_centers == _band_vector(
             sub=-0.4,
@@ -280,6 +286,12 @@ class TestAnalyzeSongMocked:
                         name="vocals",
                         sample_rate=audio.sample_rate,
                         path=str(audio_path.with_suffix(".vocals.wav")),
+                        kind="enhancement",
+                        confidence=0.78,
+                        proxy_envelope=(0.15, 0.45, 0.82),
+                        pan_hint=0.18,
+                        width_hint=0.24,
+                        metadata={"source": "mixed"},
                     ),
                 }
 
@@ -289,6 +301,10 @@ class TestAnalyzeSongMocked:
 
         assert result.metadata["stem_backend"] == "dummy"
         assert result.metadata["available_stems"] == ["vocals"]
+        assert result.metadata["stem_artifacts"]["vocals"]["kind"] == "enhancement"
+        assert result.metadata["stem_artifacts"]["vocals"]["confidence"] == 0.78
+        assert result.metadata["stem_artifacts"]["vocals"]["pan_hint"] == 0.18
+        assert result.metadata["stem_artifacts"]["vocals"]["metadata"]["source"] == "mixed"
 
     def test_analyze_song_json_output(self, tmp_path: Path):
         fake_mp3 = tmp_path / "test.mp3"

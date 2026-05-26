@@ -49,6 +49,25 @@ def hsl_to_hex(h: float, s: float, l: float) -> str:
     return rgb_to_hex(r, g, b)
 
 
+def hex_to_hsv(color: str) -> tuple[float, float, float]:
+    """'#ff4400' -> (h: 0-360, s: 0-1, v: 0-1)."""
+    r, g, b = hex_to_rgb(color)
+    r_f, g_f, b_f = r / 255.0, g / 255.0, b / 255.0
+    h, s, v = colorsys.rgb_to_hsv(r_f, g_f, b_f)
+    return (h * 360.0, s, v)
+
+
+def hsv_to_hex(h: float, s: float, v: float) -> str:
+    """(16.0, 1.0, 1.0) -> '#ff4400'."""
+    h_norm = (h % 360.0) / 360.0
+    r_f, g_f, b_f = colorsys.hsv_to_rgb(h_norm, s, v)
+    return rgb_to_hex(
+        max(0, min(255, round(r_f * 255))),
+        max(0, min(255, round(g_f * 255))),
+        max(0, min(255, round(b_f * 255))),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Interpolation
 # ---------------------------------------------------------------------------

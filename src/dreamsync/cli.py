@@ -54,6 +54,16 @@ def build_parser() -> argparse.ArgumentParser:
     devices_cmd.add_argument("--json", action="store_true", dest="json_output",
         help="Output raw JSON (machine-readable).")
 
+    gui = sub.add_parser("gui", help="Launch the DreamSync desktop GUI.")
+    gui.add_argument("--config", type=Path, default=None, help="Optional device config YAML to load on startup.")
+    gui.add_argument("--profile", type=Path, default=None, help="Optional profile YAML to load on startup.")
+    gui.add_argument(
+        "--close-after-ms",
+        type=int,
+        default=None,
+        help="Close the GUI automatically after N milliseconds (useful for smoke tests).",
+    )
+
     capture = sub.add_parser("capture", help="Capture system input and emit feature JSONL.")
     capture.add_argument("--duration", type=float, required=True, help="Capture duration in seconds.")
     capture.add_argument("--sample-rate", type=int, default=44100, help="Input sample rate.")
@@ -1133,6 +1143,19 @@ def main(argv: list[str] | None = None) -> int:
             print(format_device_table(outputs, kind="output", mark_capture=True))
             print()
         return 0
+
+    if args.command == "gui":
+        from .gui.app import GuiDependencyError, launch_gui
+
+        try:
+            return launch_gui(
+                config_path=args.config,
+                profile_path=args.profile,
+                close_after_ms=args.close_after_ms,
+            )
+        except GuiDependencyError as exc:
+            print(str(exc))
+            return 1
 
     if args.command == "capture":
         if getattr(args, "mp3", False):

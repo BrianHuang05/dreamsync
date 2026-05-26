@@ -50,7 +50,7 @@ class PreviewSimulationTests(unittest.TestCase):
                     section_id="intro-1",
                 ),
             ),
-            metadata={"_analysis_cache_version": 4, "title": "Cached Song"},
+            metadata={"_analysis_cache_version": 5, "title": "Cached Song"},
         )
         song.with_suffix(".analysis.json").write_text(
             json.dumps(structure.to_dict(), indent=2),
@@ -95,7 +95,7 @@ class PreviewSimulationTests(unittest.TestCase):
         self.assertEqual(compile_mock.call_count, 1)
         cached_structure = compile_mock.call_args.args[0]
         self.assertIsInstance(cached_structure, SongStructure)
-        self.assertEqual(cached_structure.metadata.get("_analysis_cache_version"), 4)
+        self.assertEqual(cached_structure.metadata.get("_analysis_cache_version"), 5)
 
     def test_simulation_adapter_exposes_section_node_colors(self) -> None:
         tmp_dir = Path(self.id().replace(".", "_"))

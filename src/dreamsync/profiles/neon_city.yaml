@@ -20,6 +20,22 @@ eq_routes:
     render_mode: "scroll"
     color_bias: "#00ccff"
 
+instrument_routes:
+  - instrument: "vocals"
+    when: "dominant"
+    color_bias: "#cceeff"
+    render_mode: "gradient"
+    spatial_preset: "blend_left_to_right"
+    pan_follow: 0.75
+    width_scale: 1.35
+  - instrument: "harmonic"
+    when: "present"
+    color_bias: "#66bbff"
+    render_mode: "wave"
+    spatial_preset: "blend_front_to_back"
+    pan_follow: 0.4
+    width_scale: 1.25
+
 moods:
   chill:
     palettes: ["cyber_blue"]
