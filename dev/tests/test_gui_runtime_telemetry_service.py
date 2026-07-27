@@ -34,6 +34,10 @@ class _FakeSession:
             "audio_output": "system default",
             "runtime_state": dict(self.runtime_state),
             "runtime_control": dict(self.runtime_control),
+            "playback_mode_used": "baked",
+            "baked_validation_valid": True,
+            "frame_lookup_count": 3,
+            "frame_lookup_avg_ms": 0.02,
         }
 
 
@@ -68,3 +72,7 @@ def test_runtime_telemetry_service_surfaces_runtime_state(tmp_path):
     assert snapshot.active_eq_routes[0]["band"] == "bass"
     assert snapshot.active_scene_layers[0]["instrument"] == "vocals"
     assert snapshot.runtime_control["active"] is True
+    assert snapshot.metrics["playback_mode_used"] == "baked"
+    assert snapshot.metrics["baked_validation_valid"] is True
+    assert snapshot.metrics["frame_lookup_count"] == 3
+    assert snapshot.metrics["frame_lookup_avg_ms"] == 0.02

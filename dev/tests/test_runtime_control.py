@@ -80,6 +80,83 @@ def test_apply_runtime_control_to_intent_params_tracks_runtime_state():
     assert params["runtime_control"]["active"] is True
 
 
+def test_effect_speed_multiplier_is_relative_to_current_cycle_intent():
+    cycle_intent = LightingIntent(
+        mode=EffectMode.PULSE,
+        intensity=0.5,
+        speed=0.8,
+        bpm=240.0,
+        color="#112233",
+    )
+
+    updated, _params = apply_runtime_control_to_intent_params(
+        cycle_intent,
+        {},
+        RuntimeControlState(speed_multiplier=0.5),
+    )
+
+    assert updated.bpm == 240.0
+    assert updated.speed == pytest.approx(0.4)
+
+
+def test_reactive_effect_bank_tracks_intent_and_explicit_effect_wins():
+    motion = LightingIntent(
+        mode=EffectMode.MOTION,
+        intensity=0.5,
+        speed=0.4,
+        bpm=120.0,
+        color="#112233",
+    )
+    state = RuntimeControlState(
+        effect_bank=("pulse", "wave", "ripple"),
+    )
+
+    _next_intent, params = apply_runtime_control_to_intent_params(
+        motion,
+        {},
+        state,
+    )
+    assert params["_render_mode"] == "wave"
+    assert params["runtime_control"]["effect_bank"] == (
+        "pulse",
+        "wave",
+        "ripple",
+    )
+
+    explicit = RuntimeControlState(
+        render_mode="ripple",
+        effect_bank=("pulse", "wave"),
+    )
+    _next_intent, params = apply_runtime_control_to_intent_params(
+        motion,
+        {},
+        explicit,
+    )
+    assert params["_render_mode"] == "ripple"
+    assert params["spatial_preset"] == "ripple_from_center"
+
+
+def test_reactive_palette_override_maps_live_director_color():
+    intent = LightingIntent(
+        mode=EffectMode.AMBIENT,
+        intensity=0.5,
+        speed=0.4,
+        bpm=100.0,
+        color="#112233",
+    )
+    state = RuntimeControlState(
+        palette_override=("#ff0000", "#00ff00", "#0000ff"),
+    )
+
+    next_intent, _params = apply_runtime_control_to_intent_params(
+        intent,
+        {},
+        state,
+    )
+
+    assert next_intent.color in state.palette_override
+
+
 def test_runtime_control_bus_update_and_clear_increment_revision():
     bus = RuntimeControlBus()
     initial = bus.snapshot()

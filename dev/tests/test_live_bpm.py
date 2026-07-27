@@ -7,12 +7,14 @@ import numpy as np
 from dreamsync.dsp.features import _estimate_bpm
 from dreamsync.live import (
     HARMONIC_RATIOS,
+    CyclicBeatGridTracker,
     IOIHistogram,
     LiveEqStateTracker,
     LiveInstrumentState,
     LiveInstrumentStateTracker,
     LivePanFrame,
     LiveBpmEstimator,
+    LiveCycleTempoOverride,
     NoiseFloorEstimator,
     PercussiveOnsetTracker,
     _apply_live_routes_to_intent,
@@ -29,6 +31,54 @@ from dreamsync.live import (
     _spectral_features,
     _stereo_pan_features_live,
 )
+
+
+def test_cycle_tempo_override_halves_by_emitting_every_other_beat():
+    override = LiveCycleTempoOverride()
+    override.set_multiplier(0.5)
+
+    rows = [
+        override.update(
+            t=index * 0.5,
+            detected_bpm=120.0,
+            detected_beat=True,
+        )
+        for index in range(4)
+    ]
+
+    assert [bpm for bpm, _beat in rows] == [60.0] * 4
+    assert [beat for _bpm, beat in rows] == [
+        True,
+        False,
+        True,
+        False,
+    ]
+
+
+def test_cycle_tempo_override_doubles_with_midpoint_subdivision():
+    override = LiveCycleTempoOverride()
+    override.set_multiplier(2.0)
+
+    assert override.update(
+        t=0.0,
+        detected_bpm=120.0,
+        detected_beat=True,
+    ) == (240.0, True)
+    assert override.update(
+        t=0.24,
+        detected_bpm=120.0,
+        detected_beat=False,
+    ) == (240.0, False)
+    assert override.update(
+        t=0.25,
+        detected_bpm=120.0,
+        detected_beat=False,
+    ) == (240.0, True)
+    assert override.update(
+        t=0.5,
+        detected_bpm=120.0,
+        detected_beat=True,
+    ) == (240.0, True)
 
 
 def _make_pulse_audio(
@@ -436,6 +486,10 @@ class TestLiveEqRouting(unittest.TestCase):
                 "when": "lift",
                 "color_bias": "#66ccff",
                 "spatial_preset": "flash_top_only",
+                "effect_layer": {"layer_category": "static", "effect_mode": "pulse"},
+                "layer_category": "static",
+                "falloff": "smoothstep",
+                "intensity_scale": 1.2,
                 "intensity_boost": 0.1,
             },
             {
@@ -448,6 +502,10 @@ class TestLiveEqRouting(unittest.TestCase):
         ]
         layers = _build_eq_layers(routes)
         self.assertEqual([layer["band"] for layer in layers], ["presence", "bass"])
+        self.assertEqual(layers[0]["effect_layer"]["layer_category"], "static")
+        self.assertEqual(layers[0]["layer_category"], "static")
+        self.assertEqual(layers[0]["falloff"], "smoothstep")
+        self.assertEqual(layers[0]["intensity_scale"], 1.2)
         intent = _apply_live_eq_to_intent(_Intent(intensity=0.5, color="#123456"), routes)
         self.assertEqual(intent.color, "#66ccff")
         self.assertAlmostEqual(intent.intensity, 0.66, places=2)
@@ -643,6 +701,9 @@ class TestLiveInstrumentProxyTracking(unittest.TestCase):
                         "pan_follow": 0.75,
                         "width_scale": 1.2,
                         "color_bias": "#99ddff",
+                        "effect_layer": {"layer_category": "slice", "effect_mode": "pulse"},
+                        "layer_category": "slice",
+                        "speed_units_per_second": 1.25,
                     }
                 ]
             },
@@ -655,6 +716,9 @@ class TestLiveInstrumentProxyTracking(unittest.TestCase):
         self.assertGreater(route["spatial_origin"]["x"], 0.9)
         self.assertGreater(route["spatial_width"], 0.18)
         self.assertEqual(route["band_pan_centers"][5], 0.35)
+        self.assertEqual(route["effect_layer"]["layer_category"], "slice")
+        self.assertEqual(route["layer_category"], "slice")
+        self.assertEqual(route["speed_units_per_second"], 1.25)
 
     def test_build_eq_layers_carries_instrument_metadata(self) -> None:
         layers = _build_eq_layers([
@@ -665,12 +729,18 @@ class TestLiveInstrumentProxyTracking(unittest.TestCase):
                 "pan_follow": 0.8,
                 "width_scale": 1.1,
                 "color_bias": "#ff8a3d",
+                "trigger_mode": "oneshot",
+                "duration_s": 0.4,
+                "layer_priority": 4,
             }
         ])
         self.assertEqual(len(layers), 1)
         self.assertEqual(layers[0]["instrument"], "bass")
         self.assertEqual(layers[0]["when"], "dominant")
         self.assertEqual(layers[0]["pan_follow"], 0.8)
+        self.assertEqual(layers[0]["trigger_mode"], "oneshot")
+        self.assertEqual(layers[0]["duration_s"], 0.4)
+        self.assertEqual(layers[0]["layer_priority"], 4)
 
     def test_apply_live_routes_to_intent_uses_route_bias_and_boost(self) -> None:
         from dataclasses import dataclass
@@ -1647,6 +1717,80 @@ class TestIOIHistogram(unittest.TestCase):
         h.reset()
         self.assertEqual(h.onset_count, 0)
         self.assertEqual(h.estimate_bpm(), 0.0)
+
+
+class TestCyclicBeatGridTracker(unittest.TestCase):
+    """Long-window beat-grid fitting should tolerate recurring syncopation."""
+
+    def test_recurring_offbeat_pattern_fits_one_grid(self):
+        tracker = CyclicBeatGridTracker(retention_seconds=24.0)
+        period = 0.5  # 120 BPM
+        # The dominant onset is consistently offbeat.  A smaller ghost onset
+        # appears in one out of four cycles, modelling syncopated bass/kick
+        # detail that should not turn into its own metronome pulse.
+        for index in range(48):
+            tracker.observe(index * period + 0.16 * period, strength=1.0)
+            if index % 4 == 1:
+                tracker.observe(index * period + 0.73 * period, strength=0.35)
+
+        bpm = tracker.update((120.0,), t=24.0)
+
+        self.assertTrue(tracker.active)
+        self.assertGreater(tracker.confidence, 0.6)
+        self.assertAlmostEqual(bpm, 120.0, delta=2.0)
+
+        emitted: list[float] = []
+        for frame in range(600):
+            t = 24.0 + frame * 0.01
+            if tracker.advance(t):
+                emitted.append(t)
+        intervals = [later - earlier for earlier, later in zip(emitted, emitted[1:])]
+        self.assertGreaterEqual(len(intervals), 5)
+        self.assertTrue(all(abs(interval - period) <= 0.02 for interval in intervals))
+
+    def test_nonrepeating_onsets_do_not_activate_grid(self):
+        tracker = CyclicBeatGridTracker(retention_seconds=24.0)
+        rng = np.random.default_rng(47)
+        for timestamp in sorted(rng.uniform(0.0, 24.0, size=60)):
+            tracker.observe(float(timestamp), strength=1.0)
+
+        bpm = tracker.update((120.0, 128.0, 96.0), t=24.0)
+
+        self.assertEqual(bpm, 0.0)
+        self.assertFalse(tracker.active)
+
+
+class TestEqBeatOnset(unittest.TestCase):
+    def test_hybrid_detector_uses_eq_band_breakdown_as_low_frequency_candidate(self):
+        estimator = LiveBpmEstimator(
+            sample_rate=44100,
+            hop_size=512,
+            onset_mode="hybrid",
+        )
+        for index in range(160):
+            estimator.update(
+                energy=1.0,
+                t=index * 0.01,
+                kick_spectral_flux=0.0,
+                eq_band_fluxes=(0.4, 10.0, 3.0, 0.2, 0.1, 0.0, 0.0),
+            )
+
+        self.assertEqual(estimator._hybrid_source, "eq_low")
+        self.assertGreater(estimator.last_eq_onset, 0.0)
+
+    def test_eq_band_onset_is_cleared_by_reset(self):
+        estimator = LiveBpmEstimator(sample_rate=44100, hop_size=512)
+        estimator.update(
+            energy=1.0,
+            t=0.0,
+            eq_band_fluxes=(0.0, 5.0, 2.0),
+        )
+        self.assertGreater(estimator.last_eq_onset, 0.0)
+
+        estimator.reset()
+
+        self.assertEqual(estimator.last_eq_onset, 0.0)
+        self.assertEqual(estimator._eq_activity, 0.0)
 
 
 if __name__ == "__main__":

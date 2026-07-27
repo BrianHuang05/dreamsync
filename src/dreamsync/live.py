@@ -12,10 +12,29 @@ from typing import Any
 
 import numpy as np
 
+from dreamsync.audio.ring import AudioBlockRing, PcmFrameBuffer
 from dreamsync.audio.system_input import _require_sounddevice
 from dreamsync.director import Director, DirectorConfig, EffectMode
 from dreamsync.dsp.features import _estimate_bpm, _estimate_bpm_from_beats, _smooth_signal
-from dreamsync.effects import EffectCycler, EffectCyclerConfig
+from dreamsync.dsp.harmonic import (
+    LiveBarChordHistory,
+    LiveChordHistory,
+    LiveHarmonicAnalyzer,
+    LiveHarmonicState,
+    chord_tones,
+    detected_non_chord_tones,
+)
+from dreamsync.dsp.meter import (
+    LiveMeterState,
+    LiveMeterTracker,
+    ManualBeatRegistration,
+)
+from dreamsync.dsp.structure import LiveStructureEvent, LiveStructureTracker
+from dreamsync.prediction.runtime import (
+    LivePredictiveRuntime,
+    PredictiveRuntimeConfig,
+)
+from dreamsync.effects import EFFECTS, EffectCycler, EffectCyclerConfig
 from dreamsync.mood import MoodClassifier
 from dreamsync.output.govee_lan import GoveeLanAdapter, MultiGoveeLanAdapter
 from dreamsync.render import RenderMode, SegmentRenderer
@@ -31,6 +50,266 @@ HARMONIC_RATIOS = {
     "3/4x": 0.75,
     "4/3x": 4.0 / 3.0,
 }
+
+_SPATIAL_LAYER_ROUTE_KEYS: tuple[str, ...] = (
+    "effect_layer",
+    "layer_category",
+    "trigger_mode",
+    "falloff",
+    "radius",
+    "speed_units_per_second",
+    "intensity_scale",
+    "time_offset_s",
+    "duration_s",
+    "layer_priority",
+)
+
+
+@dataclass(frozen=True)
+class LiveBeatAccent:
+    """The metrical role of a detected live beat."""
+
+    beat: bool
+    downbeat: bool
+    beat_in_bar: int | None
+    strength: float
+
+
+@dataclass(frozen=True)
+class LiveStructureConfig:
+    """Live-only harmonic and metrical structure settings."""
+
+    harmonic_structure_enabled: bool = False
+    beats_per_bar: int = 4
+    bars_per_phrase: int = 4
+    harmonic_frame_size: int = 4096
+    harmonic_hop_multiplier: int = 1
+    sensitivity: float = 0.5
+    downbeat_min_confidence: float = 0.22
+    debug_harmonics: bool = False
+    predictive_analysis_enabled: bool = False
+    predictive_diagnostics_enabled: bool = False
+    predictive_shadow_mode: bool = True
+    predictive_cues_enabled: bool = False
+    predictive_high_impact_cues_enabled: bool = False
+    predictive_cue_prepare_threshold: float = 0.54
+    predictive_cue_schedule_threshold: float = 0.68
+    predictive_cue_high_impact_threshold: float = 0.80
+    predictive_maximum_anticipatory_intensity: float = 0.28
+    predictive_cue_cooldown_seconds: float = 2.0
+    predictive_allowed_cue_classes: tuple[str, ...] = (
+        "chord_accent",
+        "resolution_bloom",
+        "phrase_reset",
+        "section_recall",
+        "chorus_lift",
+    )
+    structure_similarity_enabled: bool = False
+    structure_similarity_diagnostics: bool = False
+    structure_similarity_shadow_mode: bool = True
+    structure_bar_actions_enabled: bool = False
+    structure_phrase_actions_enabled: bool = False
+    structure_section_actions_enabled: bool = False
+    structure_allow_secondary_beat_modulation: bool = False
+    structure_use_tonal_sidecar: bool = False
+    structure_memory_bars: int = 256
+    structure_min_meter_confidence: float = 0.22
+    structure_phrase_threshold: float = 0.48
+    structure_section_threshold: float = 0.62
+    structure_large_action_threshold: float = 0.80
+
+    def __post_init__(self) -> None:
+        if (
+            self.harmonic_structure_enabled
+            and self.structure_similarity_enabled
+        ):
+            raise ValueError(
+                "legacy harmonic structure and structure similarity are mutually exclusive"
+            )
+        if self.beats_per_bar < 2:
+            raise ValueError("beats_per_bar must be at least 2")
+        if self.bars_per_phrase < 1:
+            raise ValueError("bars_per_phrase must be at least 1")
+        if (
+            self.harmonic_frame_size <= 0
+            or self.harmonic_frame_size
+            & (self.harmonic_frame_size - 1)
+        ):
+            raise ValueError("harmonic_frame_size must be a power of two")
+        if self.harmonic_hop_multiplier < 1:
+            raise ValueError("harmonic_hop_multiplier must be positive")
+        if not 0.0 <= self.sensitivity <= 1.0:
+            raise ValueError("sensitivity must be between 0 and 1")
+        if not 0.0 < self.downbeat_min_confidence < 1.0:
+            raise ValueError("downbeat_min_confidence must be between 0 and 1")
+        if not (
+            0.0
+            <= self.predictive_cue_prepare_threshold
+            <= self.predictive_cue_schedule_threshold
+            <= self.predictive_cue_high_impact_threshold
+            <= 1.0
+        ):
+            raise ValueError("predictive cue thresholds must be ordered in [0, 1]")
+        if not 0.0 <= self.predictive_maximum_anticipatory_intensity <= 1.0:
+            raise ValueError(
+                "predictive maximum anticipatory intensity must be in [0, 1]"
+            )
+        if self.predictive_cue_cooldown_seconds < 0.0:
+            raise ValueError("predictive cue cooldown must be non-negative")
+        if not 16 <= self.structure_memory_bars <= 2048:
+            raise ValueError("structure_memory_bars must be between 16 and 2048")
+        if not 0.0 < self.structure_min_meter_confidence < 1.0:
+            raise ValueError("structure_min_meter_confidence must be between 0 and 1")
+        for name in (
+            "structure_phrase_threshold",
+            "structure_section_threshold",
+            "structure_large_action_threshold",
+        ):
+            if not 0.0 <= float(getattr(self, name)) <= 1.0:
+                raise ValueError(f"{name} must be between 0 and 1")
+
+
+class LiveBeatSequencer:
+    """Turn a beat stream into stable bar accents for live rendering.
+
+    Live capture does not have an offline beat grid to identify absolute bar
+    starts. The first detected beat after startup (or a song boundary) is
+    therefore used as a stable bar anchor. It keeps light sequencing musical
+    and predictable without changing beat detection itself.
+    """
+
+    def __init__(self, beats_per_bar: int = 4, secondary_strength: float = 0.35) -> None:
+        if beats_per_bar < 2:
+            raise ValueError("beats_per_bar must be at least 2")
+        self.beats_per_bar = beats_per_bar
+        self.secondary_strength = max(0.0, min(1.0, float(secondary_strength)))
+        self._next_beat_in_bar = 0
+
+    def reset(self) -> None:
+        """Start the next detected beat as a new bar anchor."""
+        self._next_beat_in_bar = 0
+
+    def update(self, beat: bool) -> LiveBeatAccent:
+        if not beat:
+            return LiveBeatAccent(False, False, None, 0.0)
+
+        beat_in_bar = self._next_beat_in_bar + 1
+        downbeat = self._next_beat_in_bar == 0
+        self._next_beat_in_bar = (self._next_beat_in_bar + 1) % self.beats_per_bar
+        return LiveBeatAccent(
+            beat=True,
+            downbeat=downbeat,
+            beat_in_bar=beat_in_bar,
+            strength=1.0 if downbeat else self.secondary_strength,
+        )
+
+
+class LiveCycleTempoOverride:
+    """Force the detector grid onto a half- or double-time subdivision."""
+
+    _ALLOWED = (0.5, 1.0, 2.0)
+
+    def __init__(self) -> None:
+        self.multiplier = 1.0
+        self._half_emit_next = True
+        self._pending_double_t: float | None = None
+
+    def set_multiplier(self, multiplier: float) -> None:
+        value = float(multiplier)
+        if value not in self._ALLOWED:
+            raise ValueError("cycle tempo multiplier must be 0.5, 1, or 2")
+        if value == self.multiplier:
+            return
+        self.multiplier = value
+        self._half_emit_next = True
+        self._pending_double_t = None
+
+    def reset(self) -> None:
+        self._half_emit_next = True
+        self._pending_double_t = None
+
+    def update(
+        self,
+        *,
+        t: float,
+        detected_bpm: float,
+        detected_beat: bool,
+    ) -> tuple[float, bool]:
+        bpm = max(0.0, float(detected_bpm))
+        if bpm <= 0.0:
+            self._pending_double_t = None
+            return 0.0, False
+        if self.multiplier == 1.0:
+            return bpm, bool(detected_beat)
+        if self.multiplier == 0.5:
+            if not detected_beat:
+                return bpm * 0.5, False
+            emit = self._half_emit_next
+            self._half_emit_next = not self._half_emit_next
+            return bpm * 0.5, emit
+
+        period = 60.0 / bpm
+        subdivision = False
+        if (
+            self._pending_double_t is not None
+            and float(t) >= self._pending_double_t
+        ):
+            subdivision = True
+            self._pending_double_t = None
+        if detected_beat:
+            self._pending_double_t = float(t) + (period * 0.5)
+            return bpm * 2.0, True
+        return bpm * 2.0, subdivision
+
+
+def _meter_beat_accent(
+    beat: bool,
+    meter_state: LiveMeterState,
+    *,
+    secondary_strength: float = 0.35,
+) -> LiveBeatAccent:
+    """Translate a confidence-gated meter result into rendering semantics."""
+
+    if not beat:
+        return LiveBeatAccent(False, False, None, 0.0)
+    beat_in_bar = (
+        meter_state.bar_phase + 1
+        if meter_state.meter_confident and meter_state.bar_phase is not None
+        else None
+    )
+    return LiveBeatAccent(
+        beat=True,
+        downbeat=bool(meter_state.downbeat),
+        beat_in_bar=beat_in_bar,
+        strength=1.0 if meter_state.downbeat else secondary_strength,
+    )
+
+
+def _qualifies_harmonic_accent(state: LiveHarmonicState) -> bool:
+    """Return whether a harmonic event is safe to expose to lighting."""
+
+    return bool(
+        state.harmonic_change
+        and state.tonal_confidence >= 0.40
+        and state.chord_confidence >= 0.30
+    )
+
+
+def _harmonic_accent_strength(
+    now: float,
+    started_at: float | None,
+    *,
+    duration: float = 0.24,
+    maximum: float = 0.12,
+) -> float:
+    """Small linear-decay intensity boost for a local harmonic change."""
+
+    if started_at is None or duration <= 0.0 or maximum <= 0.0:
+        return 0.0
+    age = max(0.0, float(now) - float(started_at))
+    if age >= duration:
+        return 0.0
+    return max(0.0, min(float(maximum), maximum * (1.0 - (age / duration))))
 
 
 class IOIHistogram:
@@ -178,6 +457,202 @@ class IOIHistogram:
         self._prev_val = 0.0
 
 
+class CyclicBeatGridTracker:
+    """Fit a persistent beat grid to recurring onset *patterns*.
+
+    A transient is not necessarily a downbeat: syncopated bass and kick
+    parts often put their strongest onset consistently between beats.  This
+    tracker retains a longer onset history and scores each candidate period
+    by how well the complete pattern repeats after one or more cycles.  It
+    then schedules a regular grid from the dominant phase instead of firing
+    directly on each candidate onset.
+    """
+
+    def __init__(
+        self,
+        retention_seconds: float = 24.0,
+        min_onsets: int = 8,
+        min_pattern_seconds: float = 6.0,
+    ) -> None:
+        self.retention_seconds = max(8.0, retention_seconds)
+        self.min_onsets = max(4, min_onsets)
+        self.min_pattern_seconds = max(2.0, min_pattern_seconds)
+        self._onsets: deque[tuple[float, float]] = deque()
+        self._period = 0.0
+        self._phase_anchor = 0.0
+        self._next_beat_t: float | None = None
+        self.confidence = 0.0
+        self._last_candidate_t = -1e9
+
+    @property
+    def active(self) -> bool:
+        return self._period > 0.0 and self.confidence >= 0.35
+
+    @property
+    def bpm(self) -> float:
+        return 60.0 / self._period if self._period > 0.0 else 0.0
+
+    def observe(self, t: float, strength: float = 1.0) -> None:
+        """Record a thresholded onset candidate without declaring a beat."""
+        if not math.isfinite(t):
+            return
+        strength = max(0.01, float(strength))
+        # IOI onset detection already de-duplicates candidates.  Keep a
+        # small guard here too so a broad transient cannot dominate a cycle.
+        if t - self._last_candidate_t < 0.08:
+            if self._onsets and strength > self._onsets[-1][1]:
+                self._onsets[-1] = (t, strength)
+            return
+        self._onsets.append((t, strength))
+        self._last_candidate_t = t
+        self._trim(t)
+
+    def update(self, candidate_bpms: tuple[float, ...], t: float) -> float:
+        """Refit the grid and return its BPM, or ``0`` until it is reliable."""
+        self._trim(t)
+        if (
+            len(self._onsets) < self.min_onsets
+            or self._onsets[-1][0] - self._onsets[0][0] < self.min_pattern_seconds
+        ):
+            self.confidence *= 0.92
+            return 0.0
+
+        # Evaluate a small neighbourhood around each independent estimator.
+        # The period matcher works on onset-to-onset recurrence, so it can
+        # keep a meter even when the strongest onset is consistently offbeat.
+        periods: set[float] = set()
+        for bpm in candidate_bpms:
+            if not math.isfinite(bpm) or bpm <= 0.0:
+                continue
+            base_period = 60.0 / bpm
+            if not 0.25 <= base_period <= 1.5:
+                continue
+            for percent in range(-8, 9, 2):
+                period = base_period * (1.0 + percent / 100.0)
+                if 0.25 <= period <= 1.5:
+                    periods.add(round(period, 5))
+
+        if not periods:
+            self.confidence *= 0.92
+            return 0.0
+
+        best: tuple[float, float, float] | None = None
+        for period in periods:
+            support, refined_period = self._score_period(period)
+            if best is None or support > best[0]:
+                best = (support, refined_period, period)
+
+        if best is None:
+            return 0.0
+        support, refined_period, _ = best
+        # Random transient pairs have approximately 10–15% accidental
+        # alignment with this tolerance.  Require a substantially stronger
+        # repeating pattern before allowing it to drive the metronome.
+        if support < 0.35:
+            self.confidence *= 0.85
+            return 0.0
+
+        self._period = refined_period
+        self._phase_anchor = self._dominant_phase_anchor(refined_period)
+        self.confidence = (
+            support
+            if self.confidence <= 1e-6
+            else 0.65 * self.confidence + 0.35 * support
+        )
+        if self.confidence < 0.35:
+            return 0.0
+
+        proposed_next = self._phase_anchor + math.ceil(
+            (t - self._phase_anchor) / self._period
+        ) * self._period
+        if proposed_next <= t + 1e-6:
+            proposed_next += self._period
+        # Re-anchoring only happens on the 0.5 s analysis cadence.  Do not
+        # make a large phase jump from one short-lived onset cluster.
+        if self._next_beat_t is None or abs(proposed_next - self._next_beat_t) > self._period * 0.35:
+            self._next_beat_t = proposed_next
+        return self.bpm
+
+    def advance(self, t: float) -> bool:
+        """Return True once for each scheduled grid beat that has elapsed."""
+        if not self.active or self._next_beat_t is None:
+            return False
+        if t + 1e-6 < self._next_beat_t:
+            return False
+        while self._next_beat_t <= t + 1e-6:
+            self._next_beat_t += self._period
+        return True
+
+    def phase_at(self, t: float) -> float:
+        if not self.active:
+            return 0.0
+        return ((t - self._phase_anchor) / self._period) % 1.0
+
+    def reset(self) -> None:
+        self._onsets.clear()
+        self._period = 0.0
+        self._phase_anchor = 0.0
+        self._next_beat_t = None
+        self.confidence = 0.0
+        self._last_candidate_t = -1e9
+
+    def _trim(self, t: float) -> None:
+        cutoff = t - self.retention_seconds
+        while self._onsets and self._onsets[0][0] < cutoff:
+            self._onsets.popleft()
+
+    def _score_period(self, period: float) -> tuple[float, float]:
+        """Score recurrence at ``period`` and return (support, refinement)."""
+        weighted_fit = 0.0
+        total_weight = 0.0
+        refined_total = 0.0
+        refined_weight = 0.0
+        tolerance = max(0.018, period * 0.07)
+        onsets = tuple(self._onsets)
+        for index, (start_t, start_strength) in enumerate(onsets[:-1]):
+            for end_t, end_strength in onsets[index + 1:]:
+                delta = end_t - start_t
+                cycles = max(1, round(delta / period))
+                # Very distant pairs add little phase information and can
+                # accidentally match a tempo change at the edge of retention.
+                if cycles > 48:
+                    continue
+                residual = abs(delta - cycles * period)
+                weight = min(start_strength, end_strength)
+                total_weight += weight
+                fit = math.exp(-0.5 * (residual / tolerance) ** 2)
+                weighted_fit += weight * fit
+                if fit >= 0.45:
+                    refined_total += weight * fit * (delta / cycles)
+                    refined_weight += weight * fit
+        if total_weight <= 1e-9 or refined_weight <= 1e-9:
+            return 0.0, period
+        return weighted_fit / total_weight, refined_total / refined_weight
+
+    def _dominant_phase_anchor(self, period: float) -> float:
+        # Choose the densest recurring phase instead of assuming that phase
+        # zero is a downbeat.  That makes an offbeat ostinato useful evidence
+        # for the beat cycle without emitting a pulse for every raw transient.
+        bins = 32
+        histogram = [0.0] * bins
+        phases: list[tuple[float, float]] = []
+        for onset_t, strength in self._onsets:
+            phase = (onset_t % period) / period
+            phases.append((phase, strength))
+            histogram[min(bins - 1, int(phase * bins))] += strength
+        best_bin = max(range(bins), key=histogram.__getitem__)
+        center = (best_bin + 0.5) / bins
+        weighted_phase = 0.0
+        total_weight = 0.0
+        for phase, strength in phases:
+            distance = ((phase - center + 0.5) % 1.0) - 0.5
+            if abs(distance) <= 2.0 / bins:
+                weighted_phase += (center + distance) * strength
+                total_weight += strength
+        phase = (weighted_phase / total_weight) % 1.0 if total_weight else center
+        return phase * period
+
+
 class LiveBpmEstimator:
     def __init__(
         self,
@@ -235,12 +710,20 @@ class LiveBpmEstimator:
         # Hybrid onset mode state: EMA of bass onset activity vs kick flux activity
         self._bass_activity = 0.0
         self._kick_activity = 0.0
+        self._eq_activity = 0.0
         self._wf_activity = 0.0
         self._hybrid_source = "bass"  # current active source in hybrid mode
+        self.last_eq_onset = 0.0
         # Spectral template matching
         self._beat_template = SpectralBeatTemplate()
-        # IOI histogram (Layer 1) — primary BPM estimator
-        self._ioi_histogram = IOIHistogram(buffer_seconds=8.0, bin_width_ms=5.0)
+        # Onset candidates retain a longer window than the short-term onset
+        # envelope.  The cyclic tracker treats their repeated pattern as
+        # evidence for a metrical grid instead of treating every onset as a
+        # beat/downbeat.
+        self._ioi_histogram = IOIHistogram(buffer_seconds=24.0, bin_width_ms=5.0)
+        self._cyclic_grid = CyclicBeatGridTracker(retention_seconds=24.0)
+        self.last_cyclic_bpm = 0.0
+        self.last_cyclic_confidence = 0.0
         # Zero-estimate decay: when both BPM methods return 0 for several
         # consecutive updates, decay last_bpm to avoid holding stale values.
         self._zero_estimate_count = 0
@@ -266,10 +749,15 @@ class LiveBpmEstimator:
         self._prev_onset = 0.0
         self._bass_activity = 0.0
         self._kick_activity = 0.0
+        self._eq_activity = 0.0
         self._wf_activity = 0.0
         self._hybrid_source = "bass"
+        self.last_eq_onset = 0.0
         self._beat_template.reset()
         self._ioi_histogram.reset()
+        self._cyclic_grid.reset()
+        self.last_cyclic_bpm = 0.0
+        self.last_cyclic_confidence = 0.0
         self._zero_estimate_count = 0
         self._last_autocorr_confidence = 0.0
         self._last_onset_activity = 0.0
@@ -282,10 +770,13 @@ class LiveBpmEstimator:
         kick_spectral_flux: float = 0.0,
         whitened_flux: float = 0.0,
         percussive_onset: float = 0.0,
+        eq_band_fluxes: tuple[float, ...] = (),
         mag: np.ndarray | None = None,
     ) -> tuple[float, bool]:
         bass_onset = max(0.0, energy - self.prev_rms)
         self.prev_rms = energy
+        eq_onset = self._eq_band_onset(eq_band_fluxes)
+        self.last_eq_onset = eq_onset
         if self.onset_mode == "spectral_flux":
             onset = spectral_flux
         elif self.onset_mode == "kick_flux":
@@ -297,6 +788,7 @@ class LiveBpmEstimator:
                 bass_onset, kick_spectral_flux,
                 whitened_flux=whitened_flux,
                 percussive_onset=percussive_onset,
+                eq_onset=eq_onset,
             )
         else:
             onset = bass_onset
@@ -312,6 +804,12 @@ class LiveBpmEstimator:
                 gate = self._similarity_gate(similarity)
                 onset = onset * gate
                 self.last_onset = onset
+
+        if self._ioi_histogram.feed(onset, t):
+            # Candidate onsets can be syncopated.  They are intentionally
+            # only evidence for the long-window cyclic model, not direct beat
+            # triggers for the effects engine.
+            self._cyclic_grid.observe(t, strength=onset)
 
         self.onset_env.append(onset)
         while len(self.onset_env) > self.max_frames:
@@ -366,10 +864,37 @@ class LiveBpmEstimator:
                 bpm_from_corr, self._last_autocorr_confidence = _estimate_bpm(
                     onset_arr, self.hop_size, self.sample_rate
                 )
+                bpm_from_ioi = self._ioi_histogram.estimate_bpm()
                 if bpm_from_beats > 0 and bpm_from_corr > 0:
                     bpm = 0.7 * bpm_from_beats + 0.3 * bpm_from_corr
                 else:
                     bpm = bpm_from_beats if bpm_from_beats > 0 else bpm_from_corr
+                cyclic_bpm = self._cyclic_grid.update(
+                    (
+                        bpm_from_beats,
+                        bpm_from_corr,
+                        bpm_from_ioi,
+                        self.last_bpm,
+                    ),
+                    t,
+                )
+                self.last_cyclic_bpm = cyclic_bpm
+                self.last_cyclic_confidence = self._cyclic_grid.confidence
+                if cyclic_bpm > 0.0:
+                    # The short window can still respond to real tempo
+                    # changes.  A stable long-window cycle damps only enough
+                    # of that estimate to prevent syncopated transients from
+                    # pulling the metronome around.
+                    cycle_weight = min(
+                        0.55,
+                        max(0.0, (self.last_cyclic_confidence - 0.35) / 0.65),
+                    )
+                    cyclic_bpm = self._normalize_bpm(cyclic_bpm)
+                    bpm = (
+                        (1.0 - cycle_weight) * bpm + cycle_weight * cyclic_bpm
+                        if bpm > 0.0
+                        else cyclic_bpm
+                    )
                 if bpm > 0.0:
                     bpm = self._normalize_bpm(bpm)
                     bpm = self._snap_to_last(bpm)
@@ -384,7 +909,11 @@ class LiveBpmEstimator:
                 if beat_idx.size > 0:
                     self.last_beat_idx = int(beat_idx[-1])
 
-        beat = self._advance_beat_phase()
+        if self._cyclic_grid.active:
+            beat = self._cyclic_grid.advance(t)
+            self._beat_phase = self._cyclic_grid.phase_at(t)
+        else:
+            beat = self._advance_beat_phase()
         return self.last_bpm, beat
 
     def _classify_harmonic(self, raw_bpm: float) -> tuple[str, float]:
@@ -526,6 +1055,7 @@ class LiveBpmEstimator:
         kick_flux: float,
         whitened_flux: float = 0.0,
         percussive_onset: float = 0.0,
+        eq_onset: float = 0.0,
         alpha: float = 0.05,
         switch_ratio: float = 3.0,
         wf_ratio: float = 10.0,
@@ -544,9 +1074,10 @@ class LiveBpmEstimator:
         """
         self._bass_activity = alpha * bass_onset + (1.0 - alpha) * self._bass_activity
         self._kick_activity = alpha * kick_flux + (1.0 - alpha) * self._kick_activity
+        self._eq_activity = alpha * eq_onset + (1.0 - alpha) * self._eq_activity
         self._wf_activity = alpha * whitened_flux + (1.0 - alpha) * self._wf_activity
 
-        primary = self._bass_activity + self._kick_activity
+        primary = self._bass_activity + self._kick_activity + self._eq_activity
 
         if self._wf_activity > wf_ratio * primary and self._wf_activity > 0.01:
             # Noisy environment: primary signals are dead.
@@ -562,8 +1093,41 @@ class LiveBpmEstimator:
             self._hybrid_source = "kick"
             return kick_flux
 
+        # The full EQ breakdown supplies an additional low-frequency onset
+        # candidate.  It is especially useful when a kick straddles band
+        # edges or a syncopated bass transient is clearer than the RMS rise.
+        # It is still only a candidate; the cyclic grid decides when a pulse
+        # belongs on the recurring beat cycle.
+        if self._eq_activity > 0 and self._eq_activity > self._bass_activity * 1.25:
+            self._hybrid_source = "eq_low"
+            return eq_onset
+
         self._hybrid_source = "bass"
         return bass_onset
+
+    @staticmethod
+    def _eq_band_onset(band_fluxes: tuple[float, ...]) -> float:
+        """Combine the EQ-band fluxes into a beat candidate.
+
+        Kick and bass get the largest weights, while the upper bands make a
+        small contribution for percussion whose attack is not entirely low
+        frequency.  The result is deliberately fed through the adaptive onset
+        threshold and cyclic grid instead of directly producing a beat.
+        """
+        values = tuple(max(0.0, float(value)) for value in band_fluxes)
+        if not values:
+            return 0.0
+        padded = values + (0.0,) * max(0, 7 - len(values))
+        sub, kick, bass, low_mid, mid, presence, air = padded[:7]
+        return (
+            0.16 * sub
+            + 0.68 * kick
+            + 0.34 * bass
+            + 0.11 * low_mid
+            + 0.06 * mid
+            + 0.03 * presence
+            + 0.01 * air
+        )
 
     def _similarity_gate(self, similarity: float) -> float:
         """Convert similarity [0,1] into an onset multiplier.
@@ -1871,6 +2435,7 @@ def _feature_row_from_frame(
     t: float,
     bpm: float,
     beat: bool,
+    downbeat: bool = False,
     bass: float = 0.0,
     bass_ratio: float = 0.0,
     spectral_flux: float = 0.0,
@@ -1895,6 +2460,7 @@ def _feature_row_from_frame(
         "spectral_flux": float(spectral_flux),
         "onset_strength": float(onset_strength),
         "beat": bool(beat),
+        "downbeat": bool(downbeat),
         "bpm": float(bpm),
         "pan_center": float(pan_center),
         "pan_width": float(pan_width),
@@ -2115,6 +2681,7 @@ def _build_scene_layers(routes: list[dict[str, object]]) -> list[dict[str, objec
             "pan_center",
             "pan_width",
             "band_pan_centers",
+            *_SPATIAL_LAYER_ROUTE_KEYS,
         ):
             if key in route:
                 layer[key] = route[key]
@@ -2135,6 +2702,7 @@ def _build_scene_layers(routes: list[dict[str, object]]) -> list[dict[str, objec
                 "spatial_zone",
                 "pan_follow",
                 "width_scale",
+                *_SPATIAL_LAYER_ROUTE_KEYS,
             )
         ):
                 layers.append(layer)
@@ -2329,6 +2897,110 @@ def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
 
 
+def _live_render_interval(multi_adapter: MultiGoveeLanAdapter) -> float:
+    """Return a conservative shared live-render interval."""
+
+    fps_values: list[float] = []
+    for adapter, *_rest in getattr(multi_adapter, "devices", ()):
+        try:
+            fps = float(getattr(getattr(adapter, "config", None), "fps", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if fps > 0.0:
+            fps_values.append(fps)
+    target_fps = min(fps_values) if fps_values else 30.0
+    return 1.0 / max(1.0, min(60.0, target_fps))
+
+
+def _advance_deadline(deadline: float, interval: float, now: float) -> float:
+    """Advance a periodic deadline without scheduling catch-up bursts."""
+
+    if interval <= 0.0:
+        return now
+    if deadline > now:
+        return deadline
+    missed = int((now - deadline) // interval)
+    return deadline + ((missed + 1) * interval)
+
+
+def _nearest_downbeat_target(
+    request_t: float,
+    last_beat_t: float,
+    beat_period: float,
+) -> str:
+    """Choose the closest causal beat: the last detection or the next one."""
+
+    period = max(1e-6, float(beat_period))
+    previous_distance = abs(float(request_t) - float(last_beat_t))
+    next_distance = abs(
+        (float(last_beat_t) + period) - float(request_t)
+    )
+    return "previous" if previous_distance <= next_distance else "next"
+
+
+def _p95(values: deque[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, math.ceil(0.95 * len(ordered)) - 1))
+    return float(ordered[index])
+
+
+def resolve_live_render_mode(
+    intent_mode: EffectMode,
+    *,
+    policy: str = "adaptive",
+    configured_mode: str = "scroll",
+    preset_mode: RenderMode | None = None,
+) -> str:
+    """Resolve the base renderer mode for a live frame.
+
+    ``fixed`` makes an operator-selected renderer authoritative. ``adaptive``
+    preserves the CLI's existing Director/profile-driven mode selection.
+    Explicit runtime-control overrides are applied later and may replace either
+    result.
+    """
+    normalized_policy = str(policy).strip().lower()
+    if normalized_policy not in {"adaptive", "fixed"}:
+        raise ValueError("render_mode_policy must be 'adaptive' or 'fixed'")
+    if normalized_policy == "fixed":
+        return RenderMode(str(configured_mode)).value
+    if preset_mode is not None:
+        return preset_mode.value
+    if intent_mode == EffectMode.RIPPLE:
+        return "ripple"
+    if intent_mode == EffectMode.MOTION:
+        return "wave"
+    if intent_mode == EffectMode.PULSE:
+        return "pulse"
+    return "solid"
+
+
+def _predictive_enabled_effects(
+    effect_cycler: EffectCycler | None,
+    *,
+    configured_render_mode: str,
+) -> tuple[str, ...]:
+    """Return only effects the active reactive bank may select."""
+
+    enabled = {str(configured_render_mode)}
+    if effect_cycler is None:
+        return tuple(sorted(enabled))
+    profile = effect_cycler.profile
+    if profile is None:
+        enabled.update(EFFECTS)
+    else:
+        for mood_config in getattr(profile, "moods", {}).values():
+            enabled.update(
+                str(getattr(effect, "name", ""))
+                for effect in getattr(mood_config, "effects", ())
+                if str(getattr(effect, "name", ""))
+            )
+    if effect_cycler.current_effect:
+        enabled.add(effect_cycler.current_effect)
+    return tuple(sorted(enabled))
+
+
 def run_live_to_govee(
     multi_adapter: MultiGoveeLanAdapter,
     duration_seconds: float | None,
@@ -2342,6 +3014,7 @@ def run_live_to_govee(
     director_config: DirectorConfig | None = None,
     half_time: bool = False,
     max_brightness: bool = False,
+    master_brightness: float = 1.0,
     auto_cycle: bool = True,
     cycle_interval: float = 16.0,
     debug_mood: bool = False,
@@ -2349,11 +3022,22 @@ def run_live_to_govee(
     telemetry_dir: Path | None = None,
     crossfade_detect: bool = False,
     profile: Any | None = None,
+    show_palette_cycle: tuple[str, ...] = (),
     effect_cycler_override: "EffectCycler | None" = None,
     profile_rotation: Any | None = None,
     profile_chain: Any | None = None,
+    profile_switch_on_song_change: bool = False,
     runtime_control_getter: Any | None = None,
+    predictive_cues_enabled_getter: Any | None = None,
+    structure_action_controls_getter: Any | None = None,
+    downbeat_nudge_revision_getter: Any | None = None,
+    downbeat_nudge_request_getter: Any | None = None,
+    cycle_tempo_multiplier_getter: Any | None = None,
     state_callback: Any | None = None,
+    render_mode_policy: str = "adaptive",
+    render_mode: str = "scroll",
+    legacy_cyclic_downbeats: bool = False,
+    structure_config: LiveStructureConfig | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Audio capture → beat detection → renderer → Govee UDP streaming.
 
@@ -2369,20 +3053,67 @@ def run_live_to_govee(
         raise ValueError("sample_rate must be > 0")
     if channels <= 0:
         raise ValueError("channels must be > 0")
+    if not 0.05 <= float(master_brightness) <= 1.0:
+        raise ValueError("master_brightness must be between 0.05 and 1.0")
     if frame_size <= 0:
         raise ValueError("frame_size must be > 0")
     if hop_size <= 0:
         raise ValueError("hop_size must be > 0")
+    if blocksize <= 0:
+        raise ValueError("blocksize must be > 0")
+    live_structure = structure_config or LiveStructureConfig()
+    structure_similarity_controls_output = bool(
+        live_structure.structure_similarity_enabled
+        and not live_structure.structure_similarity_shadow_mode
+    )
+    if live_structure.harmonic_frame_size < frame_size:
+        raise ValueError(
+            "harmonic_frame_size must be greater than or equal to frame_size"
+        )
+    normalized_render_mode_policy = str(render_mode_policy).strip().lower()
+    if normalized_render_mode_policy not in {"adaptive", "fixed"}:
+        raise ValueError("render_mode_policy must be 'adaptive' or 'fixed'")
+    configured_render_mode = RenderMode(str(render_mode)).value
 
     from dreamsync.telemetry import SongTelemetryWriter
 
     sd = _require_sounddevice()
-    audio_queue: deque[tuple[np.ndarray, np.ndarray | None]] = deque()
-    logs: list[dict[str, Any]] = []
+    harmonic_analysis_enabled = bool(
+        live_structure.harmonic_structure_enabled
+        or live_structure.debug_harmonics
+        or live_structure.predictive_analysis_enabled
+        or live_structure.structure_similarity_enabled
+    )
+    audio_ring = AudioBlockRing(
+        capacity=8,
+        blocksize=blocksize,
+        channels=channels,
+    )
+    pcm_buffer = PcmFrameBuffer(
+        capacity_samples=max(frame_size * 4, frame_size + (blocksize * 8)),
+        channels=channels,
+    )
+    harmonic_hop_size = hop_size * live_structure.harmonic_hop_multiplier
+    harmonic_pcm_buffer = (
+        PcmFrameBuffer(
+            capacity_samples=max(
+                live_structure.harmonic_frame_size * 3,
+                live_structure.harmonic_frame_size + (blocksize * 8),
+            ),
+            channels=channels,
+        )
+        if harmonic_analysis_enabled
+        else None
+    )
+    logs: deque[dict[str, Any]] = deque(maxlen=2048)
+    frame_log_rows = 0
     telemetry: SongTelemetryWriter | None = SongTelemetryWriter(telemetry_dir) if telemetry_dir else None
     bpm_estimator = LiveBpmEstimator(
         sample_rate=sample_rate, hop_size=hop_size, half_time=half_time,
     )
+    cycle_tempo = LiveCycleTempoOverride()
+    current_detected_bpm = 0.0
+    current_cycle_bpm = 0.0
     song_detector = SongBoundaryDetector(
         hop_size=hop_size, sample_rate=sample_rate,
     )
@@ -2394,17 +3125,130 @@ def run_live_to_govee(
     mood_classifier = MoodClassifier() if auto_cycle else None
     if effect_cycler_override is not None:
         effect_cycler = effect_cycler_override
-    elif auto_cycle:
+        effect_cycler.set_show_palette_cycle(show_palette_cycle)
+    elif auto_cycle or show_palette_cycle:
         effect_cycler = EffectCycler(
-            EffectCyclerConfig(cycle_interval=cycle_interval), profile=profile,
+            EffectCyclerConfig(cycle_interval=cycle_interval),
+            profile=profile,
+            show_palette_cycle=show_palette_cycle,
         )
     else:
         effect_cycler = None
+    if effect_cycler is not None and effect_cycler.show_palette_colors:
+        director.set_colors(effect_cycler.show_palette_colors)
     current_params: dict | None = None
     live_eq_tracker = LiveEqStateTracker()
     last_live_eq_state: LiveEqState | None = None
     live_instrument_tracker = LiveInstrumentStateTracker()
     last_live_instrument_state: LiveInstrumentState | None = None
+    beat_sequencer = LiveBeatSequencer() if legacy_cyclic_downbeats else None
+    meter_tracker = LiveMeterTracker(
+        beats_per_bar=live_structure.beats_per_bar,
+        min_confidence=live_structure.downbeat_min_confidence,
+    )
+    meter_state = LiveMeterState()
+    harmonic_analyzer = (
+        LiveHarmonicAnalyzer(
+            sample_rate=sample_rate,
+            frame_size=live_structure.harmonic_frame_size,
+            sensitivity=live_structure.sensitivity,
+            debug_spectrum=live_structure.debug_harmonics,
+        )
+        if harmonic_analysis_enabled
+        else None
+    )
+    harmonic_state = LiveHarmonicState()
+    chord_history = LiveChordHistory()
+    bar_chord_history = LiveBarChordHistory()
+    predictive_runtime = LivePredictiveRuntime(
+        PredictiveRuntimeConfig(
+            analysis_enabled=live_structure.predictive_analysis_enabled,
+            diagnostics_enabled=(
+                live_structure.predictive_diagnostics_enabled
+                or live_structure.structure_similarity_diagnostics
+            ),
+            shadow_mode=live_structure.predictive_shadow_mode,
+            cues_enabled=(
+                live_structure.predictive_cues_enabled
+                or live_structure.structure_bar_actions_enabled
+                or live_structure.structure_phrase_actions_enabled
+                or live_structure.structure_section_actions_enabled
+            ),
+            high_impact_cues_enabled=(
+                live_structure.predictive_high_impact_cues_enabled
+                or live_structure.structure_section_actions_enabled
+            ),
+            cue_prepare_threshold=(
+                live_structure.predictive_cue_prepare_threshold
+            ),
+            cue_schedule_threshold=(
+                live_structure.predictive_cue_schedule_threshold
+            ),
+            cue_high_impact_threshold=(
+                live_structure.predictive_cue_high_impact_threshold
+            ),
+            maximum_anticipatory_intensity=(
+                live_structure.predictive_maximum_anticipatory_intensity
+            ),
+            cue_cooldown_seconds=(
+                live_structure.predictive_cue_cooldown_seconds
+            ),
+            beats_per_bar=live_structure.beats_per_bar,
+            sample_rate=sample_rate,
+            spectral_fft_size=frame_size,
+            structure_similarity_enabled=(
+                live_structure.structure_similarity_enabled
+            ),
+            structure_similarity_shadow_mode=(
+                live_structure.structure_similarity_shadow_mode
+            ),
+            structure_memory_bars=live_structure.structure_memory_bars,
+            structure_min_meter_confidence=(
+                live_structure.structure_min_meter_confidence
+            ),
+            structure_bar_actions_enabled=(
+                live_structure.structure_bar_actions_enabled
+            ),
+            structure_phrase_actions_enabled=(
+                live_structure.structure_phrase_actions_enabled
+            ),
+            structure_section_actions_enabled=(
+                live_structure.structure_section_actions_enabled
+            ),
+            structure_phrase_threshold=(
+                live_structure.structure_phrase_threshold
+            ),
+            structure_section_threshold=(
+                live_structure.structure_section_threshold
+            ),
+            allowed_cue_classes=(
+                (
+                    "bar_marker",
+                    "phrase_reset",
+                    "section_recall",
+                    "section_transition",
+                )
+                if live_structure.structure_similarity_enabled
+                else live_structure.predictive_allowed_cue_classes
+            ),
+        )
+    )
+    predictive_update_times_ms: deque[float] = deque(maxlen=2048)
+    structure_tracker = (
+        LiveStructureTracker(
+            beats_per_bar=live_structure.beats_per_bar,
+            bars_per_phrase=live_structure.bars_per_phrase,
+            sensitivity=live_structure.sensitivity,
+            minimum_phase_confidence=live_structure.downbeat_min_confidence,
+        )
+        if (
+            live_structure.harmonic_structure_enabled
+            and not live_structure.structure_similarity_enabled
+        )
+        else None
+    )
+    last_structure_event: LiveStructureEvent | None = None
+    macro_change_count = 0
     beat_count = 0
     sent_count = 0
     dropped_blocks = 0
@@ -2412,6 +3256,40 @@ def run_live_to_govee(
     stereo_chunks_captured = 0
     mono_fallback_chunks = 0
     live_stereo_preserved = False
+    # The GUI needs a direct signal that the operating system is actually
+    # delivering input, not merely that the reactive thread was started.
+    last_input_callback_at = 0.0
+    waveform_window_seconds = 10.0
+    # The diagnostic is deliberately low-rate.  It must never contend with
+    # the audio callback or the beat detector for CPU time.
+    waveform_points_per_second = 30
+    waveform_samples_per_point = max(1, int(sample_rate / waveform_points_per_second))
+    waveform_points: deque[tuple[float, float]] = deque(
+        maxlen=int(waveform_window_seconds * waveform_points_per_second)
+    )
+    waveform_accumulated_samples = 0
+    waveform_accumulated_peak = 0.0
+    waveform_emitted_samples = 0
+    detected_beat_times: deque[float] = deque(
+        maxlen=max(32, int(waveform_window_seconds * 8))
+    )
+    detected_downbeat_times: deque[float] = deque(
+        maxlen=max(16, int(waveform_window_seconds * 4))
+    )
+    # The detector consumes all EQ-band fluxes, but the GUI only needs the two
+    # beat-priority lanes.  Sending every band at analysis-frame rate was a
+    # costly cross-thread copy with no practical diagnostic benefit.
+    diagnostic_eq_bands = ("kick", "bass")
+    eq_band_points: dict[str, deque[tuple[float, float]]] = {
+        name: deque(maxlen=int(waveform_window_seconds * waveform_points_per_second))
+        for name in diagnostic_eq_bands
+    }
+    last_eq_diagnostic_t = -1e9
+    analysis_frame_times_ms: deque[float] = deque(maxlen=512)
+    harmonic_frame_times_ms: deque[float] = deque(maxlen=256)
+    analyzed_through_sample = 0
+    last_audio_sequence: int | None = None
+    analysis_discontinuities = 0
 
     # Seed with an initial intent so we always have something to render
     last_intent = director.update({"t": 0.0, "rms": 0.0, "zcr": 0.0, "bpm": 120.0, "beat": False, "bass": 0.0})
@@ -2420,16 +3298,16 @@ def run_live_to_govee(
         intent: Any,
     ) -> tuple[dict[str, Any] | None, list[dict[str, object]], list[dict[str, object]]]:
         runtime_params: dict[str, Any] = dict(current_params or {})
-        if preset is not None:
-            runtime_params.setdefault("_render_mode", preset.render_mode.value)
-        elif intent.mode == EffectMode.RIPPLE:
-            runtime_params.setdefault("_render_mode", "ripple")
-        elif intent.mode == EffectMode.MOTION:
-            runtime_params.setdefault("_render_mode", "wave")
-        elif intent.mode == EffectMode.PULSE:
-            runtime_params.setdefault("_render_mode", "pulse")
+        resolved_render_mode = resolve_live_render_mode(
+            intent.mode,
+            policy=normalized_render_mode_policy,
+            configured_mode=configured_render_mode,
+            preset_mode=preset.render_mode if preset is not None else None,
+        )
+        if normalized_render_mode_policy == "fixed":
+            runtime_params["_render_mode"] = resolved_render_mode
         else:
-            runtime_params.setdefault("_render_mode", "solid")
+            runtime_params.setdefault("_render_mode", resolved_render_mode)
 
         if intent.mode == EffectMode.RIPPLE:
             runtime_params.setdefault("spatial_preset", "ripple_from_center")
@@ -2471,8 +3349,12 @@ def run_live_to_govee(
             route_spatial_preset = _first_route_value(all_active_routes, "spatial_preset")
             if route_spatial_preset is not None and "spatial_preset" not in runtime_params:
                 runtime_params["spatial_preset"] = route_spatial_preset
+            for key in _SPATIAL_LAYER_ROUTE_KEYS:
+                value = _first_route_value(all_active_routes, key)
+                if value is not None and key not in runtime_params:
+                    runtime_params[key] = value
             route_render_mode = _first_route_value(all_active_routes, "render_mode")
-            if route_render_mode is not None:
+            if route_render_mode is not None and normalized_render_mode_policy == "adaptive":
                 runtime_params["_render_mode"] = str(route_render_mode)
 
         if last_live_eq_state is not None:
@@ -2492,25 +3374,105 @@ def run_live_to_govee(
 
         return runtime_params or None, active_live_eq_routes, active_live_instrument_routes
 
+    def _record_waveform_chunk(mono_chunk: np.ndarray) -> None:
+        nonlocal waveform_accumulated_samples, waveform_accumulated_peak
+        nonlocal waveform_emitted_samples
+        offset = 0
+        total = int(mono_chunk.shape[0])
+        while offset < total:
+            needed = waveform_samples_per_point - waveform_accumulated_samples
+            take = min(needed, total - offset)
+            segment = mono_chunk[offset : offset + take]
+            if segment.size:
+                waveform_accumulated_peak = max(
+                    waveform_accumulated_peak,
+                    float(np.max(np.abs(segment))),
+                )
+            waveform_accumulated_samples += take
+            offset += take
+            if waveform_accumulated_samples == waveform_samples_per_point:
+                waveform_points.append(
+                    (
+                        (
+                            waveform_emitted_samples
+                            + (waveform_samples_per_point / 2)
+                        )
+                        / float(sample_rate),
+                        waveform_accumulated_peak,
+                    )
+                )
+                waveform_emitted_samples += waveform_samples_per_point
+                waveform_accumulated_samples = 0
+                waveform_accumulated_peak = 0.0
+
     def _callback(indata, frames, time_info, status) -> None:
-        del frames, time_info
-        nonlocal dropped_blocks, captured_samples, stereo_chunks_captured, mono_fallback_chunks
+        nonlocal dropped_blocks, captured_samples, last_input_callback_at
         if status and getattr(status, "input_overflow", False):
             dropped_blocks += 1
-        mono_chunk, stereo_chunk, stereo_preserved = _prepare_live_audio_chunk(indata)
-        captured_samples += int(mono_chunk.shape[0])
-        if stereo_preserved and stereo_chunk is not None:
-            stereo_chunks_captured += 1
-        else:
-            mono_fallback_chunks += 1
-        audio_queue.append((mono_chunk, stereo_chunk))
+        frame_count = int(frames)
+        capture_sample_index = captured_samples
+        captured_samples += frame_count
+        callback_at = time.monotonic()
+        last_input_callback_at = callback_at
+        adc_time = getattr(time_info, "inputBufferAdcTime", None)
+        audio_ring.write_from_callback(
+            indata,
+            frames=frame_count,
+            capture_sample_index=capture_sample_index,
+            adc_time=float(adc_time) if adc_time is not None else None,
+            callback_monotonic=callback_at,
+        )
 
     stream_t = 0.0
-    buffer = np.zeros(0, dtype=np.float32)
-    stereo_buffer: np.ndarray | None = None
     started_at = time.monotonic()
     next_telemetry = started_at + max(0.1, telemetry_interval_seconds)
+    render_interval = _live_render_interval(multi_adapter)
+    next_render_at = started_at
+    # Publish diagnostics at display cadence so the chord visualizer does not
+    # add another 100 ms after analysis has already completed.
+    state_interval = 1.0 / 30.0
+    next_state_at = started_at
+    telemetry_frame_interval = 0.05
+    next_frame_telemetry_at = started_at
     last_print = started_at
+    pending_render_beat = False
+    pending_render_downbeat = False
+    pending_render_beat_strength = 0.0
+    pending_render_beat_in_bar: int | None = None
+    pending_state_beat = False
+    pending_state_downbeat = False
+    pending_state_beat_in_bar: int | None = None
+    pending_render_harmonic_change = False
+    pending_state_harmonic_change = False
+    harmonic_accent_started_at: float | None = None
+    pending_render_macro_candidate = False
+    pending_render_macro_change = False
+    pending_state_macro_candidate = False
+    pending_state_macro_change = False
+    pending_macro_transition = False
+    pending_effect_macro_transition = False
+    pending_structure_harmonic_state: LiveHarmonicState | None = None
+    pending_predictive_chord_change = False
+    pending_downbeat_nudge_revision = 0
+    pending_downbeat_nudge_requested_at = 0.0
+    pending_manual_beat_kind = "downbeat"
+    pending_detection_reset = False
+    applied_downbeat_nudge_revision = 0
+    manual_downbeat_nudge_count = 0
+    manual_beat_latch_count = 0
+    manual_detection_reset_count = 0
+    manual_downbeat_nudge_last_t: float | None = None
+    manual_downbeat_nudge_previous_phase: int | None = None
+    manual_downbeat_nudge_target = ""
+    manual_meter_beats_per_bar = live_structure.beats_per_bar
+    manual_beat_registration = ManualBeatRegistration(
+        beats_per_bar=live_structure.beats_per_bar
+    )
+    last_detected_beat_stream_t: float | None = None
+    last_detected_beat_period = 0.5
+    last_runtime_params: dict[str, Any] | None = None
+    last_active_live_eq_routes: list[dict[str, object]] = []
+    last_active_live_instrument_routes: list[dict[str, object]] = []
     window, bass_mask, kick_mask, freqs = _prepare_bass_window(frame_size, sample_rate)
     band_masks = _build_eq_band_masks(freqs)
     n_bins = frame_size // 2 + 1
@@ -2525,6 +3487,148 @@ def run_live_to_govee(
     spectral_mean: np.ndarray | None = None
     prev_whitened_mag: np.ndarray | None = None
     preset = None
+    last_features: dict[str, float | bool] | None = None
+    last_sf: SpectralFeatures | None = None
+    last_wf = 0.0
+    perc = 0.0
+    last_pan = LivePanFrame()
+
+    def _apply_manual_downbeat_nudge(
+        *,
+        revision: int,
+        applied_t: float,
+        target: str,
+    ) -> None:
+        nonlocal meter_state
+        nonlocal last_structure_event
+        nonlocal pending_render_macro_candidate
+        nonlocal pending_render_macro_change
+        nonlocal pending_state_macro_candidate
+        nonlocal pending_state_macro_change
+        nonlocal pending_macro_transition
+        nonlocal pending_effect_macro_transition
+        nonlocal pending_structure_harmonic_state
+        nonlocal pending_predictive_chord_change
+        nonlocal pending_render_beat
+        nonlocal pending_render_downbeat
+        nonlocal pending_render_beat_strength
+        nonlocal pending_render_beat_in_bar
+        nonlocal pending_state_beat
+        nonlocal pending_state_downbeat
+        nonlocal pending_state_beat_in_bar
+        nonlocal applied_downbeat_nudge_revision
+        nonlocal manual_downbeat_nudge_count
+        nonlocal manual_downbeat_nudge_last_t
+        nonlocal manual_downbeat_nudge_previous_phase
+        nonlocal manual_downbeat_nudge_target
+
+        manual_downbeat_nudge_previous_phase = meter_state.bar_phase
+        meter_state = meter_tracker.nudge_downbeat(t=applied_t)
+        if beat_sequencer is not None:
+            beat_sequencer.reset()
+        predictive_runtime.reset()
+        bar_chord_history.reset()
+        if structure_tracker is not None:
+            structure_tracker.reset()
+        last_structure_event = None
+        pending_render_macro_candidate = False
+        pending_render_macro_change = False
+        pending_state_macro_candidate = False
+        pending_state_macro_change = False
+        pending_macro_transition = False
+        pending_effect_macro_transition = False
+        pending_structure_harmonic_state = None
+        pending_predictive_chord_change = False
+        pending_render_beat = False
+        pending_render_downbeat = False
+        pending_render_beat_strength = 0.0
+        pending_render_beat_in_bar = None
+        pending_state_beat = False
+        pending_state_downbeat = False
+        pending_state_beat_in_bar = None
+        applied_downbeat_nudge_revision = revision
+        manual_downbeat_nudge_count += 1
+        manual_downbeat_nudge_last_t = applied_t
+        manual_downbeat_nudge_target = target
+        logs.append(
+            {
+                "kind": "manual_downbeat_nudge",
+                "t": round(applied_t, 4),
+                "revision": revision,
+                "target": target,
+                "previous_phase": manual_downbeat_nudge_previous_phase,
+                "bar_phase": 0,
+            }
+        )
+
+    def _set_manual_meter(beats_per_bar: int) -> None:
+        nonlocal meter_state
+        nonlocal beat_sequencer
+        nonlocal structure_tracker
+        nonlocal manual_meter_beats_per_bar
+
+        value = int(beats_per_bar)
+        meter_state = meter_tracker.set_beats_per_bar(value)
+        predictive_runtime.set_beats_per_bar(value)
+        if beat_sequencer is not None:
+            beat_sequencer = LiveBeatSequencer(value)
+        if structure_tracker is not None:
+            structure_tracker = LiveStructureTracker(
+                beats_per_bar=value,
+                bars_per_phrase=live_structure.bars_per_phrase,
+                sensitivity=live_structure.sensitivity,
+                minimum_phase_confidence=(
+                    live_structure.downbeat_min_confidence
+                ),
+            )
+        manual_meter_beats_per_bar = value
+
+    def _register_manual_beat(
+        *,
+        revision: int,
+        applied_t: float,
+        target: str,
+        kind: str,
+    ) -> None:
+        nonlocal applied_downbeat_nudge_revision
+        nonlocal manual_beat_latch_count
+        nonlocal manual_downbeat_nudge_last_t
+        nonlocal manual_downbeat_nudge_target
+
+        beat_index = meter_tracker.beat_index
+        normalized_kind = (
+            "downbeat" if kind == "downbeat" else "beat"
+        )
+        inferred_meter = manual_beat_registration.register(
+            t=applied_t,
+            kind=normalized_kind,
+            beat_index=beat_index,
+        )
+        manual_beat_latch_count += 1
+        if normalized_kind == "downbeat":
+            if inferred_meter is not None:
+                _set_manual_meter(inferred_meter)
+            _apply_manual_downbeat_nudge(
+                revision=revision,
+                applied_t=applied_t,
+                target=target,
+            )
+        else:
+            applied_downbeat_nudge_revision = revision
+            manual_downbeat_nudge_last_t = applied_t
+            manual_downbeat_nudge_target = target
+
+        logs.append(
+            {
+                "kind": "manual_beat_latch",
+                "t": round(applied_t, 4),
+                "revision": revision,
+                "target": target,
+                "beat_kind": normalized_kind,
+                "beat_index": beat_index,
+                "inferred_beats_per_bar": inferred_meter,
+            }
+        )
 
     # Activate all devices (activate() includes its own delays)
     multi_adapter.activate(brightness=100)
@@ -2542,33 +3646,166 @@ def run_live_to_govee(
                 break
             now = time.monotonic()
             elapsed = now - started_at
+            if predictive_cues_enabled_getter is not None:
+                predictive_runtime.set_cues_enabled(
+                    bool(predictive_cues_enabled_getter())
+                )
+            if cycle_tempo_multiplier_getter is not None:
+                selected_cycle_multiplier = float(
+                    cycle_tempo_multiplier_getter() or 1.0
+                )
+                if selected_cycle_multiplier != cycle_tempo.multiplier:
+                    cycle_tempo.set_multiplier(
+                        selected_cycle_multiplier
+                    )
+                    meter_tracker.reset()
+                    predictive_runtime.reset()
+                    bar_chord_history.reset()
+                    if structure_tracker is not None:
+                        structure_tracker.reset()
+                    detected_beat_times.clear()
+                    detected_downbeat_times.clear()
+                    manual_beat_registration.reset(
+                        beats_per_bar=manual_meter_beats_per_bar
+                    )
+                    manual_downbeat_nudge_count = 0
+                    manual_beat_latch_count = 0
+                    manual_downbeat_nudge_last_t = None
+                    manual_downbeat_nudge_previous_phase = None
+                    manual_downbeat_nudge_target = ""
+                    last_detected_beat_stream_t = None
+                    last_detected_beat_period = (
+                        60.0 / current_cycle_bpm
+                        if current_cycle_bpm > 0.0
+                        else 0.5
+                    )
+            if downbeat_nudge_revision_getter is not None:
+                request_revision = int(
+                    downbeat_nudge_revision_getter() or 0
+                )
+                if request_revision > pending_downbeat_nudge_revision:
+                    pending_downbeat_nudge_revision = request_revision
+                    pending_downbeat_nudge_requested_at = now
+                    pending_manual_beat_kind = "downbeat"
+            if downbeat_nudge_request_getter is not None:
+                request = downbeat_nudge_request_getter()
+                request_revision = int(request[0] or 0)
+                if request_revision > pending_downbeat_nudge_revision:
+                    pending_downbeat_nudge_revision = request_revision
+                    pending_downbeat_nudge_requested_at = float(
+                        request[1] or now
+                    )
+                    pending_manual_beat_kind = (
+                        str(request[2])
+                        if len(request) > 2
+                        else "downbeat"
+                    )
+                    if pending_manual_beat_kind == "reset":
+                        pending_detection_reset = True
+            if (
+                pending_downbeat_nudge_revision
+                > applied_downbeat_nudge_revision
+                and last_detected_beat_stream_t is not None
+                and pending_manual_beat_kind != "reset"
+            ):
+                request_stream_t = (
+                    captured_samples / float(sample_rate)
+                ) - max(0.0, now - pending_downbeat_nudge_requested_at)
+                if _nearest_downbeat_target(
+                    request_stream_t,
+                    last_detected_beat_stream_t,
+                    last_detected_beat_period,
+                ) == "previous":
+                    _register_manual_beat(
+                        revision=pending_downbeat_nudge_revision,
+                        applied_t=last_detected_beat_stream_t,
+                        target="previous",
+                        kind=pending_manual_beat_kind,
+                    )
+            if (
+                structure_action_controls_getter is not None
+                and live_structure.structure_similarity_enabled
+            ):
+                controls = structure_action_controls_getter()
+                structure_similarity_controls_output = not bool(controls[0])
+                predictive_runtime.set_structure_action_controls(
+                    shadow_mode=bool(controls[0]),
+                    bar_actions=bool(controls[1]),
+                    phrase_actions=bool(controls[2]),
+                    section_actions=bool(controls[3]),
+                )
             if duration_seconds is not None and elapsed >= duration_seconds:
                 break
 
-            while audio_queue:
-                mono_chunk, stereo_chunk = audio_queue.popleft()
-                buffer = np.concatenate([buffer, mono_chunk])
-                if stereo_chunk is not None:
+            while True:
+                audio_block = audio_ring.read()
+                if audio_block is None:
+                    break
+                sequence_gap = (
+                    last_audio_sequence is not None
+                    and audio_block.sequence != last_audio_sequence + 1
+                )
+                last_audio_sequence = audio_block.sequence
+                buffer_gap = pcm_buffer.append(
+                    audio_block.data,
+                    capture_sample_index=audio_block.capture_sample_index,
+                )
+                harmonic_buffer_gap = (
+                    harmonic_pcm_buffer.append(
+                        audio_block.data,
+                        capture_sample_index=audio_block.capture_sample_index,
+                    )
+                    if harmonic_pcm_buffer is not None
+                    else False
+                )
+                if sequence_gap or buffer_gap or harmonic_buffer_gap:
+                    analysis_discontinuities += 1
+                    prev_mag = None
+                    spectral_mean = None
+                    prev_whitened_mag = None
+                    noise_estimator.reset()
+                    percussive_tracker.reset()
+                    if harmonic_analyzer is not None:
+                        harmonic_analyzer.reset()
+                        harmonic_state = LiveHarmonicState()
+                        chord_history.reset()
+                        bar_chord_history.reset()
+                        predictive_runtime.reset()
+                        harmonic_accent_started_at = None
+                        pending_render_harmonic_change = False
+                        pending_state_harmonic_change = False
+                        if structure_tracker is not None:
+                            structure_tracker.reset()
+                        last_structure_event = None
+                        pending_render_macro_candidate = False
+                        pending_render_macro_change = False
+                        pending_state_macro_candidate = False
+                        pending_state_macro_change = False
+                        pending_macro_transition = False
+                        pending_effect_macro_transition = False
+                        pending_structure_harmonic_state = None
+                        pending_predictive_chord_change = False
+
+                mono_chunk, stereo_chunk, stereo_preserved = _prepare_live_audio_chunk(
+                    audio_block.data
+                )
+                _record_waveform_chunk(mono_chunk)
+                if stereo_preserved and stereo_chunk is not None:
+                    stereo_chunks_captured += 1
                     live_stereo_preserved = True
-                    if stereo_buffer is None:
-                        stereo_buffer = stereo_chunk
-                    else:
-                        stereo_buffer = np.concatenate([stereo_buffer, stereo_chunk], axis=0)
+                else:
+                    mono_fallback_chunks += 1
 
             # Process audio frames for beat detection + feature extraction
             beat_this_tick = False
-            last_features: dict[str, float | bool] | None = None
-            last_sf: SpectralFeatures | None = None
-            last_wf: float = 0.0
-            perc: float = 0.0
-            last_pan = LivePanFrame(stereo_preserved=live_stereo_preserved)
-            while buffer.shape[0] >= frame_size:
-                frame = buffer[:frame_size]
-                buffer = buffer[hop_size:]
-                stereo_frame = None
-                if stereo_buffer is not None and stereo_buffer.shape[0] >= frame_size:
-                    stereo_frame = stereo_buffer[:frame_size]
-                    stereo_buffer = stereo_buffer[hop_size:]
+            while pcm_buffer.available_samples >= frame_size:
+                frame_started_at = time.perf_counter()
+                raw_frame, frame_sample_index = pcm_buffer.read_frame(
+                    frame_size=frame_size,
+                    hop_size=hop_size,
+                )
+                frame, stereo_frame, _stereo_preserved = _prepare_live_audio_chunk(raw_frame)
+                stream_t = float(frame_sample_index) / float(sample_rate)
                 last_pan = _stereo_pan_features_live(stereo_frame, window, band_masks)
                 rms = float(np.sqrt(np.mean(frame**2)))
                 silence_boundary = song_detector.update(rms)
@@ -2586,32 +3823,52 @@ def run_live_to_govee(
                 last_sf = sf
                 last_wf = wf
                 perc = percussive_tracker.update(raw_mag)
-                bpm, beat = bpm_estimator.update(
+                if stream_t - last_eq_diagnostic_t >= 1.0 / waveform_points_per_second:
+                    for band_name in diagnostic_eq_bands:
+                        points = eq_band_points[band_name]
+                        points.append((
+                            stream_t,
+                            float(sf.band_fluxes[_EQ_BAND_INDEX[band_name]]),
+                        ))
+                        while points and points[0][0] < stream_t - waveform_window_seconds:
+                            points.popleft()
+                    last_eq_diagnostic_t = stream_t
+                detected_bpm, detected_beat = bpm_estimator.update(
                     sf.bass, stream_t,
                     spectral_flux=sf.spectral_flux,
                     kick_spectral_flux=sf.kick_spectral_flux,
                     whitened_flux=wf,
                     percussive_onset=perc,
+                    eq_band_fluxes=sf.band_fluxes,
                     mag=sf.mag,
                 )
-                if half_time and bpm > 0:
-                    bpm *= 0.5
+                if half_time and detected_bpm > 0:
+                    detected_bpm *= 0.5
+                current_detected_bpm = detected_bpm
+                bpm, beat = cycle_tempo.update(
+                    t=stream_t,
+                    detected_bpm=detected_bpm,
+                    detected_beat=detected_beat,
+                )
+                current_cycle_bpm = bpm
 
                 # Crossfade boundary detection (parallel to silence)
                 crossfade_boundary = False
                 if crossfade_detector is not None:
                     crossfade_boundary = crossfade_detector.update(
-                        bpm=bpm,
+                        bpm=detected_bpm,
                         centroid=sf.centroid,
                         bass_ratio=sf.bass_ratio,
                         energy=director.energy,
                         onset_strength=bpm_estimator.last_onset,
-                        beat=beat,
+                        beat=detected_beat,
                         t=stream_t,
                     )
 
                 boundary_type: str | None = None
-                if silence_boundary:
+                if pending_detection_reset:
+                    boundary_type = "manual"
+                elif silence_boundary:
                     boundary_type = "silence"
                 elif crossfade_boundary:
                     boundary_type = "crossfade"
@@ -2619,7 +3876,48 @@ def run_live_to_govee(
                 if boundary_type is not None:
                     # Song boundary: reset all state
                     bpm_estimator.reset()
+                    cycle_tempo.reset()
+                    current_detected_bpm = 0.0
+                    current_cycle_bpm = 0.0
                     director.reset()
+                    if beat_sequencer is not None:
+                        beat_sequencer.reset()
+                    meter_tracker = LiveMeterTracker(
+                        beats_per_bar=live_structure.beats_per_bar,
+                        min_confidence=(
+                            live_structure.downbeat_min_confidence
+                        ),
+                    )
+                    predictive_runtime.set_beats_per_bar(
+                        live_structure.beats_per_bar
+                    )
+                    meter_state = LiveMeterState()
+                    if harmonic_analyzer is not None:
+                        harmonic_analyzer.reset()
+                        harmonic_state = LiveHarmonicState()
+                        chord_history.reset()
+                        bar_chord_history.reset()
+                        harmonic_accent_started_at = None
+                        pending_render_harmonic_change = False
+                        pending_state_harmonic_change = False
+                        if structure_tracker is not None:
+                            structure_tracker = LiveStructureTracker(
+                                beats_per_bar=live_structure.beats_per_bar,
+                                bars_per_phrase=live_structure.bars_per_phrase,
+                                sensitivity=live_structure.sensitivity,
+                                minimum_phase_confidence=(
+                                    live_structure.downbeat_min_confidence
+                                ),
+                            )
+                        last_structure_event = None
+                        pending_render_macro_candidate = False
+                        pending_render_macro_change = False
+                        pending_state_macro_candidate = False
+                        pending_state_macro_change = False
+                        pending_macro_transition = False
+                        pending_effect_macro_transition = False
+                        pending_structure_harmonic_state = None
+                        pending_predictive_chord_change = False
                     if mood_classifier is not None:
                         mood_classifier.reset(stream_t)
                     if effect_cycler is not None:
@@ -2635,6 +3933,55 @@ def run_live_to_govee(
                     prev_whitened_mag = None
                     noise_estimator.reset()
                     percussive_tracker.reset()
+                    detected_beat_times.clear()
+                    detected_downbeat_times.clear()
+                    manual_beat_registration.reset(
+                        beats_per_bar=live_structure.beats_per_bar
+                    )
+                    manual_meter_beats_per_bar = (
+                        live_structure.beats_per_bar
+                    )
+                    manual_downbeat_nudge_count = 0
+                    manual_beat_latch_count = 0
+                    manual_downbeat_nudge_last_t = None
+                    manual_downbeat_nudge_previous_phase = None
+                    manual_downbeat_nudge_target = ""
+                    last_detected_beat_stream_t = None
+                    last_detected_beat_period = 0.5
+                    if boundary_type == "manual":
+                        manual_detection_reset_count += 1
+                        applied_downbeat_nudge_revision = (
+                            pending_downbeat_nudge_revision
+                        )
+                        pending_detection_reset = False
+                        pending_manual_beat_kind = "downbeat"
+                        beat = False
+                        bpm = 0.0
+                    if (
+                        boundary_type != "manual"
+                        and profile_switch_on_song_change
+                        and effect_cycler is not None
+                    ):
+                        if profile_chain is not None and hasattr(profile_chain, "force_switch"):
+                            new_profile = profile_chain.force_switch(stream_t)
+                        elif profile_rotation is not None and hasattr(profile_rotation, "force_switch"):
+                            new_profile = profile_rotation.force_switch(stream_t)
+                        else:
+                            new_profile = None
+                        if new_profile is not None:
+                            effect_cycler.set_profile(new_profile)
+                            if debug_mood:
+                                print(
+                                    f"[song change] switched to profile: "
+                                    f"{getattr(new_profile, 'name', 'unnamed')}"
+                                )
+                    if (
+                        boundary_type != "manual"
+                        and effect_cycler is not None
+                    ):
+                        next_palette = effect_cycler.advance_show_palette()
+                        if next_palette is not None:
+                            director.set_colors(effect_cycler.show_palette_colors)
                     boundary_idx = song_detector.boundary_count + (
                         crossfade_detector.boundary_count if crossfade_detector else 0
                     )
@@ -2647,8 +3994,91 @@ def run_live_to_govee(
                             f"— state reset ***"
                         )
 
+                if beat:
+                    meter_state = meter_tracker.observe_beat(
+                        t=stream_t,
+                        bpm=bpm,
+                        low_frequency=sf.kick_energy,
+                        onset_strength=bpm_estimator.last_onset,
+                        energy=rms,
+                        harmonic_novelty=(
+                            harmonic_state.novelty
+                            if live_structure.harmonic_structure_enabled
+                            else 0.0
+                        ),
+                        harmonic_confidence=(
+                            harmonic_state.tonal_confidence
+                            if live_structure.harmonic_structure_enabled
+                            else 0.0
+                        ),
+                    )
+                    if (
+                        pending_downbeat_nudge_revision
+                        > applied_downbeat_nudge_revision
+                    ):
+                        _register_manual_beat(
+                            revision=pending_downbeat_nudge_revision,
+                            applied_t=stream_t,
+                            target="next",
+                            kind=pending_manual_beat_kind,
+                        )
+                    last_detected_beat_stream_t = stream_t
+                    last_detected_beat_period = (
+                        60.0 / bpm
+                        if bpm > 0.0
+                        else last_detected_beat_period
+                    )
+                    if structure_tracker is not None:
+                        structure_tracker.observe_beat(
+                            meter_state,
+                            energy=rms,
+                            centroid=sf.centroid,
+                            onset=bpm_estimator.last_onset,
+                        )
+                    committed_on_beat = chord_history.observe_beat(
+                        meter_state,
+                        bpm=bpm,
+                    )
+                    committed_since_last_beat = bool(
+                        committed_on_beat
+                        or pending_predictive_chord_change
+                    )
+                    bar_chord_history.observe_beat(
+                        meter_state,
+                        chord=chord_history.current,
+                        chord_change=committed_since_last_beat,
+                    )
+                    if (
+                        committed_on_beat
+                        and live_structure.harmonic_structure_enabled
+                        and chord_history.last_committed_state is not None
+                        and _qualifies_harmonic_accent(
+                            chord_history.last_committed_state
+                        )
+                    ):
+                        harmonic_accent_started_at = now
+                        pending_render_harmonic_change = True
+                        pending_state_harmonic_change = True
+                    if (
+                        committed_on_beat
+                        and chord_history.last_committed_state is not None
+                        and chord_history.last_change is not None
+                    ):
+                        pending_structure_harmonic_state = (
+                            dataclasses.replace(
+                                chord_history.last_committed_state,
+                                t=chord_history.last_change.t,
+                                harmonic_change=True,
+                            )
+                        )
+                beat_accent = (
+                    beat_sequencer.update(beat)
+                    if beat_sequencer is not None
+                    else _meter_beat_accent(beat, meter_state)
+                )
                 last_features = _feature_row_from_frame(
                     frame, rms, stream_t, bpm, beat,
+                    downbeat=beat_accent.downbeat,
                     bass=sf.bass,
                     bass_ratio=sf.bass_ratio,
                     spectral_flux=sf.spectral_flux,
@@ -2661,6 +4091,10 @@ def run_live_to_govee(
                     band_pan_centers=last_pan.band_pan_centers,
                     stereo_preserved=last_pan.stereo_preserved,
                 )
+                last_features["cycle_tempo_override"] = (
+                    cycle_tempo.multiplier != 1.0
+                )
+                last_features["detected_bpm"] = detected_bpm
                 last_live_eq_state = live_eq_tracker.update(sf, stream_t)
                 last_live_instrument_state = live_instrument_tracker.update(
                     sf,
@@ -2668,15 +4102,218 @@ def run_live_to_govee(
                     percussive_onset=perc,
                     t=stream_t,
                 )
+                if (
+                    live_structure.harmonic_structure_enabled
+                    or structure_similarity_controls_output
+                ):
+                    last_features["structure_controlled"] = True
+                    last_features["structure_event"] = (
+                        "macro_change" if pending_macro_transition else ""
+                    )
                 last_intent = director.update(last_features)
+                if pending_macro_transition:
+                    pending_macro_transition = False
 
                 if beat:
                     beat_count += 1
                     beat_this_tick = True
-                stream_t += float(hop_size) / float(sample_rate)
+                    detected_beat_times.append(stream_t)
+                    if beat_accent.downbeat:
+                        detected_downbeat_times.append(stream_t)
+                    pending_render_beat = True
+                    pending_render_downbeat = (
+                        pending_render_downbeat or beat_accent.downbeat
+                    )
+                    pending_render_beat_strength = max(
+                        pending_render_beat_strength,
+                        beat_accent.strength,
+                    )
+                    pending_render_beat_in_bar = beat_accent.beat_in_bar
+                    pending_state_beat = True
+                    pending_state_downbeat = (
+                        pending_state_downbeat or beat_accent.downbeat
+                    )
+                    pending_state_beat_in_bar = beat_accent.beat_in_bar
+                    if (
+                        live_structure.predictive_analysis_enabled
+                        or live_structure.structure_similarity_enabled
+                    ):
+                        predictive_started_at = time.perf_counter()
+                        predictive_runtime.observe_committed(
+                            t=stream_t,
+                            meter_state=meter_state,
+                            harmonic_state=(
+                                chord_history.last_committed_state
+                                or harmonic_state
+                            ),
+                            absolute_chord=chord_history.current,
+                            chord_change=committed_since_last_beat,
+                            energy=rms,
+                            onset_density=bpm_estimator.last_onset,
+                            spectral_centroid=sf.centroid,
+                            bpm=bpm,
+                            enabled_effects=_predictive_enabled_effects(
+                                effect_cycler,
+                                configured_render_mode=configured_render_mode,
+                            ),
+                            brightness_limit=master_brightness,
+                            magnitude=sf.mag,
+                            band_ratios=sf.band_ratios,
+                            band_fluxes=sf.band_fluxes,
+                            bass_ratio=sf.bass_ratio,
+                            harmonic_novelty=harmonic_state.novelty,
+                        )
+                        predictive_update_times_ms.append(
+                            (time.perf_counter() - predictive_started_at)
+                            * 1000.0
+                        )
+                    pending_predictive_chord_change = False
+                analyzed_through_sample = frame_sample_index + frame_size
+                stream_t = float(frame_sample_index + hop_size) / float(sample_rate)
+                analysis_frame_times_ms.append(
+                    (time.perf_counter() - frame_started_at) * 1000.0
+                )
+
+            # Harmonic analysis has its own longer, lower-rate trailing window.
+            # In Phase D this state is diagnostics-only: it does not alter the
+            # director, beat accents, renderer, or output schedule.
+            while (
+                harmonic_pcm_buffer is not None
+                and harmonic_analyzer is not None
+                and harmonic_pcm_buffer.available_samples
+                >= live_structure.harmonic_frame_size
+            ):
+                harmonic_started_at = time.perf_counter()
+                harmonic_raw, harmonic_sample_index = (
+                    harmonic_pcm_buffer.read_frame(
+                        frame_size=live_structure.harmonic_frame_size,
+                        hop_size=harmonic_hop_size,
+                    )
+                )
+                harmonic_frame, _harmonic_stereo, _harmonic_preserved = (
+                    _prepare_live_audio_chunk(harmonic_raw)
+                )
+                harmonic_t = (
+                    harmonic_sample_index + live_structure.harmonic_frame_size
+                ) / float(sample_rate)
+                previous_harmonic_chord = harmonic_state.chord
+                harmonic_state = harmonic_analyzer.update(
+                    harmonic_frame,
+                    t=harmonic_t,
+                )
+                if (
+                    state_callback is not None
+                    and harmonic_state.chord != previous_harmonic_chord
+                ):
+                    # Publish chord transitions (including silence) on this
+                    # worker tick instead of waiting for the periodic deadline.
+                    next_state_at = min(next_state_at, now)
+                committed_harmonic_change = chord_history.observe(
+                    harmonic_state,
+                    meter=meter_state,
+                    bpm=bpm_estimator.last_bpm,
+                )
+                pending_predictive_chord_change = bool(
+                    pending_predictive_chord_change
+                    or committed_harmonic_change
+                )
+                if (
+                    live_structure.harmonic_structure_enabled
+                    and committed_harmonic_change
+                    and chord_history.last_committed_state is not None
+                    and _qualifies_harmonic_accent(
+                        chord_history.last_committed_state
+                    )
+                ):
+                    harmonic_accent_started_at = now
+                    pending_render_harmonic_change = True
+                    pending_state_harmonic_change = True
+                if structure_tracker is not None:
+                    if pending_structure_harmonic_state is not None:
+                        structure_harmonic_state = (
+                            pending_structure_harmonic_state
+                        )
+                        pending_structure_harmonic_state = None
+                    elif (
+                        committed_harmonic_change
+                        and chord_history.last_committed_state is not None
+                        and chord_history.last_change is not None
+                    ):
+                        structure_harmonic_state = dataclasses.replace(
+                            chord_history.last_committed_state,
+                            t=chord_history.last_change.t,
+                            harmonic_change=True,
+                        )
+                    else:
+                        structure_harmonic_state = dataclasses.replace(
+                            harmonic_state,
+                            harmonic_change=False,
+                        )
+                    structure_events = structure_tracker.observe_harmonic(
+                        structure_harmonic_state,
+                        energy=director.energy,
+                        centroid=last_sf.centroid if last_sf else 0.0,
+                        onset=(
+                            float(last_features.get("onset_strength", 0.0))
+                            if last_features
+                            else 0.0
+                        ),
+                    )
+                    for structure_event in structure_events:
+                        last_structure_event = structure_event
+                        logs.append({
+                            "kind": "structure_event",
+                            "event": structure_event.kind,
+                            "t": round(structure_event.t, 4),
+                            "confidence": structure_event.confidence,
+                            "harmonic_novelty": (
+                                structure_event.harmonic_novelty
+                            ),
+                            "phase_confidence": (
+                                structure_event.phase_confidence
+                            ),
+                            "bar_index": structure_event.bar_index,
+                            "phrase_index": structure_event.phrase_index,
+                            "chord_before": structure_event.chord_before,
+                            "chord_after": structure_event.chord_after,
+                        })
+                        if structure_event.kind == "macro_candidate":
+                            pending_render_macro_candidate = True
+                            pending_state_macro_candidate = True
+                        elif structure_event.kind == "macro_change":
+                            macro_change_count += 1
+                            chord_history.start_section(
+                                t=structure_event.t
+                            )
+                            pending_render_macro_change = True
+                            pending_state_macro_change = True
+                            pending_macro_transition = True
+                            pending_effect_macro_transition = True
+                            if live_structure.predictive_analysis_enabled:
+                                predictive_runtime.engine.complete_phrase(
+                                    bars=live_structure.bars_per_phrase
+                                )
+                                predictive_runtime.engine.complete_section()
+                harmonic_frame_times_ms.append(
+                    (time.perf_counter() - harmonic_started_at) * 1000.0
+                )
+                if (
+                    live_structure.debug_harmonics
+                    and harmonic_state.harmonic_change
+                ):
+                    print(
+                        "[harmonic shadow] "
+                        f"t={harmonic_state.t:.3f} "
+                        f"chord={harmonic_state.chord} "
+                        f"novelty={harmonic_state.novelty:.3f}"
+                    )
 
             # --- Profile chain / rotation ---
-            if profile_chain is not None and effect_cycler is not None:
+            if (
+                profile_chain is not None
+                and effect_cycler is not None
+                and not structure_similarity_controls_output
+            ):
                 _current_mood = mood_classifier.mood.value if mood_classifier else "chill"
                 new_profile = profile_chain.update(stream_t, _current_mood)
                 if new_profile is not None:
@@ -2696,7 +4333,12 @@ def run_live_to_govee(
                             print(f"[chain] blend -> {_p.name}{_tag_info}{_seed_str}{_idx_str}")
                         else:
                             print(f"[chain] profile: {_p.name}{_tag_info}{_seed_str}{_idx_str}")
-            elif profile_rotation is not None and effect_cycler is not None:
+            elif (
+                profile_rotation is not None
+                and effect_cycler is not None
+                and not profile_switch_on_song_change
+                and not structure_similarity_controls_output
+            ):
                 new_profile = profile_rotation.update(stream_t)
                 if new_profile is not None:
                     effect_cycler.set_profile(new_profile)
@@ -2711,11 +4353,22 @@ def run_live_to_govee(
                 )
                 preset = effect_cycler.update(
                     mood, stream_t, beat_this_tick,
-                    bpm_estimator.last_bpm, director.energy,
+                    current_cycle_bpm, director.energy,
+                    structure_event=(
+                        "macro_change"
+                        if pending_effect_macro_transition
+                        else None
+                    ),
+                    structure_controlled=(
+                        live_structure.harmonic_structure_enabled
+                        or structure_similarity_controls_output
+                    ),
                 )
-                # Swap render mode on all devices
-                for _, renderer, *_ in multi_adapter.devices:
-                    renderer.mode = preset.render_mode
+                # Fixed GUI selections remain authoritative; adaptive CLI
+                # sessions preserve profile-driven renderer swaps.
+                if normalized_render_mode_policy == "adaptive":
+                    for _, renderer, *_ in multi_adapter.devices:
+                        renderer.mode = preset.render_mode
                 # Swap director palette
                 director.set_colors(preset.color_palette)
                 current_params = preset.params
@@ -2728,11 +4381,124 @@ def run_live_to_govee(
                         f"stability={director.stability:.4f} "
                         f"bpm={director.effective_bpm:.1f}"
                     )
+            pending_effect_macro_transition = False
 
-            # Render and send a frame on every tick (animation-driven)
-            if last_intent is not None:
+            # Render at the output cadence. Beat/downbeat events are latched
+            # until a rendered frame consumes them.
+            if last_intent is not None and now >= next_render_at:
+                render_beat = pending_render_beat
+                render_downbeat = pending_render_downbeat
+                render_beat_strength = pending_render_beat_strength
+                render_beat_in_bar = pending_render_beat_in_bar
+                render_harmonic_change = pending_render_harmonic_change
+                render_macro_candidate = pending_render_macro_candidate
+                render_macro_change = pending_render_macro_change
+                harmonic_accent = _harmonic_accent_strength(
+                    now,
+                    harmonic_accent_started_at,
+                )
                 frame_intent = last_intent
+                structure_observation = predictive_runtime.structure_observation
+                newly_committed_predictive_cues = (
+                    predictive_runtime.commit_due_cues(
+                        now_t=stream_t,
+                        beat_index=(
+                            structure_observation.beat_index
+                            if structure_observation is not None
+                            else None
+                        ),
+                        bar_index=(
+                            structure_observation.bar_index
+                            if structure_observation is not None
+                            else None
+                        ),
+                        downbeat=render_downbeat,
+                        meter_confident=meter_state.meter_confident,
+                    )
+                    if predictive_runtime.cue_policy.config.cues_enabled
+                    else ()
+                )
+                committed_predictive_cues = (
+                    predictive_runtime.active_committed_cues(
+                        now_t=stream_t
+                    )
+                    if predictive_runtime.cue_policy.config.cues_enabled
+                    else ()
+                )
+                predictive_cue_intensity = max(
+                    (cue.intensity for cue in committed_predictive_cues),
+                    default=0.0,
+                )
+                structural_action_results = []
+                if (
+                    newly_committed_predictive_cues
+                    and live_structure.structure_similarity_enabled
+                ):
+                    enabled_structural_effects = _predictive_enabled_effects(
+                        effect_cycler,
+                        configured_render_mode=configured_render_mode,
+                    )
+                    for cue in newly_committed_predictive_cues:
+                        result = predictive_runtime.structural_actuator.apply(
+                            cue,
+                            now_t=stream_t,
+                            beat_index=(
+                                structure_observation.beat_index
+                                if structure_observation is not None
+                                else None
+                            ),
+                            bar_index=(
+                                structure_observation.bar_index
+                                if structure_observation is not None
+                                else None
+                            ),
+                            downbeat=render_downbeat,
+                            meter_confident=meter_state.meter_confident,
+                            effect_cycler=effect_cycler,
+                            enabled_effects=enabled_structural_effects,
+                        )
+                        structural_action_results.append(result)
+                        if result.outcome == "applied" and result.preset is not None:
+                            preset = result.preset
+                            if normalized_render_mode_policy == "adaptive":
+                                for _, renderer, *_ in multi_adapter.devices:
+                                    renderer.mode = preset.render_mode
+                            director.set_colors(preset.color_palette)
+                            current_params = preset.params
+                if (
+                    newly_committed_predictive_cues
+                    and not live_structure.structure_similarity_enabled
+                    and effect_cycler is not None
+                    and effect_cycler.show_palette_queue
+                    and any(
+                        cue.color_action == "advance_approved_palette"
+                        for cue in newly_committed_predictive_cues
+                    )
+                ):
+                    next_palette = effect_cycler.advance_show_palette()
+                    if next_palette is not None:
+                        director.set_colors(
+                            effect_cycler.show_palette_colors
+                        )
                 runtime_params, active_live_eq_routes, active_live_instrument_routes = _runtime_params_for_frame(frame_intent)
+                if structural_action_results:
+                    runtime_params = dict(runtime_params or {})
+                    runtime_params["structural_actions"] = tuple(
+                        {
+                            "cue_id": result.cue_id,
+                            "outcome": result.outcome,
+                            "requested_effect": result.requested_effect,
+                            "applied_effect": result.applied_effect,
+                            "requested_palette_action": (
+                                result.requested_palette_action
+                            ),
+                            "applied_palette": result.applied_palette,
+                            "target_bar": result.target_bar,
+                            "committed_beat": result.committed_beat,
+                            "reason": result.reason,
+                        }
+                        for result in structural_action_results
+                    )
                 frame_intent = _apply_live_routes_to_intent(
                     frame_intent,
                     active_live_instrument_routes + active_live_eq_routes,
@@ -2745,12 +4511,107 @@ def run_live_to_govee(
                 )
                 if max_brightness:
                     frame_intent = dataclasses.replace(frame_intent, intensity=1.0)
+                frame_intent = dataclasses.replace(
+                    frame_intent,
+                    intensity=_clamp01(
+                        frame_intent.intensity
+                        * (
+                            1.0
+                            + harmonic_accent
+                            + predictive_cue_intensity
+                        )
+                        * float(master_brightness)
+                    ),
+                )
+                if harmonic_accent > 0.0 or render_harmonic_change:
+                    runtime_params = dict(runtime_params or {})
+                    runtime_params["harmonic_accent"] = round(
+                        harmonic_accent,
+                        4,
+                    )
+                    runtime_params["harmonic_change"] = bool(
+                        render_harmonic_change
+                    )
+                    if chord_history.last_change is not None:
+                        runtime_params["detected_chord"] = (
+                            chord_history.last_change.chord
+                        )
+                        runtime_params["chord_change_t"] = (
+                            chord_history.last_change.t
+                        )
+                        runtime_params["chord_change_anchor"] = (
+                            chord_history.last_change.anchor
+                        )
+                chord_prediction = chord_history.prediction
+                if chord_prediction is not None:
+                    runtime_params = dict(runtime_params or {})
+                    runtime_params["predicted_chord"] = (
+                        chord_prediction.chord
+                    )
+                    runtime_params["predicted_chord_t"] = (
+                        chord_prediction.t
+                    )
+                    runtime_params["chord_prediction_confidence"] = (
+                        chord_prediction.confidence
+                    )
+                prediction_mismatch = (
+                    chord_history.last_prediction_mismatch
+                )
+                if (
+                    prediction_mismatch is not None
+                    and stream_t - prediction_mismatch.actual_t <= 1.5
+                ):
+                    runtime_params = dict(runtime_params or {})
+                    runtime_params["chord_prediction_mismatch"] = (
+                        dataclasses.asdict(prediction_mismatch)
+                    )
+                if render_macro_candidate or render_macro_change:
+                    runtime_params = dict(runtime_params or {})
+                    runtime_params["structure_event"] = (
+                        "macro_change"
+                        if render_macro_change
+                        else "macro_candidate"
+                    )
+                    runtime_params["macro_candidate"] = bool(
+                        render_macro_candidate
+                    )
+                    runtime_params["macro_change"] = bool(render_macro_change)
+                if render_beat:
+                    runtime_params = dict(runtime_params or {})
+                    runtime_params["beat_accent"] = render_beat_strength
+                if committed_predictive_cues:
+                    runtime_params = dict(runtime_params or {})
+                    runtime_params["predictive_cues"] = tuple(
+                        {
+                            "cue_id": cue.cue_id,
+                            "cue_class": cue.cue_class,
+                            "effect": (
+                                cue.effect_candidates[0]
+                                if cue.effect_candidates
+                                else ""
+                            ),
+                            "intensity": cue.intensity,
+                            "state": cue.state,
+                        }
+                        for cue in committed_predictive_cues
+                    )
                 sent = multi_adapter.send_frame(
                     elapsed,
                     frame_intent,
-                    beat=beat_this_tick,
+                    beat=render_beat,
                     params=runtime_params,
                 )
+                next_render_at = _advance_deadline(next_render_at, render_interval, now)
+                pending_render_beat = False
+                pending_render_downbeat = False
+                pending_render_beat_strength = 0.0
+                pending_render_beat_in_bar = None
+                pending_render_harmonic_change = False
+                pending_render_macro_candidate = False
+                pending_render_macro_change = False
+                last_runtime_params = runtime_params
+                last_active_live_eq_routes = active_live_eq_routes
+                last_active_live_instrument_routes = active_live_instrument_routes
                 if sent:
                     sent_count += 1
                 log_row: dict[str, Any] = {
@@ -2758,7 +4619,9 @@ def run_live_to_govee(
                     "t": round(stream_t, 4),
                     "elapsed_wall": round(elapsed, 4),
                     "bpm": round(float(bpm_estimator.last_bpm), 2),
-                    "beat": bool(beat_this_tick),
+                    "beat": bool(render_beat),
+                    "downbeat": bool(render_downbeat),
+                    "beat_in_bar": render_beat_in_bar,
                     "sent": bool(sent),
                     "color": last_intent.color,
                     "mode": last_intent.mode.value,
@@ -2771,6 +4634,36 @@ def run_live_to_govee(
                     log_row["pan_center"] = round(float(last_features["pan_center"]), 4)
                     log_row["pan_width"] = round(float(last_features["pan_width"]), 4)
                     log_row["stereo_preserved"] = bool(last_features["stereo_preserved"])
+                log_row["meter_downbeat"] = bool(meter_state.downbeat)
+                log_row["meter_bar_phase"] = meter_state.bar_phase
+                log_row["meter_confidence"] = meter_state.phase_confidence
+                log_row["harmonic_enabled"] = bool(
+                    live_structure.harmonic_structure_enabled
+                )
+                log_row["harmonic_chord"] = harmonic_state.chord
+                log_row["harmonic_confidence"] = (
+                    harmonic_state.tonal_confidence
+                )
+                log_row["harmonic_novelty"] = harmonic_state.novelty
+                log_row["harmonic_change"] = bool(render_harmonic_change)
+                log_row["harmonic_accent"] = round(harmonic_accent, 4)
+                log_row["macro_candidate"] = bool(render_macro_candidate)
+                log_row["macro_change"] = bool(render_macro_change)
+                log_row["structure_confidence"] = (
+                    last_structure_event.confidence
+                    if last_structure_event is not None
+                    else 0.0
+                )
+                log_row["bar_index"] = (
+                    last_structure_event.bar_index
+                    if last_structure_event is not None
+                    else None
+                )
+                log_row["phrase_index"] = (
+                    last_structure_event.phrase_index
+                    if last_structure_event is not None
+                    else None
+                )
                 if auto_cycle and mood_classifier is not None and effect_cycler is not None:
                     log_row["mood"] = mood_classifier.mood.value
                     log_row["effect"] = effect_cycler.current_effect
@@ -2783,12 +4676,100 @@ def run_live_to_govee(
                     log_row["instrument_events"] = list(last_live_instrument_state.events)
                     log_row["active_instruments"] = [str(route.get("instrument", "")) for route in active_live_instrument_routes]
                 logs.append(log_row)
+                frame_log_rows += 1
 
-                if telemetry and mood_classifier is not None:
+                if (
+                    telemetry
+                    and mood_classifier is not None
+                    and now >= next_frame_telemetry_at
+                ):
                     telemetry.write_frame({
                         "t": round(stream_t, 4),
                         "bpm": round(float(bpm_estimator.last_bpm), 2),
-                        "beat": bool(beat_this_tick),
+                        "beat": bool(render_beat),
+                        "downbeat": bool(render_downbeat),
+                        "beat_in_bar": render_beat_in_bar,
+                        "meter_downbeat": bool(meter_state.downbeat),
+                        "meter_bar_phase": meter_state.bar_phase,
+                        "meter_relative_phase": meter_state.relative_phase,
+                        "meter_confidence": meter_state.phase_confidence,
+                        "meter_confident": meter_state.meter_confident,
+                        "meter_evidence": meter_state.evidence,
+                        "meter_inferred_missing_beats": (
+                            meter_state.inferred_missing_beats
+                        ),
+                        "manual_downbeat_nudge_pending": bool(
+                            pending_downbeat_nudge_revision
+                            > applied_downbeat_nudge_revision
+                        ),
+                        "manual_downbeat_nudge_count": (
+                            manual_downbeat_nudge_count
+                        ),
+                        "manual_downbeat_nudge_last_t": (
+                            manual_downbeat_nudge_last_t
+                        ),
+                        "manual_downbeat_nudge_previous_phase": (
+                            manual_downbeat_nudge_previous_phase
+                        ),
+                        "manual_downbeat_nudge_revision": (
+                            applied_downbeat_nudge_revision
+                        ),
+                        "manual_downbeat_nudge_target": (
+                            manual_downbeat_nudge_target
+                        ),
+                        "manual_beat_latch_count": manual_beat_latch_count,
+                        "manual_detection_reset_count": (
+                            manual_detection_reset_count
+                        ),
+                        "manual_beat_latch_pending_kind": (
+                            pending_manual_beat_kind
+                            if pending_downbeat_nudge_revision
+                            > applied_downbeat_nudge_revision
+                            else ""
+                        ),
+                        "manual_beat_markers": tuple(
+                            dataclasses.asdict(marker)
+                            for marker in manual_beat_registration.markers
+                        ),
+                        "manual_meter_beats_per_bar": (
+                            manual_meter_beats_per_bar
+                        ),
+                        "meter_time_signature": (
+                            manual_meter_beats_per_bar,
+                            4,
+                        ),
+                        "harmonic_enabled": bool(
+                            live_structure.harmonic_structure_enabled
+                        ),
+                        "harmonic_chord": harmonic_state.chord,
+                        "harmonic_confidence": harmonic_state.tonal_confidence,
+                        "harmonic_chord_confidence": (
+                            harmonic_state.chord_confidence
+                        ),
+                        "harmonic_novelty": harmonic_state.novelty,
+                        "harmonic_novelty_threshold": (
+                            harmonic_state.novelty_threshold
+                        ),
+                        "harmonic_change": bool(render_harmonic_change),
+                        "harmonic_accent": round(harmonic_accent, 4),
+                        "macro_candidate": bool(render_macro_candidate),
+                        "macro_change": bool(render_macro_change),
+                        "structure_confidence": (
+                            last_structure_event.confidence
+                            if last_structure_event is not None
+                            else 0.0
+                        ),
+                        "structure_bar_index": (
+                            last_structure_event.bar_index
+                            if last_structure_event is not None
+                            else None
+                        ),
+                        "structure_phrase_index": (
+                            last_structure_event.phrase_index
+                            if last_structure_event is not None
+                            else None
+                        ),
+                        "harmonic_chroma": harmonic_state.chroma,
                         "rms": round(float(last_features["rms"]), 5) if last_features else 0.0,
                         "energy": round(director.energy, 4),
                         "stability": round(director.stability, 4),
@@ -2830,6 +4811,7 @@ def run_live_to_govee(
                         "onset_mean": round(float(bpm_estimator.last_onset_mean), 4),
                         "onset_std": round(float(bpm_estimator.last_onset_std), 4),
                         "hybrid_source": bpm_estimator._hybrid_source,
+                        "eq_beat_onset": round(float(bpm_estimator.last_eq_onset), 4),
                         "beat_phase": round(float(bpm_estimator._beat_phase), 4),
                         # Template matching
                         "template_similarity": round(bpm_estimator._beat_template._prev_similarity, 4),
@@ -2838,49 +4820,367 @@ def run_live_to_govee(
                         "autocorr_confidence": round(bpm_estimator._last_autocorr_confidence, 4),
                         "onset_activity": round(bpm_estimator._last_onset_activity, 4),
                     })
-                if state_callback is not None:
-                    state_callback({
-                        "render_mode": str((runtime_params or {}).get("_render_mode", "")),
-                        "current_palette": tuple(preset.color_palette) if preset is not None else (),
+                    next_frame_telemetry_at = _advance_deadline(
+                        next_frame_telemetry_at,
+                        telemetry_frame_interval,
+                        now,
+                    )
+
+                if state_callback is not None and now >= next_state_at:
+                    effective_bpm = current_cycle_bpm
+                    while (
+                        detected_beat_times
+                        and detected_beat_times[0] < stream_t - waveform_window_seconds
+                    ):
+                        detected_beat_times.popleft()
+                    while (
+                        detected_downbeat_times
+                        and detected_downbeat_times[0]
+                        < stream_t - waveform_window_seconds
+                    ):
+                        detected_downbeat_times.popleft()
+                    manual_beat_registration.prune_before(
+                        stream_t - waveform_window_seconds
+                    )
+                    chord_history.prune_changes_before(
+                        stream_t - waveform_window_seconds
+                    )
+                    active_profile = (
+                        effect_cycler.profile if effect_cycler is not None else profile
+                    )
+                    active_palette_name = (
+                        effect_cycler.current_palette if effect_cycler is not None else None
+                    )
+                    active_palette_colors = (
+                        effect_cycler.show_palette_colors
+                        if effect_cycler is not None and effect_cycler.current_show_palette
+                        else tuple(preset.color_palette) if preset is not None else ()
+                    )
+                    palette_queue = (
+                        effect_cycler.show_palette_queue
+                        if effect_cycler is not None else ()
+                    )
+                    palette_cycle_mode = (
+                        "song_detection" if palette_queue
+                        else "timed" if auto_cycle and effect_cycler is not None
+                        else "manual"
+                    )
+                    palette_seconds_until_next = (
+                        effect_cycler.seconds_until_next_cycle(stream_t)
+                        if palette_cycle_mode == "timed" and effect_cycler is not None
+                        else None
+                    )
+                    live_state = {
+                        "stream_t": round(float(stream_t), 6),
+                        "listening": bool(
+                            last_input_callback_at
+                            and now - last_input_callback_at <= 1.0
+                        ),
+                        "last_input_callback_at": last_input_callback_at,
+                        "captured_samples": int(captured_samples),
+                        "input_overflows": int(dropped_blocks),
+                        "bpm": round(effective_bpm, 2),
+                        "detected_bpm": round(current_detected_bpm, 2),
+                        "cycle_bpm": round(current_cycle_bpm, 2),
+                        "cycle_tempo_multiplier": (
+                            cycle_tempo.multiplier
+                        ),
+                        "beat": bool(pending_state_beat),
+                        "downbeat": bool(pending_state_downbeat),
+                        "beat_in_bar": pending_state_beat_in_bar,
+                        "meter_downbeat": bool(meter_state.downbeat),
+                        "meter_bar_phase": meter_state.bar_phase,
+                        "meter_relative_phase": meter_state.relative_phase,
+                        "meter_confidence": meter_state.phase_confidence,
+                        "meter_confident": meter_state.meter_confident,
+                        "meter_evidence": meter_state.evidence,
+                        "meter_inferred_missing_beats": (
+                            meter_state.inferred_missing_beats
+                        ),
+                        "manual_downbeat_nudge_pending": bool(
+                            pending_downbeat_nudge_revision
+                            > applied_downbeat_nudge_revision
+                        ),
+                        "manual_downbeat_nudge_count": (
+                            manual_downbeat_nudge_count
+                        ),
+                        "manual_downbeat_nudge_last_t": (
+                            manual_downbeat_nudge_last_t
+                        ),
+                        "manual_downbeat_nudge_previous_phase": (
+                            manual_downbeat_nudge_previous_phase
+                        ),
+                        "manual_downbeat_nudge_revision": (
+                            applied_downbeat_nudge_revision
+                        ),
+                        "manual_downbeat_nudge_target": (
+                            manual_downbeat_nudge_target
+                        ),
+                        "manual_beat_latch_count": manual_beat_latch_count,
+                        "manual_detection_reset_count": (
+                            manual_detection_reset_count
+                        ),
+                        "manual_beat_latch_pending_kind": (
+                            pending_manual_beat_kind
+                            if pending_downbeat_nudge_revision
+                            > applied_downbeat_nudge_revision
+                            else ""
+                        ),
+                        "manual_beat_markers": tuple(
+                            dataclasses.asdict(marker)
+                            for marker in manual_beat_registration.markers
+                        ),
+                        "manual_meter_beats_per_bar": (
+                            manual_meter_beats_per_bar
+                        ),
+                        "meter_time_signature": (
+                            manual_meter_beats_per_bar,
+                            4,
+                        ),
+                        "harmonic_enabled": bool(
+                            live_structure.harmonic_structure_enabled
+                        ),
+                        "harmonic_window_ms": round(
+                            (
+                                live_structure.harmonic_frame_size
+                                / float(sample_rate)
+                            )
+                            * 1000.0,
+                            3,
+                        ),
+                        "harmonic_hop_ms": round(
+                            (harmonic_hop_size / float(sample_rate)) * 1000.0,
+                            3,
+                        ),
+                        "state_publish_interval_ms": round(
+                            state_interval * 1000.0,
+                            3,
+                        ),
+                        **predictive_runtime.diagnostics(now_t=stream_t),
+                        "harmonic_chord": harmonic_state.chord,
+                        "detected_chord": chord_history.current,
+                        "detected_chord_history": chord_history.chords,
+                        "detected_bar_chord_history": (
+                            bar_chord_history.previous_three
+                        ),
+                        "detected_chord_changes": chord_history.changes,
+                        "detected_chord_change": (
+                            dataclasses.asdict(chord_history.last_change)
+                            if chord_history.last_change is not None
+                            else {}
+                        ),
+                        "detected_chord_prediction": (
+                            dataclasses.asdict(chord_history.prediction)
+                            if chord_history.prediction is not None
+                            else {}
+                        ),
+                        "detected_chord_prediction_seconds": (
+                            max(
+                                0.0,
+                                chord_history.prediction.t - stream_t,
+                            )
+                            if chord_history.prediction is not None
+                            else None
+                        ),
+                        "detected_chord_prediction_mismatch": (
+                            dataclasses.asdict(
+                                chord_history.last_prediction_mismatch
+                            )
+                            if chord_history.last_prediction_mismatch
+                            is not None
+                            else {}
+                        ),
+                        "detected_chord_prediction_mismatch_active": bool(
+                            chord_history.last_prediction_mismatch
+                            is not None
+                            and stream_t
+                            - chord_history.last_prediction_mismatch.actual_t
+                            <= 1.5
+                        ),
+                        "harmonic_debug_enabled": bool(
+                            live_structure.debug_harmonics
+                        ),
+                        "harmonic_debug_spectrum": (
+                            harmonic_analyzer.debug_spectrum
+                            if harmonic_analyzer is not None
+                            else ()
+                        ),
+                        "harmonic_debug_chroma": harmonic_state.chroma,
+                        "harmonic_debug_chord": harmonic_state.chord,
+                        "harmonic_debug_chord_tones": chord_tones(
+                            harmonic_state.chord
+                        ),
+                        "harmonic_debug_root_note": (
+                            chord_tones(harmonic_state.chord)[0]
+                            if chord_tones(harmonic_state.chord)
+                            else ""
+                        ),
+                        "harmonic_debug_non_chord_tones": (
+                            detected_non_chord_tones(
+                                harmonic_state.chroma,
+                                harmonic_state.chord,
+                            )
+                        ),
+                        "harmonic_confidence": harmonic_state.tonal_confidence,
+                        "harmonic_chord_confidence": (
+                            harmonic_state.chord_confidence
+                        ),
+                        "harmonic_novelty": harmonic_state.novelty,
+                        "harmonic_novelty_threshold": (
+                            harmonic_state.novelty_threshold
+                        ),
+                        "harmonic_change": bool(
+                            pending_state_harmonic_change
+                        ),
+                        "harmonic_accent": round(
+                            _harmonic_accent_strength(
+                                now,
+                                harmonic_accent_started_at,
+                            ),
+                            4,
+                        ),
+                        "macro_candidate": bool(
+                            pending_state_macro_candidate
+                        ),
+                        "macro_change": bool(pending_state_macro_change),
+                        "structure_event": (
+                            last_structure_event.kind
+                            if last_structure_event is not None
+                            else ""
+                        ),
+                        "structure_confidence": (
+                            last_structure_event.confidence
+                            if last_structure_event is not None
+                            else 0.0
+                        ),
+                        "structure_bar_index": (
+                            last_structure_event.bar_index
+                            if last_structure_event is not None
+                            else None
+                        ),
+                        "structure_phrase_index": (
+                            last_structure_event.phrase_index
+                            if last_structure_event is not None
+                            else None
+                        ),
+                        "beat_phase": round(float(bpm_estimator._beat_phase), 4),
+                        "stability": round(float(director.stability), 4),
+                        "cyclic_grid_bpm": round(float(bpm_estimator.last_cyclic_bpm), 2),
+                        "cyclic_grid_confidence": round(
+                            float(bpm_estimator.last_cyclic_confidence), 4
+                        ),
+                        "song_boundaries": int(
+                            song_detector.boundary_count
+                            + (crossfade_detector.boundary_count if crossfade_detector else 0)
+                        ),
+                        "render_mode": str((last_runtime_params or {}).get("_render_mode", "")),
+                        "current_palette": active_palette_colors,
+                        "active_palette_name": active_palette_name or "",
+                        "palette_queue": palette_queue,
+                        "palette_cycle_mode": palette_cycle_mode,
+                        "palette_seconds_until_next": palette_seconds_until_next,
+                        "active_profile_name": str(getattr(active_profile, "name", "")),
+                        "profile_cycle_mode": (
+                            "song_change" if profile_switch_on_song_change else ""
+                        ),
                         "dominant_band": last_live_eq_state.dominant_band if last_live_eq_state else "",
                         "dominant_proxy": last_live_instrument_state.dominant_proxy if last_live_instrument_state else "",
                         "pan_center": round(float(last_features["pan_center"]), 4) if last_features else 0.0,
                         "pan_width": round(float(last_features["pan_width"]), 4) if last_features else 0.0,
-                        "active_eq_routes": [dict(route) for route in active_live_eq_routes],
-                        "active_instrument_routes": [dict(route) for route in active_live_instrument_routes],
+                        "active_eq_routes": [dict(route) for route in last_active_live_eq_routes],
+                        "active_instrument_routes": [dict(route) for route in last_active_live_instrument_routes],
                         "active_scene_layers": [
                             dict(layer)
-                            for layer in ((runtime_params or {}).get("scene_layers") or [])
+                            for layer in ((last_runtime_params or {}).get("scene_layers") or [])
                             if isinstance(layer, dict)
                         ],
                         "runtime_control": (
-                            dict((runtime_params or {}).get("runtime_control", {}))
-                            if isinstance((runtime_params or {}).get("runtime_control"), dict)
+                            dict((last_runtime_params or {}).get("runtime_control", {}))
+                            if isinstance((last_runtime_params or {}).get("runtime_control"), dict)
                             else {}
                         ),
+                    }
+                    ring_stats = audio_ring.snapshot()
+                    audio_lag_samples = max(
+                        0,
+                        int(captured_samples) - int(analyzed_through_sample),
+                    )
+                    live_state.update({
+                        "audio_ring_capacity": ring_stats.capacity,
+                        "audio_ring_depth": ring_stats.depth,
+                        "audio_ring_fill": round(
+                            ring_stats.depth / max(1, ring_stats.capacity),
+                            4,
+                        ),
+                        "analysis_dropped_blocks": ring_stats.dropped_blocks,
+                        "analysis_discontinuities": int(analysis_discontinuities),
+                        "audio_lag_ms": round(
+                            (audio_lag_samples / float(sample_rate)) * 1000.0,
+                            3,
+                        ),
+                        "analysis_frame_ms_p95": round(_p95(analysis_frame_times_ms), 3),
+                        "harmonic_frame_ms_p95": round(
+                            _p95(harmonic_frame_times_ms),
+                            3,
+                        ),
+                        "waveform_points": tuple(waveform_points),
+                        "eq_band_points": {
+                            name: tuple(points)
+                            for name, points in eq_band_points.items()
+                        },
+                        "detected_beat_times": tuple(detected_beat_times),
+                        "detected_downbeat_times": tuple(
+                            detected_downbeat_times
+                        ),
+                        "waveform_window_seconds": waveform_window_seconds,
                     })
+                    state_callback(live_state)
+                    pending_state_beat = False
+                    pending_state_downbeat = False
+                    pending_state_beat_in_bar = None
+                    pending_state_harmonic_change = False
+                    pending_state_macro_candidate = False
+                    pending_state_macro_change = False
+                    next_state_at = _advance_deadline(next_state_at, state_interval, now)
 
             if now >= next_telemetry:
+                ring_stats = audio_ring.snapshot()
                 logs.append(
                     {
                         "kind": "telemetry",
                         "elapsed_wall": round(elapsed, 3),
                         "samples_captured": int(captured_samples),
                         "dropped_blocks": int(dropped_blocks),
-                        "queue_chunks": int(len(audio_queue)),
+                        "analysis_dropped_blocks": ring_stats.dropped_blocks,
+                        "queue_chunks": ring_stats.depth,
+                        "analysis_discontinuities": int(analysis_discontinuities),
+                        "harmonic_enabled": bool(
+                            live_structure.harmonic_structure_enabled
+                        ),
+                        "harmonic_frame_ms_p95": round(
+                            _p95(harmonic_frame_times_ms),
+                            3,
+                        ),
                     }
                 )
-                next_telemetry += max(0.1, telemetry_interval_seconds)
+                next_telemetry = _advance_deadline(
+                    next_telemetry,
+                    max(0.1, telemetry_interval_seconds),
+                    now,
+                )
                 if now - last_print >= 1.0:
                     beat_rate = beat_count / elapsed if elapsed > 1.0 else 0.0
-                    eff_bpm = bpm_estimator.last_bpm * (0.5 if half_time else 1.0)
+                    eff_bpm = current_cycle_bpm
                     expected_rate = eff_bpm / 60.0
                     last_print = now
                     print(
                         f"govee t={elapsed:.1f}s "
                         f"beats={beat_count} ({beat_rate:.1f}/s, expect {expected_rate:.1f}/s) "
                         f"sent={sent_count} dropped={dropped_blocks} "
-                        f"bpm={eff_bpm:.1f} (raw={bpm_estimator.last_bpm:.1f}) "
+                        f"analysis_dropped={ring_stats.dropped_blocks} "
+                        f"bpm={eff_bpm:.1f} "
+                        f"(detected={current_detected_bpm:.1f}, "
+                        f"cycle={cycle_tempo.multiplier:g}x) "
                         f"mode={director.mode.value} "
                         f"devices={len(multi_adapter.devices)} "
                         f"color={last_intent.color if last_intent else '-'}"
@@ -2895,6 +5195,7 @@ def run_live_to_govee(
 
     actual_duration = time.monotonic() - started_at
     ble_count = len(getattr(multi_adapter, "_ble_followers", []))
+    ring_stats = audio_ring.snapshot()
     summary = {
         "duration_seconds": float(duration_seconds) if duration_seconds is not None else round(actual_duration, 3),
         "sample_rate": int(sample_rate),
@@ -2902,11 +5203,54 @@ def run_live_to_govee(
         "device": device,
         "frame_size": int(frame_size),
         "hop_size": int(hop_size),
+        "harmonic_enabled": bool(live_structure.harmonic_structure_enabled),
+        "harmonic_frame_size": int(live_structure.harmonic_frame_size),
+        "harmonic_hop_size": int(harmonic_hop_size),
+        "harmonic_window_ms": round(
+            (
+                live_structure.harmonic_frame_size
+                / float(sample_rate)
+            )
+            * 1000.0,
+            3,
+        ),
+        "harmonic_hop_ms": round(
+            (harmonic_hop_size / float(sample_rate)) * 1000.0,
+            3,
+        ),
+        "state_publish_interval_ms": round(
+            state_interval * 1000.0,
+            3,
+        ),
+        "harmonic_frame_ms_p95": round(_p95(harmonic_frame_times_ms), 3),
+        "predictive_analysis_enabled": bool(
+            live_structure.predictive_analysis_enabled
+        ),
+        "predictive_shadow_mode": bool(
+            live_structure.predictive_shadow_mode
+        ),
+        "predictive_update_ms_p95": round(
+            _p95(predictive_update_times_ms),
+            3,
+        ),
+        "macro_changes": int(macro_change_count),
         "samples_captured": int(captured_samples),
         "dropped_blocks": int(dropped_blocks),
-        "rows": int(sum(1 for row in logs if row["kind"] == "frame")),
+        "analysis_dropped_blocks": ring_stats.dropped_blocks,
+        "analysis_discontinuities": int(analysis_discontinuities),
+        "audio_ring_capacity": ring_stats.capacity,
+        "max_returned_log_rows": int(logs.maxlen or 0),
+        "rows": int(frame_log_rows),
+        "returned_rows": len(logs),
         "sent": int(sent_count),
         "beats": int(beat_count),
+        "manual_downbeat_nudges": int(manual_downbeat_nudge_count),
+        "manual_beat_latches": int(manual_beat_latch_count),
+        "manual_detection_resets": int(manual_detection_reset_count),
+        "meter_time_signature": (manual_meter_beats_per_bar, 4),
+        "detected_bpm": round(current_detected_bpm, 2),
+        "cycle_bpm": round(current_cycle_bpm, 2),
+        "cycle_tempo_multiplier": cycle_tempo.multiplier,
         "device_count": len(multi_adapter.devices),
         "ble_followers": ble_count,
         "song_boundaries": song_detector.boundary_count,
@@ -2914,4 +5258,4 @@ def run_live_to_govee(
         "stereo_chunks_captured": int(stereo_chunks_captured),
         "mono_fallback_chunks": int(mono_fallback_chunks),
     }
-    return logs, summary
+    return list(logs), summary

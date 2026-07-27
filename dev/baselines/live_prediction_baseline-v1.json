@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "model_version": "absolute-chord-baseline-v1",
+  "generated_from": "synthetic committed observations; no raw audio",
+  "frozen_before_hybrid_threshold_tuning": true,
+  "cohorts": {
+    "four_bar_loop": {
+      "observed_chords": 8,
+      "predictions_emitted": 3,
+      "first_prediction_after_chords": 6
+    },
+    "eight_bar_progression": {
+      "observed_chords": 16,
+      "predictions_emitted": 7,
+      "first_prediction_after_chords": 10
+    },
+    "twelve_bar_progression": {
+      "observed_chords": 24,
+      "predictions_emitted": 0,
+      "limitation": "legacy repeated-pattern search is capped at eight events"
+    },
+    "irregular_non_repeating_changes": {
+      "predictions_emitted": 0,
+      "expected_behavior": "abstain"
+    },
+    "deceptive_cadence": {
+      "expected_behavior": "literal repetition only; no deceptive-resolution distribution"
+    },
+    "modulation": {
+      "expected_behavior": "absolute chord labels do not transfer across keys"
+    },
+    "low_confidence_harmony": {
+      "limitation": "legacy adapter does not use observation confidence"
+    }
+  }
+}

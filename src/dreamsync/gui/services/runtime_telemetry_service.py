@@ -20,6 +20,21 @@ class RuntimeTelemetryService:
         runtime_state = session_snapshot.get("runtime_state", {})
         if not isinstance(runtime_state, dict):
             runtime_state = {}
+        telemetry_metrics = dict(metrics)
+        for key in (
+            "playback_mode_used",
+            "baked_validation_valid",
+            "baked_validation_reason",
+            "baked_artifact_path",
+            "frame_count",
+            "node_count",
+            "frames_sent",
+            "frame_lookup_count",
+            "frame_lookup_avg_ms",
+            "frame_lookup_max_ms",
+        ):
+            if key in session_snapshot:
+                telemetry_metrics[key] = session_snapshot[key]
         return RuntimeTelemetrySnapshot(
             output_mode=state.active_output_mode,
             capture_state=state.capture_state,
@@ -56,5 +71,5 @@ class RuntimeTelemetryService:
                 if isinstance(layer, dict)
             ),
             runtime_control=dict(session_snapshot.get("runtime_control", supervisor.runtime_control_snapshot())),
-            metrics=metrics,
+            metrics=telemetry_metrics,
         )

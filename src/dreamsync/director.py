@@ -274,9 +274,15 @@ class Director:
         bass_ratio = float(features.get("bass_ratio", 0.0))
         onset_strength = float(features.get("onset_strength", 0.0))
 
-        # Advance color on beat
+        # Reactive harmonic-structure mode owns large color changes explicitly.
+        # Other callers retain downbeat/every-beat fallback behavior.
+        structure_controlled = bool(features.get("structure_controlled", False))
+        if structure_controlled:
+            color_beat = features.get("structure_event") == "macro_change"
+        else:
+            color_beat = bool(features.get("downbeat", beat))
         self.last_beat_event = beat
-        if beat and self._colors:
+        if color_beat and self._colors:
             self._color_idx = (self._color_idx + 1) % len(self._colors)
         color = self._colors[self._color_idx] if self._colors else None
 
@@ -287,7 +293,12 @@ class Director:
             bass_ratio=bass_ratio,
             onset_strength=onset_strength,
         )
-        bpm = self._effective_bpm(bpm)
+        bpm = (
+            bpm
+            if bool(features.get("cycle_tempo_override", False))
+            and bpm > 0.0
+            else self._effective_bpm(bpm)
+        )
         stability = self._beat_stability()
         self._last_stability = stability
         self._last_effective_bpm = bpm

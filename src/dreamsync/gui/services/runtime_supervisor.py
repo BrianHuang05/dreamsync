@@ -8,7 +8,7 @@ import time
 from collections import deque
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from dreamsync.cache import ShowCache
 from dreamsync.capture.orchestrator import CaptureOrchestrator, OrchestratorConfig
@@ -18,7 +18,7 @@ from dreamsync.gui.models.runtime_mode_state import CapturedShowItem, OutputLeas
 from dreamsync.gui.models.runtime_routing_state import OutputTarget, RuntimeRoutingState
 from dreamsync.gui.services.audio_device_service import AudioDeviceService
 from dreamsync.gui.services.session_service import SessionHandle, SessionService
-from dreamsync.show.models import ShowTimeline
+from dreamsync.show.models import Show, ShowTimeline
 from dreamsync.show_pipeline_worker import ShowPipelineWorker
 
 
@@ -43,6 +43,7 @@ class PipelineCoordinator:
         self._timelines: dict[str, ShowTimeline] = {}
         self._order: list[str] = []
         self._running = False
+        self._timing_fetcher: Callable[[], dict | None] | None = None
 
     @property
     def running(self) -> bool:
@@ -87,6 +88,13 @@ class PipelineCoordinator:
             self._worker = worker
             self._ready_queue = ready_queue
             self._running = True
+            timing_fetcher = self._timing_fetcher
+        if timing_fetcher is not None:
+            try:
+                self._activate_timing_source(capture, timing_fetcher)
+            except Exception:
+                self.stop()
+                raise
 
     def stop(self) -> None:
         with self._lock:
@@ -100,6 +108,32 @@ class PipelineCoordinator:
             capture.shutdown()
         if worker is not None:
             worker.shutdown()
+
+    def set_timing_source(self, fetcher: Callable[[], dict | None] | None) -> None:
+        """Attach or detach an external timing source for capture splitting."""
+        with self._lock:
+            self._timing_fetcher = fetcher
+            capture = self._capture if self._running else None
+        if capture is None:
+            return
+        capture.stop_periodic_timing()
+        if fetcher is not None:
+            self._activate_timing_source(capture, fetcher)
+
+    def on_track_change(self, timing_data: dict) -> int:
+        """Forward an immediate track boundary to the active capture."""
+        with self._lock:
+            capture = self._capture if self._running else None
+        if capture is None:
+            return 0
+        return int(capture.on_track_change(timing_data))
+
+    @staticmethod
+    def _activate_timing_source(capture, fetcher: Callable[[], dict | None]) -> None:
+        timing_data = fetcher()
+        if timing_data is not None:
+            capture.update_timing(timing_data)
+        capture.start_periodic_timing(fetcher)
 
     def snapshot_items(self) -> tuple[CapturedShowItem, ...]:
         with self._lock:
@@ -243,8 +277,11 @@ class RuntimeSupervisor:
         self._events: deque[str] = deque(maxlen=32)
         self._capture_settings = CaptureSettings()
         self._reactive_settings = ReactiveSettings()
+        self._baked_playback_mode = "auto"
+        self._live_loopback_enabled = False
         self._recent_saved_shows: list[str] = []
         self._timeline_resolver = None
+        self._capture_timing_source: Callable[[], dict | None] | None = None
         self._routing_state = RuntimeRoutingState(
             output_target=OutputTarget(mode="simulation", fallback_to_simulation=True),
         )
@@ -285,6 +322,33 @@ class RuntimeSupervisor:
 
     def set_reactive_settings(self, settings: ReactiveSettings) -> None:
         self._reactive_settings = settings
+        session = self.active_session()
+        if session is not None and hasattr(
+            session,
+            "set_predictive_cues_enabled",
+        ):
+            session.set_predictive_cues_enabled(
+                settings.predictive_cues_enabled
+                or settings.structure_bar_actions_enabled
+                or settings.structure_phrase_actions_enabled
+                or settings.structure_section_actions_enabled
+            )
+        if session is not None and hasattr(
+            session,
+            "set_structure_action_controls",
+        ):
+            session.set_structure_action_controls(
+                shadow_mode=settings.structure_similarity_shadow_mode,
+                bar_actions=settings.structure_bar_actions_enabled,
+                phrase_actions=settings.structure_phrase_actions_enabled,
+                section_actions=settings.structure_section_actions_enabled,
+            )
+
+    def set_baked_playback_mode(self, mode: str) -> None:
+        self._baked_playback_mode = str(mode or "auto")
+
+    def set_live_loopback_enabled(self, enabled: bool) -> None:
+        self._live_loopback_enabled = bool(enabled)
 
     def set_timeline_resolver(self, resolver) -> None:
         self._timeline_resolver = resolver
@@ -320,10 +384,13 @@ class RuntimeSupervisor:
         self,
         audio_path: Path,
         *,
+        playlist=None,
         config_path: Path | None = None,
         profile=None,
         profile_resolver=None,
         simulation_only: bool | None = None,
+        precompiled_timelines=None,
+        precompiled_timeline_sources=None,
     ) -> SessionHandle:
         self._pipeline_playback_enabled = False
         self._armed_output_mode = ""
@@ -334,6 +401,7 @@ class RuntimeSupervisor:
         self._stop_output_handle()
         handle = self._session_service.start_local_preview_session(
             audio_path,
+            playlist=playlist,
             config_path=config_path,
             profile=profile,
             profile_resolver=profile_resolver,
@@ -341,6 +409,8 @@ class RuntimeSupervisor:
             simulation_only=self._simulation_only(simulation_only),
             fallback_to_simulation=self._fallback_to_simulation(),
             audio_device=self._routing_state.selected_output_audio_device_id,
+            precompiled_timelines=precompiled_timelines,
+            precompiled_timeline_sources=precompiled_timeline_sources,
         )
         self._output_handle = handle
         self._update_routing_resolution(config_path=config_path, session_handle=handle)
@@ -375,6 +445,7 @@ class RuntimeSupervisor:
             routing_mode=self._routing_state.output_target.mode,
             routing_status=self._routing_state.routing_status,
             timeline_resolver=self._timeline_resolver,
+            baked_playback_mode=self._baked_playback_mode,
         )
         self._output_handle = handle
         self._push_recent_saved_show(show_path)
@@ -416,12 +487,49 @@ class RuntimeSupervisor:
             routing_status=self._routing_state.routing_status,
             timeline_resolver=self._timeline_resolver,
             start_seconds=start_seconds,
+            baked_playback_mode=self._baked_playback_mode,
         )
         self._output_handle = handle
         if show_path is not None:
             self._push_recent_saved_show(show_path)
         self._update_routing_resolution(config_path=config_path, session_handle=handle)
         self._status_message = f"Saved show started: {(show_path.name if show_path is not None else audio_path.name)}."
+        self._error_message = ""
+        self._record_event(self._status_message)
+        return handle
+
+    def start_compiled_show(
+        self,
+        show: Show,
+        *,
+        show_path: Path | None = None,
+        config_path: Path | None = None,
+        simulation_only: bool | None = None,
+    ) -> SessionHandle:
+        """Play a saved multi-track Show in its persisted Track order."""
+        if not show.tracks:
+            raise ValueError("Add at least one Track before playing this Show.")
+        first_track = Path(show.tracks[0].audio_path)
+        self._pipeline_playback_enabled = False
+        self._armed_output_mode = ""
+        self._local_source_path = str(first_track)
+        self._saved_show_path = str(show_path) if show_path is not None else ""
+        self._selected_show_path = str(show_path) if show_path is not None else ""
+        self._reactive_effect_mode = ""
+        self._stop_output_handle()
+        handle = self._session_service.start_compiled_show_session(
+            show,
+            show_path=show_path,
+            config_path=config_path,
+            simulation_only=self._simulation_only(simulation_only),
+            fallback_to_simulation=self._fallback_to_simulation(),
+            audio_device=self._routing_state.selected_output_audio_device_id,
+        )
+        self._output_handle = handle
+        if show_path is not None:
+            self._push_recent_saved_show(show_path)
+        self._update_routing_resolution(config_path=config_path, session_handle=handle)
+        self._status_message = f"Show started: {show.name} ({len(show.tracks)} Tracks)."
         self._error_message = ""
         self._record_event(self._status_message)
         return handle
@@ -440,6 +548,8 @@ class RuntimeSupervisor:
         simulation_only: bool | None = None,
         effect_mode: str = "reactive",
     ) -> SessionHandle:
+        from dreamsync.live import LiveStructureConfig
+
         self._pipeline_playback_enabled = False
         self._armed_output_mode = ""
         self._saved_show_path = ""
@@ -465,17 +575,115 @@ class RuntimeSupervisor:
             auto_cycle=self._reactive_settings.auto_cycle,
             half_time=self._reactive_settings.half_time,
             max_brightness=self._reactive_settings.max_brightness,
+            mirror=self._reactive_settings.mirror,
+            master_brightness=self._reactive_settings.master_brightness,
             debug_mood=self._reactive_settings.debug_mood,
             cycle_interval=self._reactive_settings.cycle_interval,
             telemetry_dir=(Path(self._reactive_settings.telemetry_dir) if self._reactive_settings.telemetry_dir else None),
             crossfade_detect=self._reactive_settings.crossfade_detect,
             profile_strategy=self._reactive_settings.profile_strategy,
             profile_override_path=self._reactive_settings.profile_override_path,
+            show_palette_set=self._reactive_settings.show_palette_set,
             rotation_profiles=self._reactive_settings.rotation_profiles,
             rotation_interval=self._reactive_settings.rotation_interval,
             auto_palette=self._reactive_settings.auto_palette,
             smart_rotation=self._reactive_settings.smart_rotation,
             chain_blend_seconds=self._reactive_settings.chain_blend_seconds,
+            auto_palette_seed=self._reactive_settings.auto_palette_seed,
+            auto_palette_pool_size=self._reactive_settings.auto_palette_pool_size,
+            chain_dwell_range_enabled=self._reactive_settings.chain_dwell_range_enabled,
+            chain_min_dwell_seconds=self._reactive_settings.chain_min_dwell_seconds,
+            chain_max_dwell_seconds=self._reactive_settings.chain_max_dwell_seconds,
+            structure_config=LiveStructureConfig(
+                harmonic_structure_enabled=(
+                    self._reactive_settings.harmonic_structure_enabled
+                ),
+                beats_per_bar=self._reactive_settings.beats_per_bar,
+                bars_per_phrase=self._reactive_settings.bars_per_phrase,
+                harmonic_frame_size=(
+                    self._reactive_settings.harmonic_frame_size
+                ),
+                harmonic_hop_multiplier=(
+                    self._reactive_settings.harmonic_hop_multiplier
+                ),
+                sensitivity=self._reactive_settings.structure_sensitivity,
+                downbeat_min_confidence=(
+                    self._reactive_settings.downbeat_min_confidence
+                ),
+                debug_harmonics=self._reactive_settings.debug_harmonics,
+                predictive_analysis_enabled=(
+                    self._reactive_settings.predictive_analysis_enabled
+                ),
+                predictive_diagnostics_enabled=(
+                    self._reactive_settings.predictive_diagnostics_enabled
+                ),
+                predictive_shadow_mode=(
+                    self._reactive_settings.predictive_shadow_mode
+                ),
+                predictive_cues_enabled=(
+                    self._reactive_settings.predictive_cues_enabled
+                ),
+                predictive_high_impact_cues_enabled=(
+                    self._reactive_settings.predictive_high_impact_cues_enabled
+                ),
+                predictive_cue_prepare_threshold=(
+                    self._reactive_settings.predictive_cue_prepare_threshold
+                ),
+                predictive_cue_schedule_threshold=(
+                    self._reactive_settings.predictive_cue_schedule_threshold
+                ),
+                predictive_cue_high_impact_threshold=(
+                    self._reactive_settings.predictive_cue_high_impact_threshold
+                ),
+                predictive_maximum_anticipatory_intensity=(
+                    self._reactive_settings.predictive_maximum_anticipatory_intensity
+                ),
+                predictive_cue_cooldown_seconds=(
+                    self._reactive_settings.predictive_cue_cooldown_seconds
+                ),
+                predictive_allowed_cue_classes=(
+                    self._reactive_settings.predictive_allowed_cue_classes
+                ),
+                structure_similarity_enabled=(
+                    self._reactive_settings.structure_similarity_enabled
+                ),
+                structure_similarity_diagnostics=(
+                    self._reactive_settings.structure_similarity_diagnostics
+                ),
+                structure_similarity_shadow_mode=(
+                    self._reactive_settings.structure_similarity_shadow_mode
+                ),
+                structure_bar_actions_enabled=(
+                    self._reactive_settings.structure_bar_actions_enabled
+                ),
+                structure_phrase_actions_enabled=(
+                    self._reactive_settings.structure_phrase_actions_enabled
+                ),
+                structure_section_actions_enabled=(
+                    self._reactive_settings.structure_section_actions_enabled
+                ),
+                structure_allow_secondary_beat_modulation=(
+                    self._reactive_settings.structure_allow_secondary_beat_modulation
+                ),
+                structure_use_tonal_sidecar=(
+                    self._reactive_settings.structure_use_tonal_sidecar
+                ),
+                structure_memory_bars=(
+                    self._reactive_settings.structure_memory_bars
+                ),
+                structure_min_meter_confidence=(
+                    self._reactive_settings.structure_min_meter_confidence
+                ),
+                structure_phrase_threshold=(
+                    self._reactive_settings.structure_phrase_threshold
+                ),
+                structure_section_threshold=(
+                    self._reactive_settings.structure_section_threshold
+                ),
+                structure_large_action_threshold=(
+                    self._reactive_settings.structure_large_action_threshold
+                ),
+            ),
         )
         self._output_handle = handle
         self._update_routing_resolution(config_path=config_path, session_handle=handle)
@@ -497,6 +705,7 @@ class RuntimeSupervisor:
     ) -> None:
         if self._pipeline is None:
             self._pipeline = self._pipeline_factory()
+            self._pipeline.set_timing_source(self._capture_timing_source)
         settings = replace(
             self._capture_settings,
             capture_dir=str(capture_dir),
@@ -516,9 +725,23 @@ class RuntimeSupervisor:
             device_pattern=settings.device_pattern,
             debug=settings.debug_pipeline,
         )
-        self._status_message = f"Capture pipeline running in {capture_dir}."
+        self._status_message = f"Audio loopback capture running in {capture_dir}."
         self._error_message = ""
         self._record_event(self._status_message)
+
+    def set_capture_timing_source(self, fetcher: Callable[[], dict | None] | None) -> None:
+        """Attach Spotify queue timing to the capture pipeline when available."""
+        self._capture_timing_source = fetcher
+        if self._pipeline is not None:
+            self._pipeline.set_timing_source(fetcher)
+        state = "attached" if fetcher is not None else "detached"
+        self._record_event(f"Capture timing source {state}.")
+
+    def notify_capture_track_change(self, timing_data: dict) -> int:
+        """Forward a Spotify track change to the active capture pipeline."""
+        if self._pipeline is None:
+            return 0
+        return self._pipeline.on_track_change(timing_data)
 
     def stop_capture_pipeline(self) -> None:
         if self._pipeline is not None:
@@ -526,7 +749,7 @@ class RuntimeSupervisor:
         self._pipeline_playback_enabled = False
         if self._output_handle is None:
             self._armed_output_mode = ""
-        self._status_message = "Capture pipeline stopped."
+        self._status_message = "Audio loopback capture stopped."
         self._record_event(self._status_message)
 
     def switch_to_pipeline_playback(
@@ -545,7 +768,7 @@ class RuntimeSupervisor:
         )
         if not started:
             self._armed_output_mode = "pipeline_playback"
-            self._status_message = "Pipeline playback armed for the next ready capture."
+            self._status_message = "Captured-show playback armed for the next ready capture."
             self._record_event(self._status_message)
         return started
 
@@ -569,6 +792,7 @@ class RuntimeSupervisor:
             simulation_only=True,
             mode="simulation_preview",
             timeline_resolver=self._timeline_resolver,
+            baked_playback_mode="off",
         )
         self._preview_handle = handle
         self._status_message = f"Simulation preview started for {Path(item.mp3_path).name}."
@@ -670,6 +894,62 @@ class RuntimeSupervisor:
             return session.runtime_control_snapshot()
         return {}
 
+    def request_reactive_downbeat_nudge(self) -> int | None:
+        return self.request_reactive_beat_latch("downbeat")
+
+    def request_reactive_beat_latch(self, kind: str) -> int | None:
+        session = self.active_session()
+        if session is None or not hasattr(session, "request_manual_beat"):
+            return None
+        normalized = (
+            "downbeat" if str(kind).strip().lower() == "downbeat"
+            else "beat"
+        )
+        revision = int(session.request_manual_beat(normalized))
+        label = "Downbeat" if normalized == "downbeat" else "Beat"
+        self._status_message = (
+            f"{label} latch requested for the nearest detected beat."
+        )
+        self._record_event(
+            f"Reactive nearest-beat {normalized} latch requested "
+            f"(revision {revision})."
+        )
+        return revision
+
+    def request_reactive_detection_reset(self) -> int | None:
+        session = self.active_session()
+        if session is None or not hasattr(session, "request_detection_reset"):
+            return None
+        revision = int(session.request_detection_reset())
+        self._status_message = (
+            "Reactive beat history reset requested; reacquiring BPM and meter."
+        )
+        self._record_event(
+            f"Reactive detector-session reset requested (revision {revision})."
+        )
+        return revision
+
+    def set_reactive_cycle_tempo_multiplier(
+        self,
+        multiplier: float,
+    ) -> float | None:
+        session = self.active_session()
+        if session is None or not hasattr(
+            session,
+            "set_cycle_tempo_multiplier",
+        ):
+            return None
+        selected = float(
+            session.set_cycle_tempo_multiplier(multiplier)
+        )
+        self._status_message = (
+            f"Reactive cycle tempo locked to {selected:g}× detector BPM."
+        )
+        self._record_event(
+            f"Reactive cycle tempo multiplier set to {selected:g}×."
+        )
+        return selected
+
     def preview_frame_snapshot(self) -> dict[str, Any] | None:
         session = self.preview_session()
         if session is not None and hasattr(session, "preview_frame_snapshot"):
@@ -718,7 +998,7 @@ class RuntimeSupervisor:
             simulation_target=simulation_target,
             capture_state="running" if self._pipeline is not None and self._pipeline.running else "off",
             pipeline_state=pipeline_state,
-            spotify_state="off",
+            spotify_state="enabled" if self._live_loopback_enabled else "off",
             ready_queue_count=ready_queue_count,
             ready_items=ready_items,
             output_lease=lease,
@@ -772,6 +1052,7 @@ class RuntimeSupervisor:
             routing_mode=self._routing_state.output_target.mode,
             routing_status=self._routing_state.routing_status,
             timeline_resolver=self._timeline_resolver,
+            baked_playback_mode="off",
         )
         self._update_routing_resolution(config_path=config_path, session_handle=self._output_handle)
         self._status_message = f"Pipeline playback started for {Path(item.mp3_path).name}."

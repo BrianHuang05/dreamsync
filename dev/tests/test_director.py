@@ -207,6 +207,22 @@ class DirectorIntegrationTests(unittest.TestCase):
         intent = d.update({"t": 13.7, "rms": 0.38, "zcr": 0.03, "bpm": 128.0, "beat": False})
         self.assertEqual(intent.color, "#g2")
 
+    def test_forced_cycle_tempo_can_exceed_normal_detector_octave(self) -> None:
+        director = Director(DirectorConfig(warmup_seconds=0.0))
+
+        intent = director.update(
+            {
+                "t": 1.0,
+                "rms": 0.1,
+                "zcr": 0.03,
+                "bpm": 240.0,
+                "cycle_tempo_override": True,
+            }
+        )
+
+        self.assertEqual(intent.bpm, 240.0)
+        self.assertEqual(director.effective_bpm, 240.0)
+
 
 if __name__ == "__main__":
     unittest.main()

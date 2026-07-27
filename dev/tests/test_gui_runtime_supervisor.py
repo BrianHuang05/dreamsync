@@ -7,6 +7,7 @@ from dreamsync.gui.models.capture_settings import CaptureSettings
 from dreamsync.gui.models.reactive_settings import ReactiveSettings
 from dreamsync.gui.models.runtime_mode_state import CapturedShowItem
 from dreamsync.gui.services.runtime_supervisor import RuntimeSupervisor
+from dreamsync.show.models import Show, ShowCue, ShowTimeline, ShowTrack
 
 
 class FakeHandle:
@@ -40,6 +41,8 @@ class FakeSession:
             "active_instrument_routes": (),
             "active_scene_layers": (),
         }
+        self.downbeat_nudge_revision = 0
+        self.cycle_tempo_multiplier = 1.0
 
     def session_snapshot(self) -> dict[str, object]:
         return {
@@ -65,6 +68,18 @@ class FakeSession:
 
     def runtime_control_snapshot(self) -> dict[str, object]:
         return dict(self.runtime_control)
+
+    def request_manual_beat(self, kind: str) -> int:
+        self.downbeat_nudge_revision += 1
+        self.last_manual_beat_kind = kind
+        return self.downbeat_nudge_revision
+
+    def request_detection_reset(self) -> int:
+        return self.request_manual_beat("reset")
+
+    def set_cycle_tempo_multiplier(self, multiplier: float) -> float:
+        self.cycle_tempo_multiplier = float(multiplier)
+        return self.cycle_tempo_multiplier
 
 
 class FakeSessionService:
@@ -95,6 +110,14 @@ class FakeSessionService:
             **kwargs,
         )
 
+    def start_compiled_show_session(self, show: Show, **kwargs) -> FakeHandle:
+        return self._record(
+            "saved_show",
+            FakeSession(mode="saved_show", current_track=show.tracks[0].audio_path),
+            show,
+            **kwargs,
+        )
+
     def start_reactive_live_session(self, **kwargs) -> FakeHandle:
         return self._record(
             "reactive_live",
@@ -118,12 +141,21 @@ class FakePipelineCoordinator:
         self.items: dict[str, CapturedShowItem] = {}
         self.timelines: dict[str, object] = {}
         self.order: list[str] = []
+        self.timing_source = None
+        self.track_changes: list[dict] = []
 
     def start(self, **kwargs) -> None:
         self.running = True
 
     def stop(self) -> None:
         self.running = False
+
+    def set_timing_source(self, fetcher) -> None:
+        self.timing_source = fetcher
+
+    def on_track_change(self, timing_data: dict) -> int:
+        self.track_changes.append(timing_data)
+        return 1
 
     def snapshot_items(self) -> tuple[CapturedShowItem, ...]:
         return tuple(self.items[item_id] for item_id in self.order if item_id in self.items)
@@ -206,6 +238,33 @@ def test_runtime_supervisor_switches_output_without_stopping_capture_pipeline(tm
     assert snapshot.recent_saved_shows[-1].endswith("song.show.json")
 
 
+def test_runtime_supervisor_queues_downbeat_nudge_on_reactive_session():
+    session_service = FakeSessionService()
+    supervisor = RuntimeSupervisor(
+        session_service=session_service,
+        pipeline_factory=FakePipelineCoordinator,
+    )
+    supervisor.start_reactive_live()
+
+    revision = supervisor.request_reactive_downbeat_nudge()
+
+    assert revision == 1
+    assert "nearest detected beat" in supervisor.snapshot().status_message
+    assert "revision 1" in supervisor.recent_events()[0]
+    assert supervisor.active_session().last_manual_beat_kind == "downbeat"
+
+    assert supervisor.request_reactive_beat_latch("beat") == 2
+    assert supervisor.active_session().last_manual_beat_kind == "beat"
+
+    assert supervisor.request_reactive_detection_reset() == 3
+    assert supervisor.active_session().last_manual_beat_kind == "reset"
+    assert "reacquiring BPM and meter" in supervisor.snapshot().status_message
+
+    assert supervisor.set_reactive_cycle_tempo_multiplier(0.5) == 0.5
+    assert supervisor.active_session().cycle_tempo_multiplier == 0.5
+    assert "0.5× detector BPM" in supervisor.snapshot().status_message
+
+
 def test_runtime_supervisor_arms_pipeline_playback_then_starts_when_ready(tmp_path: Path):
     session_service = FakeSessionService()
     pipeline = FakePipelineCoordinator()
@@ -232,6 +291,7 @@ def test_runtime_supervisor_arms_pipeline_playback_then_starts_when_ready(tmp_pa
 
     assert snapshot.active_output_mode == "pipeline_playback"
     assert session_service.calls[-1][0] == "pipeline_playback"
+    assert session_service.calls[-1][2]["baked_playback_mode"] == "off"
     assert pipeline.items[item.item_id].state == "playing"
 
 
@@ -286,6 +346,7 @@ def test_runtime_supervisor_uses_routing_and_runtime_settings_for_launches(tmp_p
 
     supervisor.set_output_target_mode("hardware")
     supervisor.set_hardware_fallback_to_simulation(False)
+    supervisor.set_baked_playback_mode("require")
     supervisor.set_selected_output_audio_device(8)
     supervisor.set_selected_live_input_device(5)
     supervisor.set_capture_settings(
@@ -302,28 +363,70 @@ def test_runtime_supervisor_uses_routing_and_runtime_settings_for_launches(tmp_p
     supervisor.set_reactive_settings(
         ReactiveSettings(
             render_mode="pulse",
+            mirror=False,
+            master_brightness=0.35,
             sample_rate=48000,
             frame_size=4096,
             hop_size=1024,
             blocksize=2048,
             telemetry_dir=str(tmp_path / "telemetry"),
             crossfade_detect=True,
-            profile_strategy="active_profile",
+            profile_strategy="smart_rotation",
+            auto_palette=True,
+            auto_palette_seed=42,
+            auto_palette_pool_size=6,
+            chain_dwell_range_enabled=True,
+            chain_min_dwell_seconds=30.0,
+            chain_max_dwell_seconds=90.0,
+            structure_similarity_enabled=True,
+            structure_similarity_diagnostics=True,
+            structure_similarity_shadow_mode=False,
+            structure_bar_actions_enabled=True,
+            structure_phrase_actions_enabled=True,
+            structure_section_actions_enabled=True,
         )
     )
 
     supervisor.start_local_playlist(tmp_path / "queue")
+    supervisor.start_saved_show(tmp_path / "song.mp3", tmp_path / "song.show.json")
     supervisor.start_reactive_live(config_path=tmp_path / "config.yaml")
 
     local_call = session_service.calls[0]
-    reactive_call = session_service.calls[1]
+    saved_call = session_service.calls[1]
+    reactive_call = session_service.calls[2]
 
     assert local_call[2]["simulation_only"] is False
     assert local_call[2]["fallback_to_simulation"] is False
     assert local_call[2]["audio_device"] == 8
+    assert saved_call[2]["baked_playback_mode"] == "require"
     assert reactive_call[2]["audio_device"] == 5
     assert reactive_call[2]["render_mode"] == "pulse"
+    assert reactive_call[2]["mirror"] is False
+    assert reactive_call[2]["master_brightness"] == 0.35
     assert reactive_call[2]["crossfade_detect"] is True
+    assert reactive_call[2]["auto_palette_seed"] == 42
+    assert reactive_call[2]["auto_palette_pool_size"] == 6
+    assert reactive_call[2]["chain_min_dwell_seconds"] == 30.0
+    assert reactive_call[2]["chain_max_dwell_seconds"] == 90.0
+    structure = reactive_call[2]["structure_config"]
+    assert structure.structure_similarity_enabled is True
+    assert structure.structure_similarity_diagnostics is True
+    assert structure.structure_similarity_shadow_mode is False
+    assert structure.structure_bar_actions_enabled is True
+    assert structure.structure_phrase_actions_enabled is True
+    assert structure.structure_section_actions_enabled is True
+
+
+def test_reactive_settings_rejects_dual_structure_ownership():
+    settings = ReactiveSettings(
+        harmonic_structure_enabled=True,
+        structure_similarity_enabled=True,
+    )
+
+    assert any(
+        "either legacy harmonic structure or structure similarity" in error
+        for error in settings.validate()
+    )
 
 
 def test_runtime_supervisor_updates_runtime_control_on_active_session(tmp_path: Path):
@@ -339,6 +442,39 @@ def test_runtime_supervisor_updates_runtime_control_on_active_session(tmp_path: 
 
     cleared = supervisor.clear_runtime_control()
     assert cleared["active"] is False
+
+
+def test_runtime_supervisor_starts_full_compiled_show_in_track_order(tmp_path: Path):
+    session_service = FakeSessionService()
+    supervisor = RuntimeSupervisor(session_service=session_service)
+    first = tmp_path / "first.mp3"
+    second = tmp_path / "second.mp3"
+    timeline = ShowTimeline(
+        song_path=str(first),
+        duration=5.0,
+        bpm=120.0,
+        time_signature=4,
+        beat_times=(0.0,),
+        downbeat_times=(0.0,),
+        cues=(ShowCue(0.0, "solid", ("#ffffff",), 1.0, 0.0, {}, "cut", 0),),
+        metadata={},
+    )
+    show = Show(
+        name="Two Track Show",
+        tracks=(
+            ShowTrack(str(first), timeline),
+            ShowTrack(str(second), timeline),
+        ),
+        metadata={},
+    )
+
+    supervisor.start_compiled_show(show, show_path=tmp_path / "two-track.show.json")
+
+    call = session_service.calls[-1]
+    assert call[0] == "saved_show"
+    assert call[1][0] == show
+    assert supervisor.snapshot().active_output_mode == "saved_show"
+    assert "Two Track Show" in supervisor.snapshot().status_message
 
 
 def test_runtime_supervisor_passes_timeline_resolver_to_launch_paths(tmp_path: Path):
@@ -368,3 +504,4 @@ def test_runtime_supervisor_passes_timeline_resolver_to_launch_paths(tmp_path: P
     assert local_call[2]["timeline_resolver"] is resolver
     assert saved_call[2]["timeline_resolver"] is resolver
     assert preview_call[2]["timeline_resolver"] is resolver
+    assert preview_call[2]["baked_playback_mode"] == "off"

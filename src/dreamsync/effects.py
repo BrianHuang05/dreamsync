@@ -195,6 +195,7 @@ class EffectCycler:
         config: EffectCyclerConfig | None = None,
         seed: int | None = None,
         profile: Any | None = None,
+        show_palette_cycle: tuple[str, ...] = (),
     ) -> None:
         self.config = config or EffectCyclerConfig()
         self._rng = random.Random(seed)
@@ -206,6 +207,9 @@ class EffectCycler:
         self._palette_name: str | None = None
         self._in_drop: bool = False
         self._drop_start_t: float = -1e9
+        self._show_palette_cycle: tuple[str, ...] = ()
+        self._show_palette_index = 0
+        self.set_show_palette_cycle(show_palette_cycle)
 
     def set_profile(self, profile: Any | None) -> None:
         """Hot-swap the active profile (single reference assignment, GIL-safe).
@@ -218,6 +222,27 @@ class EffectCycler:
         self._current_mood = None
         self._palette_name = None
         self._in_drop = False
+
+    def set_show_palette_cycle(self, palette_names: tuple[str, ...]) -> None:
+        """Use the named palettes in order, advancing only on song boundaries."""
+        self._show_palette_cycle = tuple(name for name in palette_names if name)
+        self._show_palette_index = 0
+        self._palette_name = None
+
+    def advance_show_palette(self) -> str | None:
+        """Move to the next Show Palette after a detected song boundary."""
+        if not self._show_palette_cycle:
+            return None
+        self._show_palette_index = (
+            self._show_palette_index + 1
+        ) % len(self._show_palette_cycle)
+        self._palette_name = None
+        return self.current_show_palette
+
+    @property
+    def profile(self) -> Any | None:
+        """The profile currently supplying reactive palettes and presets."""
+        return self._profile
 
     def reset(self) -> None:
         """Clear accumulated state for a new song."""
@@ -235,7 +260,35 @@ class EffectCycler:
 
     @property
     def current_palette(self) -> str | None:
-        return self._palette_name
+        return self.current_show_palette or self._palette_name
+
+    @property
+    def current_show_palette(self) -> str | None:
+        if not self._show_palette_cycle:
+            return None
+        return self._show_palette_cycle[self._show_palette_index]
+
+    @property
+    def show_palette_colors(self) -> tuple[str, ...]:
+        palette_name = self.current_show_palette
+        return self._resolve_palette_colors(palette_name) if palette_name else ()
+
+    @property
+    def show_palette_queue(self) -> tuple[str, ...]:
+        """The selected Show Palette set, ordered from the active palette."""
+        if not self._show_palette_cycle:
+            return ()
+        count = len(self._show_palette_cycle)
+        return tuple(
+            self._show_palette_cycle[(self._show_palette_index + offset) % count]
+            for offset in range(count)
+        )
+
+    def seconds_until_next_cycle(self, t: float) -> float | None:
+        """Return the remaining timed-effect cycle delay, when one is active."""
+        if self._show_palette_cycle or self._effect_start_t <= -1e8:
+            return None
+        return max(0.0, self._cycle_interval - (t - self._effect_start_t))
 
     @property
     def _cycle_interval(self) -> float:
@@ -265,15 +318,24 @@ class EffectCycler:
         weights = [w for _, w in pool]
         return self._rng.choices(names, weights=weights, k=1)[0]
 
-    def _pick_palette(self, mood: Mood) -> str:
+    def _pick_palette(self, mood: Mood, exclude: str | None = None) -> str:
         """Random palette from the mood's eligible palettes."""
+        if self.current_show_palette is not None:
+            return self.current_show_palette
         p = self._profile
         if p is not None:
             mood_cfg = p.moods.get(mood.value)
             if mood_cfg and mood_cfg.palettes:
-                return self._rng.choice(mood_cfg.palettes)
+                candidates = list(mood_cfg.palettes)
+                if exclude is not None and len(candidates) > 1:
+                    candidates = [
+                        name for name in candidates if name != exclude
+                    ]
+                return self._rng.choice(candidates)
 
-        candidates = MOOD_PALETTES[mood]
+        candidates = list(MOOD_PALETTES[mood])
+        if exclude is not None and len(candidates) > 1:
+            candidates = [name for name in candidates if name != exclude]
         return self._rng.choice(candidates)
 
     def _resolve_palette_colors(self, palette_name: str) -> tuple[str, ...]:
@@ -285,6 +347,8 @@ class EffectCycler:
 
     def _check_transition_palette(self, old_mood: Mood, new_mood: Mood) -> str | None:
         """Check if the profile has a forced palette for this mood transition."""
+        if self.current_show_palette is not None:
+            return None
         p = self._profile
         if p is None:
             return None
@@ -292,6 +356,67 @@ class EffectCycler:
             if tr.from_mood == old_mood.value and tr.to_mood == new_mood.value:
                 return tr.palette
         return None
+
+    def apply_structural_action(
+        self,
+        *,
+        cue_class: str,
+        effect_name: str | None,
+        color_action: str | None,
+        target_bar: int,
+        now_t: float,
+        palette_name: str | None = None,
+    ) -> EffectPreset:
+        """Atomically apply one bar-locked structural visual action."""
+
+        if target_bar < 0:
+            raise ValueError("target_bar must be non-negative")
+        mood = self._current_mood or Mood.GROOVE
+        if color_action == "advance_approved_palette":
+            advanced = self.advance_show_palette()
+            if advanced is None:
+                self._palette_name = self._pick_palette(
+                    mood,
+                    exclude=self._palette_name,
+                )
+        elif color_action == "recall_palette" and palette_name is not None:
+            if palette_name in self._show_palette_cycle:
+                self._show_palette_index = self._show_palette_cycle.index(
+                    palette_name
+                )
+                self._palette_name = None
+            else:
+                self._palette_name = palette_name
+        elif self._palette_name is None and self.current_show_palette is None:
+            self._palette_name = self._pick_palette(mood)
+
+        if cue_class not in {"bar_marker", "phrase_reset"} or self._current_effect is None:
+            if effect_name is not None:
+                if effect_name not in EFFECTS:
+                    raise ValueError(f"unknown structural effect: {effect_name}")
+                self._current_effect = effect_name
+        if self._current_effect is None:
+            if effect_name is None:
+                raise ValueError("no structural effect is available")
+            self._current_effect = effect_name
+        palette = self.current_show_palette or self._palette_name
+        if palette is None:
+            palette = self._pick_palette(mood)
+            self._palette_name = palette
+        self._effect_start_t = float(now_t)
+        preset = self._apply_palette(self._current_effect, palette, mood)
+        if cue_class in {"bar_marker", "phrase_reset"}:
+            params = dict(preset.params)
+            params["structure_phase_reset"] = cue_class == "phrase_reset"
+            params["structure_bar_marker"] = cue_class == "bar_marker"
+            params["structure_target_bar"] = int(target_bar)
+            preset = EffectPreset(
+                name=preset.name,
+                render_mode=preset.render_mode,
+                color_palette=preset.color_palette,
+                params=params,
+            )
+        return preset
 
     def _apply_palette(self, effect_name: str, palette_name: str, mood: Mood | None = None) -> EffectPreset:
         """Return a copy of the named effect with the given palette's colors.
@@ -302,6 +427,10 @@ class EffectCycler:
         base = EFFECTS[effect_name]
         colors = self._resolve_palette_colors(palette_name)
         params = dict(base.params)
+        if base.render_mode == RenderMode.GRADIENT:
+            # ``gradient_flow`` has built-in stops; replace them with the
+            # selected profile palette so Reactive visibly follows the choice.
+            params["gradient_colors"] = colors
 
         # Merge profile mood params
         p = self._profile
@@ -349,7 +478,25 @@ class EffectCycler:
         beat: bool,
         bpm: float,
         energy: float,
+        *,
+        structure_event: str | None = None,
+        structure_controlled: bool = False,
     ) -> EffectPreset:
+        if (
+            structure_controlled
+            and structure_event != "macro_change"
+            and self._current_effect is not None
+        ):
+            active_mood = self._current_mood or mood
+            palette = self.current_show_palette or self._palette_name
+            if palette is None:
+                palette = self._pick_palette(active_mood)
+                self._palette_name = palette
+            return self._apply_palette(
+                self._current_effect,
+                palette,
+                active_mood,
+            )
         # --- DROP handling ---
         if mood == Mood.DROP:
             if not self._in_drop:
@@ -387,8 +534,30 @@ class EffectCycler:
             self._current_mood = mood
             return self._apply_palette(self._current_effect, self._palette_name, mood)
 
+        # A confirmed live macro event requests one immediate, deliberate
+        # effect/palette transition.  This optional seam is inert for compiled
+        # shows and all existing callers.
+        if structure_event == "macro_change":
+            self._current_effect = self._pick_effect(
+                mood,
+                exclude=self._current_effect,
+            )
+            self._palette_name = self._pick_palette(
+                mood,
+                exclude=self._palette_name,
+            )
+            self._effect_start_t = t
+            return self._apply_palette(
+                self._current_effect,
+                self._palette_name,
+                mood,
+            )
+
         # --- Time-based cycling within same mood ---
-        if (t - self._effect_start_t) >= self._cycle_interval:
+        if (
+            not structure_controlled
+            and (t - self._effect_start_t) >= self._cycle_interval
+        ):
             self._current_effect = self._pick_effect(mood, exclude=self._current_effect)
             self._palette_name = self._pick_palette(mood)
             self._effect_start_t = t
