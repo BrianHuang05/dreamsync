@@ -1,7 +1,0 @@
-devices:
-  - name: Desk Left
-    address: 10.0.0.10
-    segments: 2
-    x: -0.4
-    y: 0.1
-    z: 0.0

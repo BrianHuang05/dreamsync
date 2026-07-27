@@ -1,5 +1,7 @@
 .venv/
 .venv_*/
+.codex-python/
+.pytest_cache/
 __pycache__/
 *.pyc
 *.egg-info/
@@ -7,8 +9,11 @@ __pycache__/
 .claude/
 out/
 dev/out/
+logs/
 telemetry-test/
 dev/telemetry-test/
+test_preview_simulation_*/
+dev_tests_test_preview_simulation_*/
 .audio_route_state.json
 dreamsync-v1.0.0.zip
 dreamsync-v1.0.0/

@@ -2,14 +2,14 @@
 
 ## Status
 
-**Proposed - implementation-ready, reactive live path only.**
+**Implemented - ready for simulation-first human testing, reactive live path
+only.**
 
-This plan replaces the chord-centered core of:
-
-- `dev/plans/live-harmonic-structure-and-true-downbeats.md`; and
-- `dev/plans/live-predictive-music-structure-lighting-plan.md`
-
-for the purpose of phrase and section detection in Reactive mode.
+This implementation replaces the superseded chord-centered planning path for
+phrase and section detection in Reactive mode. The older planning documents
+have been removed; use
+`dev/plans/reactive-structure-first-similarity-lighting-human-test.md` for the
+simulation and hardware acceptance sequence.
 
 It does **not** remove chord or key analysis as a diagnostic capability. It
 removes accurate chord, key, and Roman-numeral recognition as prerequisites

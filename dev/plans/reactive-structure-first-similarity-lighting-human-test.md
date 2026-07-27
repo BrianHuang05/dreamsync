@@ -9,6 +9,21 @@ The new engine is opt-in, starts in shadow mode, and keeps ordinary bar,
 phrase, and section actions independently disabled by default. Legacy harmonic
 structure and structure similarity are mutually exclusive.
 
+## Manual timing and cycle controls
+
+- **D** registers a manual downbeat and snaps it to the nearest detected beat.
+- **S** registers a manual regular beat and snaps it to the nearest detected
+  beat.
+- A sequence such as **D S S S D** establishes the beat latch and infers 4/4.
+- The waveform uses orange for automatic beats, red for automatic downbeats,
+  blue for manual beats, and green for manual downbeats.
+- **N** clears beat history and starts a fresh song/session detection state.
+- **Shift+[** / **{** halves the detector cycle tempo; **Shift+]** / **}**
+  doubles it. The adjacent 1/2x, 1x, and 2x cycle buttons perform the same
+  operation, and the Beat Detector readout reports the adjusted cycle BPM.
+- The separate 1/2x, 1x, and 2x effect-speed controls remain relative to the
+  current cycle tempo.
+
 ## Simulation-first acceptance
 
 1. Start DreamSync with simulation output and open Reactive Live mode.

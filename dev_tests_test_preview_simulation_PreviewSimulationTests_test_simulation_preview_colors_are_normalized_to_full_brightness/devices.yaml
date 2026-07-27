@@ -1,7 +1,0 @@
-devices:
-  - name: Preview Bulb
-    address: 10.0.0.11
-    protocol: bulb
-    x: 0.0
-    y: 0.0
-    z: 0.0
