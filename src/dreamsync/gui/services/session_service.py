@@ -759,6 +759,12 @@ class ReactiveLiveSession:
             "upcoming_effect_cues": tuple(
                 runtime_state.get("upcoming_effect_cues", ()) or ()
             ),
+            "active_effects": tuple(
+                runtime_state.get("active_effects", ()) or ()
+            ),
+            "effect_trigger_history": tuple(
+                runtime_state.get("effect_trigger_history", ()) or ()
+            ),
             "stream_t": float(runtime_state.get("stream_t", 0.0) or 0.0),
             "waveform_window_seconds": float(
                 runtime_state.get("waveform_window_seconds", 10.0) or 10.0

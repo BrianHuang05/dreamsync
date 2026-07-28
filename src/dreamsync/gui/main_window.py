@@ -141,6 +141,40 @@ def _format_reactive_bpm_heading(bpm: float) -> str:
     )
 
 
+def _format_active_live_effects(
+    active_effects: tuple[object, ...] | list[object],
+) -> str:
+    display_modes = {
+        "solid": "on",
+        "pulse": "flash",
+    }
+    rows = tuple(
+        item for item in active_effects if isinstance(item, dict)
+    )
+    if not rows:
+        return "Active effects: awaiting renderer"
+    labels: list[str] = []
+    for item in rows:
+        effect = str(item.get("effect", "") or "effect")
+        render_mode = str(item.get("render_mode", "") or "unknown")
+        display_mode = display_modes.get(render_mode, render_mode)
+        source = str(item.get("source", "") or "reactive")
+        decay = item.get("decay_seconds")
+        remaining = item.get("remaining_seconds")
+        if decay is None:
+            timing = "continuous"
+        else:
+            timing = (
+                f"{max(0.0, float(remaining or 0.0)):.2f}s remaining / "
+                f"{max(0.0, float(decay)):.2f}s decay"
+            )
+        labels.append(
+            f"{effect} [{display_mode}; renderer={render_mode}] "
+            f"· {timing} · {source}"
+        )
+    return "Active effects: " + " | ".join(labels)
+
+
 def _format_structure_similarity(snapshot: dict[str, object]) -> str:
     meter = tuple(snapshot.get("structure_configured_meter", ()) or ())
     meter_text = (
@@ -5356,6 +5390,8 @@ def create_main_window(
         manual_beats = snapshot.get("manual_beat_markers", ()) or ()
         predicted_beats = snapshot.get("predicted_beat_times", ()) or ()
         upcoming_effects = snapshot.get("upcoming_effect_cues", ()) or ()
+        active_effects = snapshot.get("active_effects", ()) or ()
+        effect_triggers = snapshot.get("effect_trigger_history", ()) or ()
         stream_t = float(snapshot.get("stream_t", 0.0) or 0.0)
         detected_chord = str(snapshot.get("detected_chord", "") or "")
         live_chord, chord_change_confirming = _reactive_display_chord(
@@ -5490,6 +5526,9 @@ def create_main_window(
             if snapshot.get("structure_similarity_enabled", False)
             else _format_reactive_cycle(predictive_cycle)
         )
+        queue_panel.reactive_active_effects_label.setText(
+            _format_active_live_effects(active_effects)
+        )
         waveform_window = float(snapshot.get("waveform_window_seconds", 10.0) or 10.0)
         queue_panel.reactive_waveform_view.set_diagnostic_data(
             waveform_points,
@@ -5500,6 +5539,7 @@ def create_main_window(
             manual_beats=manual_beats,
             predicted_beats=predicted_beats,
             upcoming_effects=upcoming_effects,
+            effect_triggers=effect_triggers,
             now_t=stream_t if stream_t > 0.0 else None,
             window_seconds=waveform_window,
             bpm=bpm,

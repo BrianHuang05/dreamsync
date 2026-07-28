@@ -3311,6 +3311,83 @@ def resolve_live_render_mode(
     return "solid"
 
 
+_LIVE_EFFECT_DISPLAY_NAMES = {
+    "solid": "on",
+    "pulse": "flash",
+    "scroll": "scroll",
+    "breathe": "breathe",
+    "wave": "wave",
+    "gradient": "gradient",
+    "ripple": "ripple",
+}
+_LIVE_BEAT_TRIGGERED_RENDER_MODES = frozenset({"pulse", "scroll", "ripple"})
+
+
+def _live_effect_decay_seconds(
+    render_mode: str,
+    params: dict[str, Any] | None,
+) -> float | None:
+    """Return the visible transient lifetime for the final live renderer.
+
+    Pulse brightness is an exponential envelope.  Its diagnostic lifetime is
+    the time required to fall to five percent of the triggered value.  Spatial
+    layers may instead provide an explicit duration.  Continuous renderers do
+    not claim a decay time.
+    """
+
+    normalized = str(render_mode).strip().lower()
+    values = params or {}
+    explicit_duration = float(values.get("duration_s", 0.0) or 0.0)
+    if explicit_duration > 0.0:
+        return explicit_duration
+    if normalized != "pulse":
+        return None
+    decay_rate = float(values.get("pulse_decay", 4.0) or 4.0)
+    if decay_rate <= 0.0:
+        return None
+    return math.log(20.0) / decay_rate
+
+
+def _live_effect_diagnostic(
+    *,
+    effect_name: str,
+    render_mode: str,
+    source: str,
+    trigger_t: float,
+    now_t: float,
+    params: dict[str, Any] | None,
+) -> dict[str, object]:
+    """Build the GUI contract for the renderer state sent on a live frame."""
+
+    normalized_mode = str(render_mode).strip().lower() or "solid"
+    decay_seconds = _live_effect_decay_seconds(normalized_mode, params)
+    remaining_seconds = (
+        max(0.0, decay_seconds - max(0.0, float(now_t) - float(trigger_t)))
+        if decay_seconds is not None
+        else None
+    )
+    return {
+        "effect": (
+            str(effect_name).strip()
+            or _LIVE_EFFECT_DISPLAY_NAMES.get(normalized_mode, normalized_mode)
+        ),
+        "render_mode": normalized_mode,
+        "source": str(source).strip() or "reactive",
+        "trigger_t": round(float(trigger_t), 6),
+        "decay_seconds": (
+            round(float(decay_seconds), 4)
+            if decay_seconds is not None
+            else None
+        ),
+        "remaining_seconds": (
+            round(float(remaining_seconds), 4)
+            if remaining_seconds is not None
+            else None
+        ),
+        "continuous": decay_seconds is None,
+    }
+
+
 def refresh_frame_intent_palette(
     intent: LightingIntent,
     director: Director,
@@ -3876,6 +3953,10 @@ def run_live_to_govee(
     last_detected_beat_stream_t: float | None = None
     last_detected_beat_period = 0.5
     last_runtime_params: dict[str, Any] | None = None
+    effect_trigger_history: deque[dict[str, object]] = deque(maxlen=128)
+    active_effect_signature: tuple[str, str] | None = None
+    active_effect_started_t = 0.0
+    active_effect_source = "reactive"
     last_active_live_eq_routes: list[dict[str, object]] = []
     last_active_live_instrument_routes: list[dict[str, object]] = []
     window, bass_mask, kick_mask, freqs = _prepare_bass_window(frame_size, sample_rate)
@@ -5147,6 +5228,80 @@ def run_live_to_govee(
                 if render_beat:
                     runtime_params = dict(runtime_params or {})
                     runtime_params["beat_accent"] = render_beat_strength
+                effective_render_mode = str(
+                    (runtime_params or {}).get("_render_mode", "")
+                ).strip().lower() or resolve_live_render_mode(
+                    frame_intent.mode,
+                    policy=normalized_render_mode_policy,
+                    configured_mode=configured_render_mode,
+                    preset_mode=preset.render_mode if preset is not None else None,
+                    structural_mode=structural_render_mode,
+                )
+                runtime_selected_mode = str(
+                    getattr(runtime_control_state, "render_mode", "") or ""
+                ).strip().lower()
+                selected_effect_name = (
+                    runtime_selected_mode
+                    or (
+                        effect_cycler.current_effect
+                        if effect_cycler is not None
+                        else ""
+                    )
+                    or str(getattr(preset, "name", "") or "")
+                    or _LIVE_EFFECT_DISPLAY_NAMES.get(
+                        effective_render_mode,
+                        effective_render_mode,
+                    )
+                )
+                applied_structural_effect = next(
+                    (
+                        str(result.applied_effect)
+                        for result in reversed(structural_action_results)
+                        if result.outcome == "applied"
+                        and str(result.applied_effect or "").strip()
+                    ),
+                    "",
+                )
+                effect_source = (
+                    "structural action"
+                    if applied_structural_effect
+                    else "live override"
+                    if runtime_selected_mode
+                    else "effect bank"
+                    if effect_cycler is not None
+                    else "reactive renderer"
+                )
+                effect_signature = (
+                    selected_effect_name,
+                    effective_render_mode,
+                )
+                renderer_changed = effect_signature != active_effect_signature
+                beat_triggered = (
+                    render_beat
+                    and effective_render_mode
+                    in _LIVE_BEAT_TRIGGERED_RENDER_MODES
+                )
+                if renderer_changed or applied_structural_effect or beat_triggered:
+                    active_effect_started_t = stream_t
+                    active_effect_source = effect_source
+                    event = _live_effect_diagnostic(
+                        effect_name=selected_effect_name,
+                        render_mode=effective_render_mode,
+                        source=effect_source,
+                        trigger_t=stream_t,
+                        now_t=stream_t,
+                        params=runtime_params,
+                    )
+                    event["t"] = round(float(stream_t), 6)
+                    event["trigger"] = (
+                        "structural"
+                        if applied_structural_effect
+                        else "beat"
+                        if beat_triggered and not renderer_changed
+                        else "activation"
+                    )
+                    effect_trigger_history.append(event)
+                active_effect_signature = effect_signature
                 if committed_predictive_cues:
                     runtime_params = dict(runtime_params or {})
                     runtime_params["predictive_cues"] = tuple(
@@ -5175,10 +5330,9 @@ def run_live_to_govee(
                     "beat_in_bar": render_beat_in_bar,
                     "beat_accent": round(float(render_beat_strength), 4),
                     "effect": (
-                        effect_cycler.current_effect
-                        if effect_cycler is not None
-                        else ""
+                        selected_effect_name
                     ),
+                    "effective_render_mode": effective_render_mode,
                     "palette_name": (
                         effect_cycler.current_palette
                         if effect_cycler is not None
@@ -5811,6 +5965,23 @@ def run_live_to_govee(
                             meter_state=meter_state,
                             beats_per_bar=manual_meter_beats_per_bar,
                             horizon_seconds=waveform_window_seconds,
+                        ),
+                        "active_effects": (
+                            (
+                                _live_effect_diagnostic(
+                                    effect_name=active_effect_signature[0],
+                                    render_mode=active_effect_signature[1],
+                                    source=active_effect_source,
+                                    trigger_t=active_effect_started_t,
+                                    now_t=stream_t,
+                                    params=last_runtime_params,
+                                ),
+                            )
+                            if active_effect_signature is not None
+                            else ()
+                        ),
+                        "effect_trigger_history": tuple(
+                            dict(event) for event in effect_trigger_history
                         ),
                         "waveform_window_seconds": waveform_window_seconds,
                     })

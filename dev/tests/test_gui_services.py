@@ -1284,6 +1284,21 @@ def test_reactive_snapshot_forwards_upcoming_timeline_contract():
                     "confidence": 0.75,
                 },
             ),
+            "active_effects": (
+                {
+                    "effect": "pulse",
+                    "render_mode": "pulse",
+                    "decay_seconds": 0.75,
+                    "remaining_seconds": 0.5,
+                },
+            ),
+            "effect_trigger_history": (
+                {
+                    "t": 19.5,
+                    "effect": "wave_drift",
+                    "render_mode": "wave",
+                },
+            ),
         }
     )
 
@@ -1294,6 +1309,8 @@ def test_reactive_snapshot_forwards_upcoming_timeline_contract():
     assert snapshot["last_detection_reset_reason"] == "silence"
     assert snapshot["predicted_beat_times"][1]["downbeat"] is True
     assert snapshot["upcoming_effect_cues"][0]["effect"] == "pulse"
+    assert snapshot["active_effects"][0]["remaining_seconds"] == 0.5
+    assert snapshot["effect_trigger_history"][0]["t"] == 19.5
 
 
 def test_session_service_builds_seeded_generated_profile_chain():

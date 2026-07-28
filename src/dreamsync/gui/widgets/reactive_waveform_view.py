@@ -54,6 +54,9 @@ def build_reactive_waveform_view(qt_modules):
             self._upcoming_effects: tuple[
                 tuple[float, str, str, str, float], ...
             ] = ()
+            self._effect_triggers: tuple[
+                tuple[float, str, str, str], ...
+            ] = ()
             self._chord_changes: tuple[tuple[float, str], ...] = ()
             self._window_seconds = 10.0
             self._bpm = 0.0
@@ -66,7 +69,9 @@ def build_reactive_waveform_view(qt_modules):
                 "armed/scheduled effects. Automatic beats are orange and "
                 "automatic downbeats are red. Manual S beats are blue and "
                 "manual D downbeats are green goalposts. "
-                "Dashed amber/red lines are upcoming beats/downbeats."
+                "Solid magenta lines are effects actually triggered. Dashed "
+                "cyan lines are predicted effect triggers; dashed amber/red "
+                "lines are upcoming beats/downbeats."
             )
 
         def set_diagnostic_data(
@@ -89,6 +94,8 @@ def build_reactive_waveform_view(qt_modules):
             predicted_beats: tuple[dict[str, object], ...]
             | list[dict[str, object]] = (),
             upcoming_effects: tuple[dict[str, object], ...]
+            | list[dict[str, object]] = (),
+            effect_triggers: tuple[dict[str, object], ...]
             | list[dict[str, object]] = (),
             now_t: float | None = None,
             window_seconds: float = 10.0,
@@ -139,6 +146,15 @@ def build_reactive_waveform_view(qt_modules):
                 )
                 for cue in upcoming_effects
             )
+            normalized_effect_triggers = tuple(
+                (
+                    float(event.get("t", 0.0) or 0.0),
+                    str(event.get("effect", "") or ""),
+                    str(event.get("render_mode", "") or ""),
+                    str(event.get("source", "") or ""),
+                )
+                for event in effect_triggers
+            )
             normalized_chord_changes = tuple(
                 (float(timestamp), str(chord))
                 for timestamp, chord in chord_changes
@@ -161,6 +177,7 @@ def build_reactive_waveform_view(qt_modules):
                 and normalized_manual_beats == self._manual_beats
                 and normalized_predicted_beats == self._predicted_beats
                 and normalized_upcoming_effects == self._upcoming_effects
+                and normalized_effect_triggers == self._effect_triggers
                 and normalized_chord_changes == self._chord_changes
                 and next_window == self._window_seconds
                 and next_bpm == self._bpm
@@ -174,6 +191,7 @@ def build_reactive_waveform_view(qt_modules):
             self._manual_beats = normalized_manual_beats
             self._predicted_beats = normalized_predicted_beats
             self._upcoming_effects = normalized_upcoming_effects
+            self._effect_triggers = normalized_effect_triggers
             self._chord_changes = normalized_chord_changes
             self._window_seconds = next_window
             self._bpm = next_bpm
@@ -204,6 +222,21 @@ def build_reactive_waveform_view(qt_modules):
                     in normalized_upcoming_effects
                 ],
             )
+            self.setProperty(
+                "effectTriggers",
+                [
+                    {
+                        "t": timestamp,
+                        "effect": effect,
+                        "render_mode": render_mode,
+                        "source": source,
+                    }
+                    for timestamp, effect, render_mode, source
+                    in normalized_effect_triggers
+                ],
+            )
+            self.setProperty("pastEffectLineStyle", "solid")
+            self.setProperty("upcomingEffectLineStyle", "dashed")
             self.setProperty("timelineNow", next_now)
             self.update()
 
@@ -391,6 +424,62 @@ def build_reactive_waveform_view(qt_modules):
                     QtCore.QPointF(x, center_y + height),
                 )
 
+            visible_effect_triggers = tuple(
+                event
+                for event in self._effect_triggers
+                if start_time <= event[0] <= now_t
+            )
+            labelled_effect_triggers = set(visible_effect_triggers[-6:])
+            for trigger_index, (
+                trigger_t,
+                effect,
+                render_mode,
+                _source,
+            ) in enumerate(visible_effect_triggers):
+                x = x_for(trigger_t)
+                painter.setPen(
+                    QtGui.QPen(QtGui.QColor("#e879f9"), 2.25)
+                )
+                painter.drawLine(
+                    QtCore.QPointF(x, plot.top()),
+                    QtCore.QPointF(x, plot.bottom()),
+                )
+                event = (trigger_t, effect, render_mode, _source)
+                if event not in labelled_effect_triggers:
+                    continue
+                label = effect or render_mode or "effect"
+                if render_mode and render_mode not in label:
+                    label = f"{label} [{render_mode}]"
+                label_width = min(
+                    190.0,
+                    max(70.0, 7.0 * len(label) + 12.0),
+                )
+                label_x = max(
+                    plot.left() + 2.0,
+                    min(x + 3.0, now_x - label_width - 2.0),
+                )
+                label_y = (
+                    waveform_plot.bottom()
+                    - 18.0
+                    - (trigger_index % 3) * 18.0
+                )
+                pill = QtCore.QRectF(
+                    label_x,
+                    label_y,
+                    label_width,
+                    16.0,
+                )
+                painter.fillRect(pill, QtGui.QColor("#701a75"))
+                painter.setPen(QtGui.QColor("#fae8ff"))
+                painter.drawText(
+                    pill.adjusted(4, 0, -2, 0),
+                    int(
+                        QtCore.Qt.AlignmentFlag.AlignLeft
+                        | QtCore.Qt.AlignmentFlag.AlignVCenter
+                    ),
+                    label,
+                )
+
             for cue_index, (
                 cue_t,
                 effect,
@@ -401,9 +490,9 @@ def build_reactive_waveform_view(qt_modules):
                 if not now_t <= cue_t <= end_time:
                     continue
                 x = x_for(cue_t)
-                painter.setPen(
-                    QtGui.QPen(QtGui.QColor("#22d3ee"), 2.25)
-                )
+                cue_pen = QtGui.QPen(QtGui.QColor("#22d3ee"), 2.25)
+                cue_pen.setStyle(QtCore.Qt.PenStyle.DashLine)
+                painter.setPen(cue_pen)
                 painter.drawLine(
                     QtCore.QPointF(x, plot.top()),
                     QtCore.QPointF(x, plot.bottom()),

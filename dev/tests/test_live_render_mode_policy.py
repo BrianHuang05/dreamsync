@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 
 from dreamsync.director import EffectMode
-from dreamsync.live import resolve_live_render_mode
+from dreamsync.live import (
+    _live_effect_decay_seconds,
+    _live_effect_diagnostic,
+    resolve_live_render_mode,
+)
 from dreamsync.render import RenderMode
 
 
@@ -73,3 +77,37 @@ def test_fixed_live_render_mode_rejects_invalid_mode() -> None:
 def test_live_render_mode_rejects_unknown_policy() -> None:
     with pytest.raises(ValueError, match="render_mode_policy"):
         resolve_live_render_mode(EffectMode.AMBIENT, policy="surprise")
+
+
+def test_live_pulse_diagnostic_reports_exponential_decay_lifetime() -> None:
+    decay = _live_effect_decay_seconds("pulse", {"pulse_decay": 4.0})
+
+    assert decay == pytest.approx(0.7489, abs=0.0001)
+    diagnostic = _live_effect_diagnostic(
+        effect_name="drop_blast",
+        render_mode="pulse",
+        source="structural action",
+        trigger_t=10.0,
+        now_t=10.25,
+        params={"pulse_decay": 4.0},
+    )
+    assert diagnostic["effect"] == "drop_blast"
+    assert diagnostic["render_mode"] == "pulse"
+    assert diagnostic["decay_seconds"] == pytest.approx(0.7489, abs=0.0001)
+    assert diagnostic["remaining_seconds"] == pytest.approx(0.4989, abs=0.0001)
+    assert diagnostic["continuous"] is False
+
+
+def test_live_continuous_effect_diagnostic_does_not_invent_decay() -> None:
+    diagnostic = _live_effect_diagnostic(
+        effect_name="wave_drift",
+        render_mode="wave",
+        source="effect bank",
+        trigger_t=3.0,
+        now_t=8.0,
+        params={"wave_rate_mult": 0.5},
+    )
+
+    assert diagnostic["decay_seconds"] is None
+    assert diagnostic["remaining_seconds"] is None
+    assert diagnostic["continuous"] is True

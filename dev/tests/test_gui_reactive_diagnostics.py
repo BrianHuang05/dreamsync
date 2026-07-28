@@ -8,6 +8,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from dreamsync.gui.main_window import (
+    _format_active_live_effects,
     _format_reactive_bpm_heading,
     _format_reactive_cycle,
     _format_structure_similarity,
@@ -92,6 +93,31 @@ def test_upcoming_effect_label_distinguishes_bar_and_phrase_cues():
     ) == "PHRASE · wave_drift · scheduled 72%"
 
 
+def test_active_effect_readout_includes_renderer_and_decay() -> None:
+    text = _format_active_live_effects(
+        (
+            {
+                "effect": "drop_blast",
+                "render_mode": "pulse",
+                "source": "structural action",
+                "decay_seconds": 0.5,
+                "remaining_seconds": 0.25,
+            },
+            {
+                "effect": "wave_drift",
+                "render_mode": "wave",
+                "source": "effect bank",
+                "decay_seconds": None,
+                "remaining_seconds": None,
+            },
+        )
+    )
+
+    assert "drop_blast [flash; renderer=pulse]" in text
+    assert "0.25s remaining / 0.50s decay" in text
+    assert "wave_drift [wave; renderer=wave] · continuous" in text
+
+
 def test_preview_exposes_frame_freeze_and_output_provenance_readout():
     QtWidgets = pytest.importorskip("PySide6.QtWidgets")
     app = _application()
@@ -144,6 +170,14 @@ def test_waveform_widget_renders_centered_upcoming_beats_and_effects():
                 "confidence": 0.8,
             },
         ),
+        effect_triggers=(
+            {
+                "t": 9.5,
+                "effect": "drop_blast",
+                "render_mode": "pulse",
+                "source": "structural action",
+            },
+        ),
         now_t=10.0,
         window_seconds=2.0,
         bpm=120.0,
@@ -160,6 +194,9 @@ def test_waveform_widget_renders_centered_upcoming_beats_and_effects():
         "beat_in_bar": 1,
     }
     assert view.property("upcomingEffects")[0]["effect"] == "ripple"
+    assert view.property("effectTriggers")[0]["effect"] == "drop_blast"
+    assert view.property("pastEffectLineStyle") == "solid"
+    assert view.property("upcomingEffectLineStyle") == "dashed"
     view.deleteLater()
 
 

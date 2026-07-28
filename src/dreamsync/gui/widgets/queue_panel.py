@@ -176,6 +176,7 @@ class QueuePanelWidgets:
     reactive_chord_popout_button: object
     reactive_chord_fullscreen_button: object
     reactive_waveform_panel: object
+    reactive_active_effects_label: object
     reactive_cycle_label: object
     reactive_waveform_view: object
     reactive_harmonic_debug_group: object
@@ -1893,6 +1894,21 @@ def build_queue_panel(qt_modules):
         reactive_waveform_panel
     )
     reactive_waveform_layout.setContentsMargins(0, 0, 0, 0)
+    reactive_active_effects_label = QtWidgets.QLabel(
+        "Active effects: awaiting renderer"
+    )
+    reactive_active_effects_label.setObjectName("reactiveActiveEffectsLabel")
+    reactive_active_effects_label.setStyleSheet(
+        "color: #f5d0fe; background: #111827; padding: 6px; "
+        "font-family: Consolas, monospace;"
+    )
+    reactive_active_effects_label.setWordWrap(True)
+    reactive_active_effects_label.setToolTip(
+        "The final effect and render mode sent to output after preset, route, "
+        "and Live-control overrides. Transient effects show total decay and "
+        "time remaining."
+    )
+    reactive_waveform_layout.addWidget(reactive_active_effects_label)
     reactive_cycle_label = QtWidgets.QLabel(
         "Structure similarity: acquiring configured meter and bar fingerprints"
     )
@@ -2628,6 +2644,7 @@ def build_queue_panel(qt_modules):
         reactive_chord_popout_button=reactive_chord_popout_button,
         reactive_chord_fullscreen_button=reactive_chord_fullscreen_button,
         reactive_waveform_panel=reactive_waveform_panel,
+        reactive_active_effects_label=reactive_active_effects_label,
         reactive_cycle_label=reactive_cycle_label,
         reactive_waveform_view=reactive_waveform_view,
         reactive_harmonic_debug_group=reactive_harmonic_debug_group,
