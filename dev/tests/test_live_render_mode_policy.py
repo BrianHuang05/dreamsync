@@ -48,6 +48,19 @@ def test_fixed_live_render_mode_ignores_director_and_preset(
     )
 
 
+def test_structural_preset_overrides_fixed_live_render_mode() -> None:
+    assert (
+        resolve_live_render_mode(
+            EffectMode.MOTION,
+            policy="fixed",
+            configured_mode="wave",
+            preset_mode=RenderMode.WAVE,
+            structural_mode=RenderMode.BREATHE,
+        )
+        == "breathe"
+    )
+
+
 def test_fixed_live_render_mode_rejects_invalid_mode() -> None:
     with pytest.raises(ValueError):
         resolve_live_render_mode(

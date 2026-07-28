@@ -3282,17 +3282,22 @@ def resolve_live_render_mode(
     policy: str = "adaptive",
     configured_mode: str = "scroll",
     preset_mode: RenderMode | None = None,
+    structural_mode: RenderMode | None = None,
 ) -> str:
     """Resolve the base renderer mode for a live frame.
 
-    ``fixed`` makes an operator-selected renderer authoritative. ``adaptive``
-    preserves the CLI's existing Director/profile-driven mode selection.
-    Explicit runtime-control overrides are applied later and may replace either
-    result.
+    ``fixed`` makes an operator-selected renderer authoritative until a
+    downbeat-locked phrase/section action commits.  That structural preset then
+    remains authoritative so the selected effect reaches both hardware and the
+    preview. ``adaptive`` preserves the CLI's existing Director/profile-driven
+    mode selection. Explicit runtime-control overrides are applied later and
+    may replace either result.
     """
     normalized_policy = str(policy).strip().lower()
     if normalized_policy not in {"adaptive", "fixed"}:
         raise ValueError("render_mode_policy must be 'adaptive' or 'fixed'")
+    if structural_mode is not None:
+        return structural_mode.value
     if normalized_policy == "fixed":
         return RenderMode(str(configured_mode)).value
     if preset_mode is not None:
@@ -3643,6 +3648,7 @@ def run_live_to_govee(
 
     # Seed with an initial intent so we always have something to render
     last_intent = director.update({"t": 0.0, "rms": 0.0, "zcr": 0.0, "bpm": 120.0, "beat": False, "bass": 0.0})
+    structural_render_mode: RenderMode | None = None
 
     def _runtime_params_for_frame(
         intent: Any,
@@ -3653,8 +3659,12 @@ def run_live_to_govee(
             policy=normalized_render_mode_policy,
             configured_mode=configured_render_mode,
             preset_mode=preset.render_mode if preset is not None else None,
+            structural_mode=structural_render_mode,
         )
-        if normalized_render_mode_policy == "fixed":
+        if (
+            normalized_render_mode_policy == "fixed"
+            or structural_render_mode is not None
+        ):
             runtime_params["_render_mode"] = resolved_render_mode
         else:
             runtime_params.setdefault("_render_mode", resolved_render_mode)
@@ -4939,9 +4949,17 @@ def run_live_to_govee(
                         structural_action_results.append(result)
                         if result.outcome == "applied" and result.preset is not None:
                             preset = result.preset
-                            if normalized_render_mode_policy == "adaptive":
+                            if cue.cue_class != "bar_marker":
+                                structural_render_mode = preset.render_mode
+                            if (
+                                normalized_render_mode_policy == "adaptive"
+                                or structural_render_mode is not None
+                            ):
                                 for _, renderer, *_ in multi_adapter.devices:
-                                    renderer.mode = preset.render_mode
+                                    renderer.mode = (
+                                        structural_render_mode
+                                        or preset.render_mode
+                                    )
                             director.set_colors(preset.color_palette)
                             current_params = preset.params
                 if (
