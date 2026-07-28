@@ -13,13 +13,13 @@ from typing import TYPE_CHECKING, Any, Callable
 from dreamsync.analyzer.analyze import analyze_song
 from dreamsync.analyzer.models import SongStructure
 from dreamsync.cache import ShowCache, cached_compile_show, path_based_track_id
+from dreamsync.playlist import PlaylistManager
 from dreamsync.show.models import ShowTimeline
 from dreamsync.show.player import AudioPlayer
 from dreamsync.show.runtime import ShowPlaybackRuntime
 from dreamsync.show.runtime_control import RuntimeControlBus, runtime_control_to_dict
 
 if TYPE_CHECKING:
-    from dreamsync.playlist import PlaylistManager
     from dreamsync.profile import ProfileConfig
 
 logger = logging.getLogger(__name__)
@@ -64,6 +64,8 @@ class LocalShowSession:
         profile: ProfileConfig | None = None,
         profile_resolver: ProfileResolver | None = None,
         timeline_resolver: TimelineResolver | None = None,
+        precompiled_timelines: dict[str, ShowTimeline] | None = None,
+        precompiled_timeline_sources: dict[str, str] | None = None,
         sample_rate: int = 44100,
         audio_device: int | None = None,
         debug: bool = False,
@@ -74,6 +76,14 @@ class LocalShowSession:
         self._profile = profile
         self._profile_resolver = profile_resolver
         self._timeline_resolver = timeline_resolver
+        self._precompiled_timelines = {
+            str(Path(path).resolve()): timeline
+            for path, timeline in (precompiled_timelines or {}).items()
+        }
+        self._timeline_sources = {
+            path: str((precompiled_timeline_sources or {}).get(path) or "saved/precompiled Show timeline")
+            for path in self._precompiled_timelines
+        }
         self._sample_rate = sample_rate
         self._audio_device = audio_device
         self._debug = debug
@@ -88,6 +98,7 @@ class LocalShowSession:
         self._current_player: AudioPlayer | None = None
         self._current_timeline: ShowTimeline | None = None
         self._current_runtime: ShowPlaybackRuntime | None = None
+        self._current_timeline_source: str = ""
         self._playback_state: str = "idle"
 
     def _set_playback_state(self, state: str, *, track: Path | None = None) -> None:
@@ -146,6 +157,7 @@ class LocalShowSession:
             self._current_player = player
             self._current_timeline = timeline
             self._current_runtime = runtime
+            self._current_timeline_source = self.timeline_source_for_file(audio_path)
             self._playback_state = "starting_audio"
 
         # 5. Start playback
@@ -229,6 +241,7 @@ class LocalShowSession:
             "is_playing": is_playing,
             "position_seconds": position_seconds,
             "duration_seconds": duration_seconds,
+            "timeline_source": self._current_timeline_source,
             "audio_output": _format_audio_output_label(self._audio_device),
             "device_status": _device_status_for_adapter(self._multi_adapter),
             "runtime_control": runtime_control_to_dict(self._runtime_control.snapshot()),
@@ -256,6 +269,38 @@ class LocalShowSession:
             },
         }
 
+    def pause(self) -> bool:
+        """Pause the active local track without stopping its show runtime."""
+
+        with self._status_lock:
+            player = self._current_player
+            if player is None or not player.playing:
+                return False
+            player.pause()
+            self._playback_state = "paused"
+        return True
+
+    def resume(self) -> bool:
+        """Resume a paused local track from its audio-clock position."""
+
+        with self._status_lock:
+            player = self._current_player
+            if player is None or player.playing or player.finished:
+                return False
+            player.play()
+            self._playback_state = "playing"
+        return True
+
+    def toggle_pause(self) -> str:
+        with self._status_lock:
+            player = self._current_player
+            if player is None:
+                return "unsupported"
+            is_playing = bool(player.playing)
+        if is_playing:
+            return "paused" if self.pause() else "unsupported"
+        return "playing" if self.resume() else "unsupported"
+
     def preview_frame_snapshot(self) -> dict[str, Any]:
         preview_snapshot = getattr(self._multi_adapter, "preview_snapshot", None)
         if callable(preview_snapshot):
@@ -276,8 +321,36 @@ class LocalShowSession:
         Public API for Feature 8 (PlaylistManager) to precompile tracks."""
         return self._compile_for_file(Path(audio_path))
 
+    def prepared_timeline_for_file(self, audio_path: Path | str) -> ShowTimeline | None:
+        """Return a timeline already prepared for this session without compiling."""
+
+        return self._precompiled_timelines.get(str(Path(audio_path).resolve()))
+
+    def timeline_source_for_file(self, audio_path: Path | str) -> str:
+        """Return the provenance of a prepared timeline without compiling it."""
+
+        return self._timeline_sources.get(str(Path(audio_path).resolve()), "")
+
+    def replace_prepared_timeline(
+        self,
+        audio_path: Path | str,
+        timeline: ShowTimeline,
+        *,
+        source: str = "prepared timeline",
+    ) -> None:
+        """Atomically replace a prepared future timeline with a retinted version."""
+
+        with self._status_lock:
+            key = str(Path(audio_path).resolve())
+            self._precompiled_timelines[key] = timeline
+            self._timeline_sources[key] = source
+
     def _compile_for_file(self, audio_path: Path) -> ShowTimeline | None:
-        """Internal: check cache, analyze, compile, cache. Returns None on error."""
+        """Load a persisted timeline or fall back to cache-aware compilation."""
+        persisted = self._precompiled_timelines.get(str(audio_path.resolve()))
+        if persisted is not None:
+            self._set_playback_state("loading_saved_track", track=audio_path)
+            return self._resolve_timeline_for_track(audio_path, persisted)
         track_id = self._track_id_for_file(audio_path)
         effective_profile = self._effective_profile_for_track(audio_path)
 
@@ -290,6 +363,11 @@ class LocalShowSession:
                 logger.info("local: cache HIT for '%s'", audio_path.name)
                 if self._debug:
                     print(f"[local] Cache hit: {audio_path.name}")
+                self.replace_prepared_timeline(
+                    audio_path,
+                    timeline,
+                    source=f"show cache: {self._cache.entry_path(track_id, effective_profile)}",
+                )
                 return self._resolve_timeline_for_track(audio_path, timeline)
 
         structure = self._load_analysis_sidecar(audio_path)
@@ -307,6 +385,11 @@ class LocalShowSession:
                 else:
                     self._cache_misses += 1
                 logger.info("local: compiled '%s' from cached analysis (%d cues)", audio_path.name, len(timeline.cues))
+                self.replace_prepared_timeline(
+                    audio_path,
+                    timeline,
+                    source=f"analysis sidecar: {self._analysis_sidecar_path(audio_path)}",
+                )
                 return self._resolve_timeline_for_track(audio_path, timeline)
             except Exception as exc:
                 logger.warning("local: cached analysis unusable for '%s': %s", audio_path.name, exc)
@@ -332,6 +415,15 @@ class LocalShowSession:
             else:
                 self._cache_misses += 1
             logger.info("local: compiled '%s' (%d cues)", audio_path.name, len(timeline.cues))
+            self.replace_prepared_timeline(
+                audio_path,
+                timeline,
+                source=(
+                    f"show cache: {self._cache.entry_path(track_id, effective_profile)}"
+                    if from_cache
+                    else f"hot compile from {audio_path.name}"
+                ),
+            )
             return self._resolve_timeline_for_track(audio_path, timeline)
         except Exception as exc:
             self._compile_errors += 1
@@ -427,6 +519,8 @@ class LocalPlaylistSession:
         profile: ProfileConfig | None = None,
         profile_resolver: ProfileResolver | None = None,
         timeline_resolver: TimelineResolver | None = None,
+        precompiled_timelines: dict[str, ShowTimeline] | None = None,
+        precompiled_timeline_sources: dict[str, str] | None = None,
         sample_rate: int = 44100,
         audio_device: int | None = None,
         debug: bool = False,
@@ -438,6 +532,7 @@ class LocalPlaylistSession:
         self._profile = profile
         self._profile_resolver = profile_resolver
         self._timeline_resolver = timeline_resolver
+        self._precompiled_timelines = dict(precompiled_timelines or {})
         self._sample_rate = sample_rate
         self._audio_device = audio_device
         self._debug = debug
@@ -460,6 +555,8 @@ class LocalPlaylistSession:
             profile=profile,
             profile_resolver=profile_resolver,
             timeline_resolver=timeline_resolver,
+            precompiled_timelines=precompiled_timelines,
+            precompiled_timeline_sources=precompiled_timeline_sources,
             sample_rate=sample_rate,
             audio_device=audio_device,
             debug=debug,
@@ -475,6 +572,7 @@ class LocalPlaylistSession:
         self._current_player: AudioPlayer | None = None
         self._current_timeline: ShowTimeline | None = None
         self._current_runtime: ShowPlaybackRuntime | None = None
+        self._current_timeline_source: str = ""
         self._playback_state: str = "idle"
 
     def _set_playback_state(self, state: str, *, track: Path | None = None) -> None:
@@ -597,6 +695,7 @@ class LocalPlaylistSession:
             "is_playing": is_playing,
             "position_seconds": position_seconds,
             "duration_seconds": duration_seconds,
+            "timeline_source": self._current_timeline_source,
             "audio_output": _format_audio_output_label(self._audio_device),
             "device_status": _device_status_for_adapter(self._multi_adapter),
             "runtime_control": runtime_control_to_dict(self._runtime_control.snapshot()),
@@ -623,6 +722,38 @@ class LocalPlaylistSession:
                 ),
             },
         }
+
+    def pause(self) -> bool:
+        """Pause the current playlist track without disturbing queue state."""
+
+        with self._status_lock:
+            player = self._current_player
+            if player is None or not player.playing:
+                return False
+            player.pause()
+            self._playback_state = "paused"
+        return True
+
+    def resume(self) -> bool:
+        """Resume the current playlist track from its audio-clock position."""
+
+        with self._status_lock:
+            player = self._current_player
+            if player is None or player.playing or player.finished:
+                return False
+            player.play()
+            self._playback_state = "playing"
+        return True
+
+    def toggle_pause(self) -> str:
+        with self._status_lock:
+            player = self._current_player
+            if player is None:
+                return "unsupported"
+            is_playing = bool(player.playing)
+        if is_playing:
+            return "paused" if self.pause() else "unsupported"
+        return "playing" if self.resume() else "unsupported"
 
     def preview_frame_snapshot(self) -> dict[str, Any]:
         preview_snapshot = getattr(self._multi_adapter, "preview_snapshot", None)
@@ -662,6 +793,11 @@ class LocalPlaylistSession:
         with self._control_lock:
             self._playlist.shuffle_upcoming()
 
+    def set_repeat(self, enabled: bool) -> None:
+        """Enable or disable whole-playlist repeat."""
+        with self._control_lock:
+            self._playlist.set_repeat(enabled)
+
     def append_track(self, track: Path | str) -> Path:
         """Append a new track to the queue and return the normalized path."""
         with self._control_lock:
@@ -675,6 +811,33 @@ class LocalPlaylistSession:
                 index = current_index + 1
             return self._playlist.insert(index, track)
 
+    def request_precompile_upcoming(self) -> bool:
+        """Schedule preparation for a newly cued upcoming track when running."""
+        with self._status_lock:
+            active = self._playback_state in {"starting_audio", "playing", "paused"}
+        if not active:
+            return False
+        self._executor.submit(self._precompile_upcoming)
+        return True
+
+    def set_precompiled_timeline(
+        self,
+        audio_path: Path | str,
+        timeline: ShowTimeline,
+        *,
+        source: str,
+    ) -> None:
+        """Register a saved timeline for a queued track without recompiling it."""
+
+        normalized_path = Path(audio_path).resolve()
+        with self._control_lock:
+            self._precompiled_timelines[str(normalized_path)] = timeline
+            self._session.replace_prepared_timeline(
+                normalized_path,
+                timeline,
+                source=source,
+            )
+
     def play_now(self, index: int) -> None:
         """Interrupt the current track and jump to the selected queue entry."""
         with self._control_lock:
@@ -687,15 +850,46 @@ class LocalPlaylistSession:
             self._pending_jump_index = index
             self._signal_jump.set()
 
+    def prepared_timeline(self, index: int) -> ShowTimeline | None:
+        """Return a compiled future track without triggering analysis or compilation."""
+
+        with self._control_lock:
+            tracks = self._playlist.snapshot()
+            current_index = self._playlist.current_index
+            if index <= current_index or not 0 <= index < len(tracks):
+                return None
+            return self._session.prepared_timeline_for_file(tracks[index])
+
+    def prepared_timeline_source(self, index: int) -> str:
+        """Return the source of an already prepared upcoming timeline."""
+
+        with self._control_lock:
+            tracks = self._playlist.snapshot()
+            current_index = self._playlist.current_index
+            if index <= current_index or not 0 <= index < len(tracks):
+                return ""
+            return self._session.timeline_source_for_file(tracks[index])
+
+    def replace_prepared_timeline(self, index: int, timeline: ShowTimeline) -> None:
+        """Replace a future compiled track after a palette-only retint."""
+
+        with self._control_lock:
+            tracks = self._playlist.snapshot()
+            current_index = self._playlist.current_index
+            if index <= current_index:
+                raise ValueError("Cannot edit the currently playing track.")
+            if not 0 <= index < len(tracks):
+                raise IndexError("Track index out of range.")
+            self._session.replace_prepared_timeline(
+                tracks[index],
+                timeline,
+                source="Live palette hot-swap (prepared cues)",
+            )
+
     def _play_track(
         self, audio_path: Path, stop_event: threading.Event,
     ) -> str:
         """Play a single track. Returns stop reason: 'finished', 'next', 'prev', 'stopped'."""
-        # Clear any pending signals
-        self._signal_next.clear()
-        self._signal_prev.clear()
-        self._signal_jump.clear()
-
         # Compile show
         self._set_playback_state("preparing", track=audio_path)
         timeline = self._session.load_track(audio_path)
@@ -704,6 +898,21 @@ class LocalPlaylistSession:
             logger.warning("playlist: skipping '%s' (compilation failed)", audio_path.name)
             self._tracks_skipped += 1
             return "next"  # skip to next track
+
+        # Keep commands made while a track was preparing. In particular, this
+        # makes Skip work even if the user presses it before decoding completes.
+        if self._signal_next.is_set():
+            self._signal_next.clear()
+            self._tracks_skipped += 1
+            self._set_playback_state("skipping", track=audio_path)
+            return "next"
+        if self._signal_prev.is_set():
+            self._signal_prev.clear()
+            self._set_playback_state("rewinding", track=audio_path)
+            return "prev"
+        if self._signal_jump.is_set():
+            self._set_playback_state("jumping", track=audio_path)
+            return "jump"
 
         # Create AudioPlayer
         self._set_playback_state("loading_audio", track=audio_path)
@@ -724,6 +933,7 @@ class LocalPlaylistSession:
             self._current_player = player
             self._current_timeline = timeline
             self._current_runtime = runtime
+            self._current_timeline_source = self._session.timeline_source_for_file(audio_path)
             self._playback_state = "starting_audio"
 
         # Play
@@ -735,10 +945,13 @@ class LocalPlaylistSession:
             while not stop_event.is_set():
                 # Check control signals
                 if self._signal_next.is_set():
+                    self._signal_next.clear()
+                    self._tracks_skipped += 1
                     with self._status_lock:
                         self._playback_state = "skipping"
                     return "next"
                 if self._signal_prev.is_set():
+                    self._signal_prev.clear()
                     with self._status_lock:
                         self._playback_state = "rewinding"
                     return "prev"
@@ -778,6 +991,8 @@ class LocalPlaylistSession:
         upcoming = self._playlist.peek_next(count=2)
         for track_path in upcoming:
             try:
+                if str(track_path.resolve()) in self._session._precompiled_timelines:
+                    continue
                 from dreamsync.playlist import content_hash_track_id
                 track_id = content_hash_track_id(track_path)
                 effective_profile = self._session._effective_profile_for_track(track_path)
@@ -817,6 +1032,8 @@ def run_local_session(
     playlist: PlaylistManager | None = None,
     session_ref: list[Any] | None = None,
     runtime_control: RuntimeControlBus | None = None,
+    precompiled_timelines: dict[str, ShowTimeline] | None = None,
+    precompiled_timeline_sources: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Top-level entry point for local session. Called from run_session() or CLI."""
     cache = ShowCache(cache_dir)
@@ -829,6 +1046,8 @@ def run_local_session(
             profile=profile,
             profile_resolver=profile_resolver,
             timeline_resolver=timeline_resolver,
+            precompiled_timelines=precompiled_timelines,
+            precompiled_timeline_sources=precompiled_timeline_sources,
             sample_rate=sample_rate,
             audio_device=audio_device,
             debug=debug,
@@ -844,6 +1063,8 @@ def run_local_session(
             profile=profile,
             profile_resolver=profile_resolver,
             timeline_resolver=timeline_resolver,
+            precompiled_timelines=precompiled_timelines,
+            precompiled_timeline_sources=precompiled_timeline_sources,
             sample_rate=sample_rate,
             audio_device=audio_device,
             debug=debug,
@@ -852,3 +1073,33 @@ def run_local_session(
         if session_ref is not None:
             session_ref[:] = [session]
         return session.run(Path(audio_path), stop_event)
+
+
+def run_precompiled_show_session(
+    multi_adapter,
+    tracks: tuple[tuple[Path, ShowTimeline], ...],
+    *,
+    source_path: Path | None = None,
+    audio_device: int | None = None,
+    stop_event: threading.Event,
+    session_ref: list[Any] | None = None,
+    runtime_control: RuntimeControlBus | None = None,
+) -> dict[str, Any]:
+    """Play an ordered saved Show using its embedded compiled Track timelines."""
+    if not tracks:
+        raise ValueError("A Show needs at least one Track before playback.")
+    playlist = PlaylistManager.from_tracks([audio_path for audio_path, _timeline in tracks])
+    timelines = {str(audio_path.resolve()): timeline for audio_path, timeline in tracks}
+    source_label = f"saved Show: {source_path.resolve()}" if source_path is not None else "saved/precompiled Show timeline"
+    timeline_sources = {path: source_label for path in timelines}
+    return run_local_session(
+        multi_adapter,
+        playlist.current,
+        audio_device=audio_device,
+        stop_event=stop_event,
+        playlist=playlist,
+        session_ref=session_ref,
+        runtime_control=runtime_control,
+        precompiled_timelines=timelines,
+        precompiled_timeline_sources=timeline_sources,
+    )

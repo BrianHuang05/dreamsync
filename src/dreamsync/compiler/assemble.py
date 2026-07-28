@@ -15,6 +15,19 @@ from dreamsync.show.models import ShowCue, ShowTimeline
 
 logger = logging.getLogger(__name__)
 
+_SPATIAL_LAYER_ROUTE_KEYS: tuple[str, ...] = (
+    "effect_layer",
+    "layer_category",
+    "trigger_mode",
+    "falloff",
+    "radius",
+    "speed_units_per_second",
+    "intensity_scale",
+    "time_offset_s",
+    "duration_s",
+    "layer_priority",
+)
+
 _EQ_ROUTE_DEFAULTS: dict[tuple[str, str], dict[str, object]] = {
     ("kick", "enter"): {
         "band": "kick",
@@ -407,6 +420,10 @@ class TimelineAssembler:
                 render_mode = str(route_render_mode)
             if route_spatial_preset is not None:
                 params["spatial_preset"] = route_spatial_preset
+            for key in _SPATIAL_LAYER_ROUTE_KEYS:
+                value = self._first_route_value(all_active_routes, key)
+                if value is not None and key not in params:
+                    params[key] = value
             if route_color_bias is not None:
                 color_palette = self._apply_color_bias(color_palette, str(route_color_bias))
 
@@ -741,6 +758,7 @@ class TimelineAssembler:
                 "pan_follow",
                 "width_scale",
                 "confidence_min",
+                *_SPATIAL_LAYER_ROUTE_KEYS,
             ):
                 if key in route:
                     layer[key] = route[key]
@@ -761,6 +779,7 @@ class TimelineAssembler:
                     "spatial_zone",
                     "pan_follow",
                     "width_scale",
+                    *_SPATIAL_LAYER_ROUTE_KEYS,
                 )
             ):
                 layers.append(layer)

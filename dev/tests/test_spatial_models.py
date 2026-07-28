@@ -11,6 +11,10 @@ from dreamsync.spatial.models import (
     DeviceOrientation,
     DevicePlacement,
     SectionPlacement,
+    SpatialEffectLayer,
+    SpatialFalloff,
+    SpatialLayerCategory,
+    SpatialTriggerMode,
     parse_device_placement,
     placement_to_mapping,
 )
@@ -156,6 +160,34 @@ class ParseDevicePlacementTests(unittest.TestCase):
             SectionPlacement(index=0, x=-1.0, y=-1.0, z=-1.0),
             SectionPlacement(index=1, x=1.0, y=1.0, z=1.0),
         )))
+
+
+class SpatialEffectLayerTests(unittest.TestCase):
+    def test_effect_layer_mapping_roundtrips_json_shape(self) -> None:
+        layer = SpatialEffectLayer(
+            category=SpatialLayerCategory.SLICE,
+            effect_mode="pulse",
+            trigger_mode=SpatialTriggerMode.ONESHOT,
+            origin=(-1.0, 0.0, 0.25),
+            direction=(1.0, 0.0, 0.0),
+            extent=((-1.0, -0.5, -1.0), (1.0, 0.5, 1.0)),
+            thickness=0.2,
+            radius=0.1,
+            speed_units_per_second=1.4,
+            falloff=SpatialFalloff.SMOOTHSTEP,
+            palette=("#112233", "#445566"),
+            color_bias="#abcdef",
+            intensity_scale=1.2,
+            time_offset_s=0.5,
+            duration_s=1.5,
+            coordinate_scale=1.0,
+        )
+        data = layer.to_mapping()
+        self.assertEqual(data["layer_category"], "slice")
+        self.assertEqual(data["trigger_mode"], "oneshot")
+        self.assertEqual(data["direction"], {"x": 1.0, "y": 0.0, "z": 0.0})
+        self.assertEqual(data["palette"], ["#112233", "#445566"])
+        self.assertEqual(SpatialEffectLayer.from_mapping(data), layer)
 
 
 class LoadDeviceConfigSpatialTests(unittest.TestCase):

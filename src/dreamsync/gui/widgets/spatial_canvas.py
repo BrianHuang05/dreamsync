@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from dreamsync.gui.models.spatial_scene import ProjectionConfig, SceneNode, project_point
+from dreamsync.gui.models.spatial_scene import (
+    ProjectionConfig,
+    SceneNode,
+    group_section_chains,
+    project_point,
+    validate_layout,
+)
 
 
 def _all_nodes_at_origin(nodes: list[SceneNode]) -> bool:
@@ -43,6 +49,21 @@ def _cycle_view_mode(view_mode: str) -> str:
     except ValueError:
         return "room"
     return view_order[(index + 1) % len(view_order)]
+
+
+def _chain_links(nodes: list[SceneNode]) -> list[tuple[SceneNode, SceneNode]]:
+    links: list[tuple[SceneNode, SceneNode]] = []
+    for chain in group_section_chains(nodes).values():
+        links.extend(zip(chain, chain[1:]))
+    return links
+
+
+def _chain_representatives(nodes: list[SceneNode]) -> list[SceneNode]:
+    representatives: list[SceneNode] = []
+    for chain in group_section_chains(nodes).values():
+        if chain:
+            representatives.append(chain[0])
+    return representatives
 
 
 def _project_node_for_view(node: SceneNode, *, view_mode: str, config: ProjectionConfig) -> tuple[float, float]:
@@ -105,7 +126,7 @@ def build_spatial_canvas(qt_modules, nodes: list[SceneNode], *, interactive: boo
         nodeAxisCycleRequested = QtCore.Signal(str, str)
         nodeDragged = QtCore.Signal(str, float, float)
         selectionStepRequested = QtCore.Signal(int)
-        axisNudgeRequested = QtCore.Signal(int)
+        axisNudgeRequested = QtCore.Signal(str, int)
         viewCycleRequested = QtCore.Signal(str)
 
         def __init__(self) -> None:
@@ -115,6 +136,7 @@ def build_spatial_canvas(qt_modules, nodes: list[SceneNode], *, interactive: boo
             self._view_mode = "room"
             self._background_theme = background_theme
             self._interactive = interactive
+            self._individual_node_editing = False
             self._drag_key = ""
             self._last_drag_pos = None
             self.setObjectName("spatialCanvas" if interactive else "simulationSpatialCanvas")
@@ -134,6 +156,10 @@ def build_spatial_canvas(qt_modules, nodes: list[SceneNode], *, interactive: boo
             self._view_mode = view_mode
             self.update()
 
+        def set_individual_node_editing(self, enabled: bool) -> None:
+            self._individual_node_editing = bool(enabled)
+            self.update()
+
         def set_background_theme(self, background_name: str) -> None:
             self._background_theme = "light" if background_name == "light" else "dark"
             self.update()
@@ -142,6 +168,37 @@ def build_spatial_canvas(qt_modules, nodes: list[SceneNode], *, interactive: boo
             return self._view_mode
 
         def _hit_test(self, point) -> SceneNode | None:
+            # Point bulbs are rendered above strip boxes, so give them first
+            # refusal when their hit areas overlap.
+            best_node = None
+            best_distance = 16.0
+            for node in self._nodes:
+                if node.is_section:
+                    continue
+                px, py = _project_node_for_view(node, view_mode=self._view_mode, config=cfg)
+                dx = float(point.x()) - px
+                dy = float(point.y()) - py
+                distance = (dx * dx + dy * dy) ** 0.5
+                if distance <= best_distance:
+                    best_node = node
+                    best_distance = distance
+            if best_node is not None:
+                return best_node
+            if not self._individual_node_editing:
+                for node in _chain_representatives(self._nodes):
+                    chain = [candidate for candidate in self._nodes if candidate.chain_key == node.chain_key]
+                    if not chain:
+                        continue
+                    projected = [
+                        _project_node_for_view(candidate, view_mode=self._view_mode, config=cfg)
+                        for candidate in chain
+                    ]
+                    min_x = min(value[0] for value in projected) - 12.0
+                    max_x = max(value[0] for value in projected) + 12.0
+                    min_y = min(value[1] for value in projected) - 12.0
+                    max_y = max(value[1] for value in projected) + 12.0
+                    if min_x <= float(point.x()) <= max_x and min_y <= float(point.y()) <= max_y:
+                        return node
             best_node = None
             best_distance = 16.0
             for node in self._nodes:
@@ -160,7 +217,10 @@ def build_spatial_canvas(qt_modules, nodes: list[SceneNode], *, interactive: boo
         def event(self, event):  # pragma: no cover - Qt only
             if self._interactive and event.type() == QtCore.QEvent.Type.KeyPress:
                 modifiers = event.modifiers()
-                if event.key() in (QtCore.Qt.Key.Key_Tab, QtCore.Qt.Key.Key_Backtab):
+                if (
+                    event.key() in (QtCore.Qt.Key.Key_Tab, QtCore.Qt.Key.Key_Backtab)
+                    and not modifiers & QtCore.Qt.KeyboardModifier.ControlModifier
+                ):
                     step = -1 if (
                         event.key() == QtCore.Qt.Key.Key_Backtab
                         or modifiers & QtCore.Qt.KeyboardModifier.ShiftModifier
@@ -171,22 +231,45 @@ def build_spatial_canvas(qt_modules, nodes: list[SceneNode], *, interactive: boo
                 if modifiers & QtCore.Qt.KeyboardModifier.ControlModifier:
                     selected = self._selected_node()
                     if event.key() == QtCore.Qt.Key.Key_A and selected is not None:
-                        self.nodeAxisCycleRequested.emit(selected.key, _cycle_axis_name(self._active_axis))
+                        self.nodeAxisCycleRequested.emit(selected.key, self._next_axis_name())
                         event.accept()
                         return True
                     if event.key() == QtCore.Qt.Key.Key_V:
                         self.viewCycleRequested.emit(_cycle_view_mode(self._view_mode))
                         event.accept()
                         return True
-                if event.key() == QtCore.Qt.Key.Key_Left:
-                    self.axisNudgeRequested.emit(-1)
-                    event.accept()
-                    return True
-                if event.key() == QtCore.Qt.Key.Key_Right:
-                    self.axisNudgeRequested.emit(1)
-                    event.accept()
-                    return True
+                if self._view_mode == "room":
+                    if event.key() == QtCore.Qt.Key.Key_Left:
+                        self.axisNudgeRequested.emit(self._active_axis, -1)
+                        event.accept()
+                        return True
+                    if event.key() == QtCore.Qt.Key.Key_Right:
+                        self.axisNudgeRequested.emit(self._active_axis, 1)
+                        event.accept()
+                        return True
+                else:
+                    visible_axes = _visible_axes_for_view(self._view_mode)
+                    if visible_axes is not None:
+                        horizontal_axis, vertical_axis = visible_axes
+                        key_axis_direction = {
+                            QtCore.Qt.Key.Key_Left: (horizontal_axis, -1),
+                            QtCore.Qt.Key.Key_Right: (horizontal_axis, 1),
+                            QtCore.Qt.Key.Key_Up: (vertical_axis, 1),
+                            QtCore.Qt.Key.Key_Down: (vertical_axis, -1),
+                        }.get(event.key())
+                        if key_axis_direction is not None:
+                            self.axisNudgeRequested.emit(*key_axis_direction)
+                            event.accept()
+                            return True
             return super().event(event)
+
+        def _next_axis_name(self) -> str:
+            visible_axes = _visible_axes_for_view(self._view_mode)
+            if visible_axes is None:
+                return _cycle_axis_name(self._active_axis)
+            if self._active_axis not in visible_axes:
+                return visible_axes[0]
+            return visible_axes[(visible_axes.index(self._active_axis) + 1) % len(visible_axes)]
 
         def mousePressEvent(self, event) -> None:  # pragma: no cover - Qt only
             if not self._interactive:
@@ -200,7 +283,7 @@ def build_spatial_canvas(qt_modules, nodes: list[SceneNode], *, interactive: boo
             if event.button() == QtCore.Qt.MouseButton.RightButton:
                 self._drag_key = ""
                 self._last_drag_pos = None
-                self.nodeAxisCycleRequested.emit(hit.key, _cycle_axis_name(self._active_axis))
+                self.nodeAxisCycleRequested.emit(hit.key, self._next_axis_name())
                 event.accept()
                 return
             if event.button() != QtCore.Qt.MouseButton.LeftButton:
@@ -288,6 +371,55 @@ def build_spatial_canvas(qt_modules, nodes: list[SceneNode], *, interactive: boo
             start, end = _axis_endpoints_for_node(selected, axis_name=self._active_axis, view_mode=self._view_mode, config=cfg)
             painter.drawLine(QtCore.QPointF(*start), QtCore.QPointF(*end))
 
+        def _draw_strip_links(self, painter, *, dark_theme: bool) -> None:
+            invalid_links = {
+                link
+                for validation in validate_layout(self._nodes)
+                for link in validation.invalid_links
+            }
+            selected = self._selected_node()
+            selected_chain_key = selected.chain_key if selected is not None else ""
+            for first, second in _chain_links(self._nodes):
+                first_point = _project_node_for_view(first, view_mode=self._view_mode, config=cfg)
+                second_point = _project_node_for_view(second, view_mode=self._view_mode, config=cfg)
+                link_key = (first.key, second.key)
+                if link_key in invalid_links:
+                    color = QtGui.QColor("#ef5350")
+                    width = 3.0
+                elif selected_chain_key and first.chain_key == selected_chain_key:
+                    color = QtGui.QColor("#ffd166")
+                    width = 3.0
+                else:
+                    color = QtGui.QColor("#7894b8" if dark_theme else "#66758a")
+                    width = 2.0
+                painter.setPen(QtGui.QPen(color, width))
+                painter.drawLine(QtCore.QPointF(*first_point), QtCore.QPointF(*second_point))
+
+        def _draw_strip_boxes(self, painter, *, dark_theme: bool) -> None:
+            selected = self._selected_node()
+            selected_chain_key = selected.chain_key if selected is not None else ""
+            for chain in group_section_chains(self._nodes).values():
+                if not chain:
+                    continue
+                projected = [
+                    _project_node_for_view(node, view_mode=self._view_mode, config=cfg)
+                    for node in chain
+                ]
+                min_x = min(value[0] for value in projected) - 12.0
+                max_x = max(value[0] for value in projected) + 12.0
+                min_y = min(value[1] for value in projected) - 12.0
+                max_y = max(value[1] for value in projected) + 12.0
+                chain_selected = bool(selected_chain_key and chain[0].chain_key == selected_chain_key)
+                color = QtGui.QColor("#ffd166" if chain_selected else "#7894b8" if dark_theme else "#66758a")
+                painter.setBrush(QtGui.QColor(chain[0].color))
+                painter.setPen(QtGui.QPen(color, 3.0 if chain_selected else 2.0))
+                painter.drawRect(QtCore.QRectF(min_x, min_y, max_x - min_x, max_y - min_y))
+                painter.setPen(QtGui.QPen(QtGui.QColor("#d8e1ee" if dark_theme else "#1b2431")))
+                painter.drawText(
+                    QtCore.QPointF(min_x + 4.0, min_y - 4.0),
+                    chain[0].physical_name or chain[0].label,
+                )
+
         def paintEvent(self, _event) -> None:  # pragma: no cover - Qt only
             painter = QtGui.QPainter(self)
             painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
@@ -312,12 +444,30 @@ def build_spatial_canvas(qt_modules, nodes: list[SceneNode], *, interactive: boo
                 QtCore.QRectF(20.0, 48.0, self.width() - 40.0, 20.0),
                 f"View: {self._view_mode.upper()} | Drag axis: {self._active_axis.upper()}",
             )
-            self._draw_selected_guides(painter)
+            if self._individual_node_editing:
+                self._draw_selected_guides(painter)
+            if self._individual_node_editing:
+                self._draw_strip_links(painter, dark_theme=dark_theme)
 
+            selected = self._selected_node()
+            selected_chain_key = selected.chain_key if selected is not None else ""
+            if not self._individual_node_editing:
+                self._draw_strip_boxes(painter, dark_theme=dark_theme)
             for node in self._nodes:
+                if node.is_section and not self._individual_node_editing:
+                    continue
                 px, py = _project_node_for_view(node, view_mode=self._view_mode, config=cfg)
                 painter.setBrush(QtGui.QColor(node.color))
-                painter.setPen(QtGui.QPen(outline_color if node.selected else QtGui.QColor("#0b0f16" if dark_theme else "#4f5d73")))
+                chain_selected = bool(selected_chain_key and node.chain_key == selected_chain_key)
+                painter.setPen(
+                    QtGui.QPen(
+                        outline_color
+                        if node.selected
+                        else QtGui.QColor("#ffd166")
+                        if chain_selected
+                        else QtGui.QColor("#0b0f16" if dark_theme else "#4f5d73")
+                    )
+                )
                 radius = 12.0 if node.selected else 9.0
                 painter.drawEllipse(QtCore.QPointF(px, py), radius, radius)
                 node_label = (

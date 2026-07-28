@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .audio.system_input import list_input_devices
 from .director import DirectorConfig
-from .live import run_live_to_govee
+from .live import LiveStructureConfig, run_live_to_govee
 from .output.govee_lan import GoveeLanAdapter, GoveeLanConfig, MultiGoveeLanAdapter, TransportMode, parse_device_spec
 from .render import RenderMode, SegmentRenderer
 from .pipeline import capture_system_input_features_to_stream, extract_wav_features_to_stream
@@ -145,6 +145,13 @@ def build_parser() -> argparse.ArgumentParser:
     ble_test.add_argument("--color", type=str, default="#ff0000", help="Hex color to display.")
     ble_test.add_argument("--brightness", type=int, default=100, help="Brightness 0-100.")
     ble_test.add_argument("--duration", type=float, default=5.0, help="Duration in seconds.")
+    ble_test.add_argument("--segments", type=int, default=15, help="Segment count for strip patterns.")
+    ble_test.add_argument(
+        "--pattern",
+        choices=["solid", "walk"],
+        default="solid",
+        help="Test pattern: solid (one color) or walk (one segment at a time).",
+    )
     ble_test.add_argument(
         "--protocol", choices=["segment", "bulb"], default="segment",
         help="BLE protocol: segment (strips, default) or bulb (H6006 family).",
@@ -205,6 +212,105 @@ def build_parser() -> argparse.ArgumentParser:
     govee_live.add_argument("--frame-size", type=int, default=2048, help="Frame size in samples.")
     govee_live.add_argument("--hop-size", type=int, default=512, help="Hop size in samples.")
     govee_live.add_argument("--blocksize", type=int, default=1024, help="PortAudio callback blocksize.")
+    govee_live.add_argument(
+        "--harmonic-structure",
+        action="store_true",
+        help=(
+            "Enable live-only chord/downbeat macro reaction. "
+            "Captures for analysis only and never outputs audio."
+        ),
+    )
+    govee_live.add_argument(
+        "--structure-sensitivity",
+        type=float,
+        default=0.5,
+        help="Live harmonic/macro sensitivity from 0 to 1.",
+    )
+    govee_live.add_argument(
+        "--beats-per-bar",
+        type=int,
+        default=4,
+        help="Expected live meter size (default: 4).",
+    )
+    govee_live.add_argument(
+        "--bars-per-phrase",
+        type=int,
+        default=4,
+        help="Expected live macro cadence in bars (default: 4).",
+    )
+    govee_live.add_argument(
+        "--harmonic-frame-size",
+        type=int,
+        default=4096,
+        help="Power-of-two live harmonic FFT size.",
+    )
+    govee_live.add_argument(
+        "--harmonic-hop-multiplier",
+        type=int,
+        default=1,
+        help=(
+            "Harmonic hop as a multiple of --hop-size "
+            "(default: 1 for responsive chord diagnosis)."
+        ),
+    )
+    govee_live.add_argument(
+        "--downbeat-min-confidence",
+        type=float,
+        default=0.22,
+        help="Minimum confidence required to publish live downbeats.",
+    )
+    govee_live.add_argument(
+        "--debug-harmonics",
+        action="store_true",
+        help="Print live harmonic-change diagnostics.",
+    )
+    govee_live.add_argument(
+        "--predictive-analysis",
+        action="store_true",
+        help="Enable causal live music-structure prediction.",
+    )
+    govee_live.add_argument(
+        "--predictive-diagnostics",
+        action="store_true",
+        help="Publish bounded prediction evidence and lifecycle diagnostics.",
+    )
+    govee_live.add_argument(
+        "--predictive-live-cues",
+        action="store_true",
+        help="Enable the predictive cue master (shadow mode remains the default).",
+    )
+    govee_live.add_argument(
+        "--predictive-high-impact-cues",
+        action="store_true",
+        help="Allow confidence-gated resolution and chorus cues.",
+    )
+    govee_live.add_argument(
+        "--predictive-no-shadow",
+        dest="predictive_shadow",
+        action="store_false",
+        default=True,
+        help="Allow enabled predictive cues to reach the normal live render path.",
+    )
+    govee_live.add_argument(
+        "--structure-similarity",
+        action="store_true",
+        help="Enable chord-optional bar/phrase/anonymous-section similarity.",
+    )
+    govee_live.add_argument(
+        "--structure-diagnostics",
+        action="store_true",
+        help="Publish bounded per-bar similarity and boundary evidence.",
+    )
+    govee_live.add_argument(
+        "--structure-no-shadow",
+        dest="structure_shadow",
+        action="store_false",
+        default=True,
+        help="Allow explicitly enabled bar-locked structure actions.",
+    )
+    govee_live.add_argument("--structure-bar-actions", action="store_true")
+    govee_live.add_argument("--structure-phrase-actions", action="store_true")
+    govee_live.add_argument("--structure-section-actions", action="store_true")
     govee_live.add_argument(
         "--heartbeat-seconds",
         type=float,
@@ -437,6 +543,46 @@ def build_parser() -> argparse.ArgumentParser:
     session.add_argument("--frame-size", type=int, default=2048, help="Frame size in samples.")
     session.add_argument("--hop-size", type=int, default=512, help="Hop size in samples.")
     session.add_argument("--blocksize", type=int, default=1024, help="PortAudio callback blocksize.")
+    session.add_argument(
+        "--harmonic-structure",
+        action="store_true",
+        help=(
+            "Enable capture-only harmonic/macro analysis in reactive "
+            "session branches. Local/precompiled paths ignore it."
+        ),
+    )
+    session.add_argument(
+        "--structure-sensitivity",
+        type=float,
+        default=0.5,
+        help="Live harmonic/macro sensitivity from 0 to 1.",
+    )
+    session.add_argument(
+        "--debug-harmonics",
+        action="store_true",
+        help="Print live harmonic-change diagnostics.",
+    )
+    session.add_argument("--predictive-analysis", action="store_true")
+    session.add_argument("--predictive-diagnostics", action="store_true")
+    session.add_argument("--predictive-live-cues", action="store_true")
+    session.add_argument("--predictive-high-impact-cues", action="store_true")
+    session.add_argument(
+        "--predictive-no-shadow",
+        dest="predictive_shadow",
+        action="store_false",
+        default=True,
+    )
+    session.add_argument("--structure-similarity", action="store_true")
+    session.add_argument("--structure-diagnostics", action="store_true")
+    session.add_argument(
+        "--structure-no-shadow",
+        dest="structure_shadow",
+        action="store_false",
+        default=True,
+    )
+    session.add_argument("--structure-bar-actions", action="store_true")
+    session.add_argument("--structure-phrase-actions", action="store_true")
+    session.add_argument("--structure-section-actions", action="store_true")
     session.add_argument(
         "--probe-packets", type=int, default=None,
         help="Override probe packet count (default: 5 LAN, 10 BLE). Set to 100 for deep probe.",
@@ -781,6 +927,32 @@ def build_parser() -> argparse.ArgumentParser:
     compile_dir_cmd.add_argument("--summary", action="store_true", help="Print summary for each show.")
     compile_dir_cmd.add_argument("--cache-dir", type=str, default=None,
                                  help="Enable caching — store/check in this directory")
+
+    # -- Bake-frames command ---------------------------------------------------
+    bake_frames_cmd = sub.add_parser(
+        "bake-frames",
+        help="Bake a compiled show into an inspectable frame cache.",
+    )
+    bake_frames_cmd.add_argument("show_path", type=Path, help="Path to compiled .show.json file.")
+    bake_frames_cmd.add_argument(
+        "--config", type=Path, required=True, help="Path to YAML device config file."
+    )
+    bake_frames_cmd.add_argument(
+        "--output", "-o", type=Path, default=None, help="Output .show.frames.json path."
+    )
+    bake_frames_cmd.add_argument("--fps", type=int, default=30, help="Bake frame rate.")
+    bake_frames_cmd.add_argument(
+        "--force", action="store_true", default=False, help="Overwrite an existing artifact."
+    )
+    bake_frames_cmd.add_argument(
+        "--validate-only",
+        action="store_true",
+        default=False,
+        help="Validate an existing artifact without baking.",
+    )
+    bake_frames_cmd.add_argument(
+        "--summary", action="store_true", default=False, help="Print the baked artifact summary."
+    )
 
     # -- Compile-and-play command ----------------------------------------------
     cap_cmd = sub.add_parser(
@@ -1334,14 +1506,21 @@ def main(argv: list[str] | None = None) -> int:
         b = int(hex_color[4:6], 16)
 
         protocol = BleProtocol(args.protocol)
+        segments = max(1, int(args.segments))
+        brightness = max(0, min(100, int(args.brightness)))
+        pattern = args.pattern
+        if pattern == "walk" and protocol == BleProtocol.BULB:
+            print("Error: --pattern walk requires --protocol segment.")
+            return 1
+
         print(json.dumps(
             {"address": args.address, "color": args.color,
-             "brightness": args.brightness, "duration": args.duration,
-             "protocol": protocol.value},
+             "brightness": brightness, "duration": args.duration,
+             "protocol": protocol.value, "segments": segments, "pattern": pattern},
             separators=(",", ":"),
         ))
 
-        config = GoveeBleConfig(address=args.address, protocol=protocol)
+        config = GoveeBleConfig(address=args.address, protocol=protocol, segments=segments)
         adapter = GoveeBleAdapter(config)
         adapter.start()
 
@@ -1356,13 +1535,32 @@ def main(argv: list[str] | None = None) -> int:
             adapter.stop()
             return 1
 
-        print("Connected. Setting color...")
-        adapter.send_color(r, g, b, args.brightness)
-        time.sleep(args.duration)
+        frames_sent = 0
+        if pattern == "walk":
+            print("Connected. Walking segments...")
+            rainbow_palette = [
+                (255, 0, 0), (255, 127, 0), (255, 255, 0), (0, 255, 0),
+                (0, 255, 255), (0, 0, 255), (127, 0, 255),
+            ]
+            seg = 0
+            end_time = time.monotonic() + args.duration
+            while time.monotonic() < end_time:
+                frame = [(0, 0, 0)] * segments
+                frame[seg] = rainbow_palette[seg % len(rainbow_palette)]
+                adapter.send_segment_colors(frame, brightness)
+                frames_sent += 1
+                print(f"  segment {seg}/{segments}: {frame[seg]}")
+                seg = (seg + 1) % segments
+                time.sleep(0.3)
+        else:
+            print("Connected. Setting color...")
+            adapter.send_color(r, g, b, brightness)
+            frames_sent = 1
+            time.sleep(args.duration)
 
         print("Done. Disconnecting...")
         adapter.stop()
-        print(json.dumps({"done": True}, separators=(",", ":")))
+        print(json.dumps({"frames_sent": frames_sent, "done": True}, separators=(",", ":")))
         return 0
 
     if args.command == "govee-live":
@@ -1613,6 +1811,53 @@ def main(argv: list[str] | None = None) -> int:
                 profile=profile,
                 profile_rotation=rotation,
                 profile_chain=profile_chain,
+                structure_config=LiveStructureConfig(
+                    harmonic_structure_enabled=bool(
+                        args.harmonic_structure
+                    ),
+                    beats_per_bar=int(args.beats_per_bar),
+                    bars_per_phrase=int(args.bars_per_phrase),
+                    harmonic_frame_size=int(args.harmonic_frame_size),
+                    harmonic_hop_multiplier=int(
+                        args.harmonic_hop_multiplier
+                    ),
+                    sensitivity=float(args.structure_sensitivity),
+                    downbeat_min_confidence=float(
+                        args.downbeat_min_confidence
+                    ),
+                    debug_harmonics=bool(args.debug_harmonics),
+                    predictive_analysis_enabled=bool(
+                        args.predictive_analysis
+                    ),
+                    predictive_diagnostics_enabled=bool(
+                        args.predictive_diagnostics
+                    ),
+                    predictive_shadow_mode=bool(args.predictive_shadow),
+                    predictive_cues_enabled=bool(
+                        args.predictive_live_cues
+                    ),
+                    predictive_high_impact_cues_enabled=bool(
+                        args.predictive_high_impact_cues
+                    ),
+                    structure_similarity_enabled=bool(
+                        args.structure_similarity
+                    ),
+                    structure_similarity_diagnostics=bool(
+                        args.structure_diagnostics
+                    ),
+                    structure_similarity_shadow_mode=bool(
+                        args.structure_shadow
+                    ),
+                    structure_bar_actions_enabled=bool(
+                        args.structure_bar_actions
+                    ),
+                    structure_phrase_actions_enabled=bool(
+                        args.structure_phrase_actions
+                    ),
+                    structure_section_actions_enabled=bool(
+                        args.structure_section_actions
+                    ),
+                ),
             )
         finally:
             if capture_orchestrator is not None:
@@ -1734,6 +1979,34 @@ def main(argv: list[str] | None = None) -> int:
             playback_device=getattr(args, "playback_device", None),
             purge=getattr(args, "purge", False),
             profile_chain=session_profile_chain,
+            structure_config=LiveStructureConfig(
+                harmonic_structure_enabled=bool(args.harmonic_structure),
+                sensitivity=float(args.structure_sensitivity),
+                debug_harmonics=bool(args.debug_harmonics),
+                predictive_analysis_enabled=bool(args.predictive_analysis),
+                predictive_diagnostics_enabled=bool(
+                    args.predictive_diagnostics
+                ),
+                predictive_shadow_mode=bool(args.predictive_shadow),
+                predictive_cues_enabled=bool(args.predictive_live_cues),
+                predictive_high_impact_cues_enabled=bool(
+                    args.predictive_high_impact_cues
+                ),
+                structure_similarity_enabled=bool(args.structure_similarity),
+                structure_similarity_diagnostics=bool(
+                    args.structure_diagnostics
+                ),
+                structure_similarity_shadow_mode=bool(args.structure_shadow),
+                structure_bar_actions_enabled=bool(
+                    args.structure_bar_actions
+                ),
+                structure_phrase_actions_enabled=bool(
+                    args.structure_phrase_actions
+                ),
+                structure_section_actions_enabled=bool(
+                    args.structure_section_actions
+                ),
+            ),
         )
         print(json.dumps(summary, separators=(",", ":")))
 
@@ -2150,6 +2423,75 @@ def main(argv: list[str] | None = None) -> int:
                     print(format_summary(structure, timeline))
             except Exception as exc:
                 print(_safe(f"  [{i}/{len(files)}] {stem} - FAILED: {exc}"))
+        return 0
+
+    if args.command == "bake-frames":
+        from .show.bake import export_baked_show_frames
+        from .show.baked_frames import (
+            BakeSettings,
+            default_baked_frame_path,
+            validate_baked_frame_file,
+        )
+
+        show_path = args.show_path
+        config_path = args.config
+        output_path = args.output or default_baked_frame_path(show_path)
+        settings = BakeSettings(fps=args.fps)
+
+        if not show_path.exists():
+            print(f"Error: show file not found: {show_path}")
+            return 1
+        if not config_path.exists():
+            print(f"Error: config file not found: {config_path}")
+            return 1
+
+        if args.validate_only:
+            validation = validate_baked_frame_file(
+                output_path,
+                source_show_path=show_path,
+                device_config_path=config_path,
+                settings=settings,
+            )
+            if validation.valid:
+                print(f"Baked frames valid: {output_path}")
+                return 0
+            print(f"Baked frames invalid: {validation.reason}")
+            return 1
+
+        if output_path.exists() and not args.force:
+            validation = validate_baked_frame_file(
+                output_path,
+                source_show_path=show_path,
+                device_config_path=config_path,
+                settings=settings,
+            )
+            if validation.valid:
+                print(f"Baked frames already valid: {output_path}")
+                return 0
+            print(
+                f"Error: output exists and is {validation.reason}; "
+                f"use --force to overwrite: {output_path}"
+            )
+            return 1
+
+        try:
+            result = export_baked_show_frames(
+                show_path,
+                config_path,
+                output_path,
+                settings=settings,
+            )
+        except Exception as exc:
+            print(f"Bake failed: {exc}")
+            return 1
+
+        summary = result.artifact.summary
+        print(
+            f"Baked {summary.get('frame_count', 0)} frame(s) for "
+            f"{summary.get('node_count', 0)} node(s): {output_path}"
+        )
+        if args.summary:
+            print(json.dumps(summary, separators=(",", ":")))
         return 0
 
     if args.command == "compile-and-play":

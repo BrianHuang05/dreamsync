@@ -27,7 +27,7 @@ _logger = logging.getLogger(__name__)
 
 SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize"
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
-SCOPES = "user-read-playback-state user-read-currently-playing"
+SCOPES = "user-read-playback-state user-read-currently-playing user-modify-playback-state"
 
 TOKEN_DIR = Path.home() / ".dreamsync"
 TOKEN_PATH = TOKEN_DIR / "spotify_token.json"

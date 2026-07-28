@@ -13,6 +13,7 @@ from dreamsync.dsp.structure import LiveStructureEvent
 from dreamsync.live import (
     LiveStructureConfig,
     _advance_deadline,
+    _audio_sample_at_monotonic,
     _live_render_interval,
     _nearest_downbeat_target,
     run_live_to_govee,
@@ -83,6 +84,30 @@ def test_downbeat_nudge_chooses_nearest_side_of_beat_midpoint() -> None:
     assert _nearest_downbeat_target(10.24, 10.0, 0.5) == "previous"
     assert _nearest_downbeat_target(10.25, 10.0, 0.5) == "previous"
     assert _nearest_downbeat_target(10.26, 10.0, 0.5) == "next"
+
+
+def test_manual_keypress_maps_to_portaudio_adc_sample_not_display_time() -> None:
+    sample = _audio_sample_at_monotonic(
+        99.995,
+        sample_rate=48_000,
+        timing=(1000, 480, 10.0, 10.01, 100.0),
+        captured_samples=1480,
+        observed_at=100.2,
+    )
+
+    assert sample == 1240
+
+
+def test_manual_keypress_fallback_uses_callback_clock_not_analysis_loop() -> None:
+    sample = _audio_sample_at_monotonic(
+        99.99,
+        sample_rate=48_000,
+        timing=(1000, 480, None, None, 100.0),
+        captured_samples=1480,
+        observed_at=100.2,
+    )
+
+    assert sample == 1000
 
 
 def test_reactive_live_is_capture_only_and_reports_bounded_overflow() -> None:
@@ -180,6 +205,7 @@ def test_manual_downbeat_nudge_applies_on_next_detected_beat() -> None:
 def test_manual_secondary_beat_can_snap_to_nearest_previous_detection() -> None:
     fake_sd = _CaptureOnlySoundDevice()
     request_calls = 0
+    states: list[dict] = []
 
     def forced_beat(estimator, *_args, **_kwargs):
         estimator.last_onset = 1.0
@@ -209,6 +235,7 @@ def test_manual_secondary_beat_can_snap_to_nearest_previous_detection() -> None:
             hop_size=16,
             blocksize=64,
             auto_cycle=False,
+            state_callback=states.append,
             downbeat_nudge_request_getter=request_after_first_processing_pass,
         )
 
@@ -221,6 +248,8 @@ def test_manual_secondary_beat_can_snap_to_nearest_previous_detection() -> None:
     assert latch_events[0]["beat_kind"] == "beat"
     assert summary["manual_downbeat_nudges"] == 0
     assert summary["manual_beat_latches"] == 1
+    marker = states[-1]["manual_beat_markers"][0]
+    assert marker["t"] in states[-1]["detected_beat_times"]
 
 
 def test_manual_new_session_request_restarts_live_detection_state() -> None:

@@ -72,7 +72,23 @@ class QueueService:
 
     def insert_local_track(self, session: LocalPlaylistSession, index: int, path: Path | str) -> dict[str, Any]:
         session.insert_track(index, path)
+        request_precompile = getattr(session, "request_precompile_upcoming", None)
+        if callable(request_precompile):
+            request_precompile()
         return self.local_queue_snapshot(session)
+
+    def append_playlist_track(self, playlist: PlaylistManager, path: Path | str) -> dict[str, Any]:
+        playlist.append(path)
+        return self.playlist_snapshot(playlist)
+
+    def insert_playlist_track(
+        self,
+        playlist: PlaylistManager,
+        index: int,
+        path: Path | str,
+    ) -> dict[str, Any]:
+        playlist.insert(index, path)
+        return self.playlist_snapshot(playlist)
 
     def skip_local_track(self, session: LocalPlaylistSession) -> dict[str, Any]:
         session.skip_current()
@@ -84,6 +100,14 @@ class QueueService:
 
     def shuffle_local(self, session: LocalPlaylistSession) -> dict[str, Any]:
         session.shuffle_queue()
+        return self.local_queue_snapshot(session)
+
+    def set_playlist_repeat(self, playlist: PlaylistManager, enabled: bool) -> dict[str, Any]:
+        playlist.set_repeat(enabled)
+        return self.playlist_snapshot(playlist)
+
+    def set_local_repeat(self, session: LocalPlaylistSession, enabled: bool) -> dict[str, Any]:
+        session.set_repeat(enabled)
         return self.local_queue_snapshot(session)
 
     def spotify_queue_snapshot(
@@ -116,9 +140,69 @@ class QueueService:
         client.set_shuffle(enabled)
 
     @staticmethod
+    def spotify_track_change_timing(new_track, old_track=None) -> dict[str, Any]:
+        """Build capture timing data for an immediate Spotify track change."""
+        current_song = {
+            "song_title": new_track.name,
+            "artist": new_track.artist,
+            "album": new_track.album,
+        }
+        timing_data: dict[str, Any] = {
+            "song_durations": [new_track.duration_ms / 1000.0],
+            "current_playback_time": 0.0,
+            "current_song": current_song,
+            "songs": [current_song],
+        }
+        if old_track is not None:
+            timing_data["previous_song"] = {
+                "song_title": old_track.name,
+                "artist": old_track.artist,
+                "album": old_track.album,
+            }
+        return timing_data
+
+    @staticmethod
+    def spotify_capture_timing_snapshot(watcher: SpotifyQueueWatcher) -> dict[str, Any] | None:
+        """Build the periodic capture timing snapshot from watcher state."""
+        snapshot = watcher.snapshot()
+        queue = snapshot.get("queue")
+        playback_state = snapshot.get("playback_state")
+        current = getattr(playback_state, "track", None)
+        if current is None:
+            current = getattr(queue, "currently_playing", None)
+        if current is None:
+            return None
+
+        queued_tracks = tuple(
+            track
+            for track in (getattr(queue, "queue", ()) or ())
+            if track.track_id != current.track_id
+        )
+        tracks = (current, *queued_tracks)
+        songs = [
+            {
+                "song_title": track.name,
+                "artist": track.artist,
+                "album": track.album,
+            }
+            for track in tracks
+        ]
+        return {
+            "song_durations": [track.duration_ms / 1000.0 for track in tracks],
+            "current_playback_time": (
+                getattr(playback_state, "progress_ms", 0) / 1000.0
+                if playback_state is not None
+                else 0.0
+            ),
+            "current_song": songs[0],
+            "songs": songs,
+        }
+
+    @staticmethod
     def _track_row(track: Path | str, *, index: int, current_index: int) -> dict[str, Any]:
         path = Path(track)
         return {
+            "index": index,
             "track_key": track_key_for_path(path),
             "display_name": path.name,
             "path": str(path),

@@ -65,6 +65,18 @@ def test_reactive_settings_accept_wave_and_gradient():
     assert ReactiveSettings(render_mode="gradient").validate() == ()
 
 
+def test_reactive_settings_support_song_change_profile_cycle():
+    settings = ReactiveSettings(
+        profile_strategy="song_change_rotation",
+        rotation_profiles=("aurora", "sunset"),
+    )
+
+    assert settings.validate() == ()
+    assert ReactiveSettings(profile_strategy="song_change_rotation").validate() == (
+        "Provide one or more profiles before starting Reactive profile cycling.",
+    )
+
+
 def test_worker_pool_success_and_failure():
     pool = WorkerPool(max_workers=2)
     try:

@@ -205,7 +205,7 @@ class LiveBeatSequencer:
 
 
 class LiveCycleTempoOverride:
-    """Force the detector grid onto a half- or double-time subdivision."""
+    """Force subdivision and let quantized manual goalposts own the cycle grid."""
 
     _ALLOWED = (0.5, 1.0, 2.0)
 
@@ -213,6 +213,29 @@ class LiveCycleTempoOverride:
         self.multiplier = 1.0
         self._half_emit_next = True
         self._pending_double_t: float | None = None
+        self._manual_active = False
+        self._manual_period = 0.0
+        self._manual_anchor_t: float | None = None
+        self._manual_next_t: float | None = None
+        self._manual_intervals: deque[float] = deque(maxlen=7)
+        self._last_emitted_beat_t: float | None = None
+        self._last_goalpost_correction = 0.0
+
+    @property
+    def manual_active(self) -> bool:
+        return self._manual_active
+
+    @property
+    def manual_bpm(self) -> float:
+        return 60.0 / self._manual_period if self._manual_period > 0.0 else 0.0
+
+    @property
+    def last_emitted_beat_t(self) -> float | None:
+        return self._last_emitted_beat_t
+
+    @property
+    def last_goalpost_correction(self) -> float:
+        return self._last_goalpost_correction
 
     def set_multiplier(self, multiplier: float) -> None:
         value = float(multiplier)
@@ -223,10 +246,81 @@ class LiveCycleTempoOverride:
         self.multiplier = value
         self._half_emit_next = True
         self._pending_double_t = None
+        self._reset_manual_grid()
 
     def reset(self) -> None:
         self._half_emit_next = True
         self._pending_double_t = None
+        self._last_emitted_beat_t = None
+        self._reset_manual_grid()
+
+    def _reset_manual_grid(self) -> None:
+        self._manual_active = False
+        self._manual_period = 0.0
+        self._manual_anchor_t = None
+        self._manual_next_t = None
+        self._manual_intervals.clear()
+        self._last_goalpost_correction = 0.0
+
+    def register_goalpost(
+        self,
+        *,
+        t: float,
+        bpm: float,
+        quantum: float,
+    ) -> tuple[float, str]:
+        """Quantize a manual timing reference without replacing auto tracking.
+
+        The goalpost identifies the closest current cycle beat. The underlying
+        automatic tracker is nudged separately and remains the clock source;
+        these interval estimates are diagnostic evidence only.
+        """
+
+        raw_t = float(t)
+        step = max(1e-6, float(quantum))
+        goal_t = round(raw_t / step) * step
+        prior_period = (
+            self._manual_period
+            if self._manual_period > 0.0
+            else 60.0 / float(bpm)
+            if bpm > 0.0
+            else 0.5
+        )
+        prior_period = max(0.12, min(2.0, prior_period))
+
+        if self._manual_anchor_t is not None:
+            elapsed = goal_t - self._manual_anchor_t
+            if elapsed > step:
+                steps = max(1, int(round(elapsed / prior_period)))
+                observed_period = elapsed / steps
+                if prior_period * 0.65 <= observed_period <= prior_period * 1.35:
+                    self._manual_intervals.append(observed_period)
+                    self._manual_period = statistics.median(
+                        self._manual_intervals
+                    )
+        if self._manual_period <= 0.0:
+            self._manual_period = prior_period
+
+        target = "next"
+        correction = 0.0
+        if self._last_emitted_beat_t is not None:
+            elapsed_since_last = goal_t - self._last_emitted_beat_t
+            nearest_steps = int(round(elapsed_since_last / self._manual_period))
+            nearest_t = (
+                self._last_emitted_beat_t
+                + nearest_steps * self._manual_period
+            )
+            correction = goal_t - nearest_t
+            if nearest_steps <= 0:
+                target = "previous"
+
+        self._manual_active = True
+        self._manual_anchor_t = goal_t
+        self._last_goalpost_correction = correction
+        self._manual_next_t = None
+        self._half_emit_next = True
+        self._pending_double_t = None
+        return goal_t, target
 
     def update(
         self,
@@ -238,28 +332,85 @@ class LiveCycleTempoOverride:
         bpm = max(0.0, float(detected_bpm))
         if bpm <= 0.0:
             self._pending_double_t = None
-            return 0.0, False
-        if self.multiplier == 1.0:
-            return bpm, bool(detected_beat)
-        if self.multiplier == 0.5:
-            if not detected_beat:
-                return bpm * 0.5, False
-            emit = self._half_emit_next
-            self._half_emit_next = not self._half_emit_next
-            return bpm * 0.5, emit
+            effective_bpm = self.manual_bpm
+            automatic_beat = False
+        elif self.multiplier == 1.0:
+            effective_bpm = bpm
+            automatic_beat = bool(detected_beat)
+        elif self.multiplier == 0.5:
+            effective_bpm = bpm * 0.5
+            automatic_beat = False
+            if detected_beat:
+                automatic_beat = self._half_emit_next
+                self._half_emit_next = not self._half_emit_next
+        else:
+            effective_bpm = bpm * 2.0
+            automatic_beat = False
+            period = 60.0 / bpm
+            if (
+                self._pending_double_t is not None
+                and float(t) >= self._pending_double_t
+            ):
+                automatic_beat = True
+                self._pending_double_t = None
+            if detected_beat:
+                self._pending_double_t = float(t) + (period * 0.5)
+                automatic_beat = True
 
-        period = 60.0 / bpm
-        subdivision = False
-        if (
-            self._pending_double_t is not None
-            and float(t) >= self._pending_double_t
-        ):
-            subdivision = True
-            self._pending_double_t = None
-        if detected_beat:
-            self._pending_double_t = float(t) + (period * 0.5)
-            return bpm * 2.0, True
-        return bpm * 2.0, subdivision
+        if automatic_beat:
+            self._last_emitted_beat_t = float(t)
+        return effective_bpm, automatic_beat
+
+
+def _predict_upcoming_beats(
+    *,
+    now_t: float,
+    bpm: float,
+    last_beat_t: float | None,
+    meter_state: LiveMeterState,
+    beats_per_bar: int,
+    horizon_seconds: float = 10.0,
+) -> tuple[dict[str, object], ...]:
+    """Project the current causal beat grid into a bounded display horizon."""
+
+    if (
+        bpm <= 0.0
+        or last_beat_t is None
+        or not math.isfinite(last_beat_t)
+        or beats_per_bar < 2
+    ):
+        return ()
+    period = 60.0 / float(bpm)
+    if not math.isfinite(period) or period <= 0.0:
+        return ()
+    now = float(now_t)
+    horizon = max(period, float(horizon_seconds))
+    first_step = max(1, int(math.floor((now - last_beat_t) / period)) + 1)
+    latest_phase = (
+        int(meter_state.bar_phase)
+        if meter_state.meter_confident and meter_state.bar_phase is not None
+        else None
+    )
+    rows: list[dict[str, object]] = []
+    step = first_step
+    while len(rows) < 64:
+        beat_t = float(last_beat_t) + step * period
+        if beat_t > now + horizon + 1e-6:
+            break
+        phase = (
+            (latest_phase + step) % beats_per_bar
+            if latest_phase is not None
+            else None
+        )
+        rows.append(
+            {
+                "t": round(beat_t, 6),
+                "downbeat": phase == 0 if phase is not None else False,
+                "beat_in_bar": phase + 1 if phase is not None else None,
+            }
+        )
+        step += 1
+    return tuple(rows)
 
 
 def _meter_beat_accent(
@@ -480,6 +631,9 @@ class CyclicBeatGridTracker:
         self._onsets: deque[tuple[float, float]] = deque()
         self._period = 0.0
         self._phase_anchor = 0.0
+        self._manual_goalpost_t: float | None = None
+        self._manual_periods: deque[float] = deque(maxlen=7)
+        self._manual_period = 0.0
         self._next_beat_t: float | None = None
         self.confidence = 0.0
         self._last_candidate_t = -1e9
@@ -491,6 +645,28 @@ class CyclicBeatGridTracker:
     @property
     def bpm(self) -> float:
         return 60.0 / self._period if self._period > 0.0 else 0.0
+
+    @property
+    def manual_bpm(self) -> float:
+        return (
+            60.0 / self._manual_period
+            if self._manual_period > 0.0
+            else 0.0
+        )
+
+    @property
+    def manual_tempo_confidence(self) -> float:
+        return min(1.0, len(self._manual_periods) / 4.0)
+
+    @property
+    def manual_interpretation_active(self) -> bool:
+        return (
+            self.manual_tempo_confidence >= 0.5
+            and self.manual_bpm > 0.0
+            and self.bpm > 0.0
+            and abs(self.bpm - self.manual_bpm)
+            <= self.manual_bpm * 0.12
+        )
 
     def observe(self, t: float, strength: float = 1.0) -> None:
         """Record a thresholded onset candidate without declaring a beat."""
@@ -531,20 +707,36 @@ class CyclicBeatGridTracker:
                 period = base_period * (1.0 + percent / 100.0)
                 if 0.25 <= period <= 1.5:
                     periods.add(round(period, 5))
+        if self._manual_period > 0.0:
+            for percent in range(-6, 7, 2):
+                period = self._manual_period * (1.0 + percent / 100.0)
+                if 0.2 <= period <= 2.0:
+                    periods.add(round(period, 5))
 
         if not periods:
             self.confidence *= 0.92
             return 0.0
 
-        best: tuple[float, float, float] | None = None
+        best: tuple[float, float, float, float] | None = None
         for period in periods:
             support, refined_period = self._score_period(period)
-            if best is None or support > best[0]:
-                best = (support, refined_period, period)
+            preference = 0.0
+            if self._manual_period > 0.0:
+                relative_error = abs(
+                    period - self._manual_period
+                ) / self._manual_period
+                preference = (
+                    0.9
+                    * self.manual_tempo_confidence
+                    * math.exp(-0.5 * (relative_error / 0.08) ** 2)
+                )
+            objective = support + preference
+            if best is None or objective > best[0]:
+                best = (objective, support, refined_period, period)
 
         if best is None:
             return 0.0
-        support, refined_period, _ = best
+        _objective, support, refined_period, selected_period = best
         # Random transient pairs have approximately 10–15% accidental
         # alignment with this tolerance.  Require a substantially stronger
         # repeating pattern before allowing it to drive the metronome.
@@ -552,6 +744,19 @@ class CyclicBeatGridTracker:
             self.confidence *= 0.85
             return 0.0
 
+        if (
+            self._manual_period > 0.0
+            and abs(selected_period - self._manual_period)
+            <= self._manual_period * 0.12
+        ):
+            manual_weight = min(
+                0.65,
+                0.15 + 0.5 * self.manual_tempo_confidence,
+            )
+            refined_period = (
+                (1.0 - manual_weight) * refined_period
+                + manual_weight * self._manual_period
+            )
         self._period = refined_period
         self._phase_anchor = self._dominant_phase_anchor(refined_period)
         self.confidence = (
@@ -588,10 +793,43 @@ class CyclicBeatGridTracker:
             return 0.0
         return ((t - self._phase_anchor) / self._period) % 1.0
 
+    def nudge_to_goalpost(
+        self,
+        t: float,
+        *,
+        target: str,
+    ) -> bool:
+        """Apply bounded phase and tempo evidence from a manual goalpost."""
+
+        goal_t = float(t)
+        if (
+            self._manual_goalpost_t is not None
+            and goal_t > self._manual_goalpost_t
+        ):
+            elapsed = goal_t - self._manual_goalpost_t
+            if 0.18 <= elapsed <= 2.0:
+                self._manual_periods.append(elapsed)
+                self._manual_period = statistics.median(
+                    self._manual_periods
+                )
+        self._manual_goalpost_t = goal_t
+
+        if not self.active or self._period <= 0.0:
+            return False
+        nearest_step = round((goal_t - self._phase_anchor) / self._period)
+        nearest_t = self._phase_anchor + nearest_step * self._period
+        self._next_beat_t = (
+            nearest_t if target == "next" else nearest_t + self._period
+        )
+        return True
+
     def reset(self) -> None:
         self._onsets.clear()
         self._period = 0.0
         self._phase_anchor = 0.0
+        self._manual_goalpost_t = None
+        self._manual_periods.clear()
+        self._manual_period = 0.0
         self._next_beat_t = None
         self.confidence = 0.0
         self._last_candidate_t = -1e9
@@ -729,6 +967,18 @@ class LiveBpmEstimator:
         self._zero_estimate_count = 0
         self._last_autocorr_confidence = 0.0
         self._last_onset_activity = 0.0
+
+    def nudge_beat_grid(self, t: float, *, target: str) -> None:
+        """Realign beat phase while leaving audio tempo tracking engaged."""
+
+        if not self._cyclic_grid.nudge_to_goalpost(
+            t,
+            target=target,
+        ):
+            # The short-window fallback is an integrating phase clock. A
+            # goalpost marks phase zero; subsequent BPM updates continue to
+            # supply its period, so this does not become a manual oscillator.
+            self._beat_phase = 0.0
 
     def reset(self) -> None:
         """Clear accumulated state for a new song."""
@@ -880,6 +1130,10 @@ class LiveBpmEstimator:
                 )
                 self.last_cyclic_bpm = cyclic_bpm
                 self.last_cyclic_confidence = self._cyclic_grid.confidence
+                manual_interpretation = (
+                    cyclic_bpm > 0.0
+                    and self._cyclic_grid.manual_interpretation_active
+                )
                 if cyclic_bpm > 0.0:
                     # The short window can still respond to real tempo
                     # changes.  A stable long-window cycle damps only enough
@@ -889,16 +1143,33 @@ class LiveBpmEstimator:
                         0.55,
                         max(0.0, (self.last_cyclic_confidence - 0.35) / 0.65),
                     )
-                    cyclic_bpm = self._normalize_bpm(cyclic_bpm)
-                    bpm = (
-                        (1.0 - cycle_weight) * bpm + cycle_weight * cyclic_bpm
-                        if bpm > 0.0
-                        else cyclic_bpm
-                    )
+                    if self._cyclic_grid.manual_tempo_confidence > 0.0:
+                        cycle_weight = max(
+                            cycle_weight,
+                            min(
+                                0.75,
+                                0.35
+                                + 0.4
+                                * self._cyclic_grid.manual_tempo_confidence,
+                            ),
+                        )
+                    if manual_interpretation:
+                        bpm = cyclic_bpm
+                    else:
+                        cyclic_bpm = self._normalize_bpm(cyclic_bpm)
+                        bpm = (
+                            (1.0 - cycle_weight) * bpm
+                            + cycle_weight * cyclic_bpm
+                            if bpm > 0.0
+                            else cyclic_bpm
+                        )
                 if bpm > 0.0:
-                    bpm = self._normalize_bpm(bpm)
-                    bpm = self._snap_to_last(bpm)
-                    self.last_bpm = self._apply_inertia(bpm)
+                    if manual_interpretation:
+                        self.last_bpm = max(30.0, min(320.0, bpm))
+                    else:
+                        bpm = self._normalize_bpm(bpm)
+                        bpm = self._snap_to_last(bpm)
+                        self.last_bpm = self._apply_inertia(bpm)
                     self._zero_estimate_count = 0
                 else:
                     self._zero_estimate_count += 1
@@ -2938,6 +3209,60 @@ def _nearest_downbeat_target(
     return "previous" if previous_distance <= next_distance else "next"
 
 
+def _audio_sample_at_monotonic(
+    requested_at: float,
+    *,
+    sample_rate: int,
+    timing: tuple[int, int, float | None, float | None, float] | None,
+    captured_samples: int,
+    observed_at: float,
+) -> int:
+    """Map a UI event's monotonic time onto the captured input sample clock.
+
+    PortAudio's ADC/current timestamps remove callback and processing latency.
+    The callback timestamp fallback still anchors against the actual block
+    arrival instead of incorrectly treating the analysis-loop time as audio
+    time.
+    """
+
+    rate = max(1, int(sample_rate))
+    if timing is not None:
+        start, frames, adc_time, pa_current_time, callback_at = timing
+        if (
+            adc_time is not None
+            and pa_current_time is not None
+            and math.isfinite(adc_time)
+            and math.isfinite(pa_current_time)
+        ):
+            request_pa_time = float(pa_current_time) + (
+                float(requested_at) - float(callback_at)
+            )
+            sample = int(
+                round(
+                    int(start)
+                    + (request_pa_time - float(adc_time)) * rate
+                )
+            )
+            return max(0, sample)
+        sample = int(
+            round(
+                int(start)
+                + int(frames)
+                + (float(requested_at) - float(callback_at)) * rate
+            )
+        )
+        return max(0, min(int(captured_samples), sample))
+    return max(
+        0,
+        int(
+            round(
+                int(captured_samples)
+                - max(0.0, float(observed_at) - float(requested_at)) * rate
+            )
+        ),
+    )
+
+
 def _p95(values: deque[float]) -> float:
     if not values:
         return 0.0
@@ -3259,6 +3584,9 @@ def run_live_to_govee(
     # The GUI needs a direct signal that the operating system is actually
     # delivering input, not merely that the reactive thread was started.
     last_input_callback_at = 0.0
+    latest_audio_clock: (
+        tuple[int, int, float | None, float | None, float] | None
+    ) = None
     waveform_window_seconds = 10.0
     # The diagnostic is deliberately low-rate.  It must never contend with
     # the audio callback or the beat detector for CPU time.
@@ -3407,6 +3735,7 @@ def run_live_to_govee(
 
     def _callback(indata, frames, time_info, status) -> None:
         nonlocal dropped_blocks, captured_samples, last_input_callback_at
+        nonlocal latest_audio_clock
         if status and getattr(status, "input_overflow", False):
             dropped_blocks += 1
         frame_count = int(frames)
@@ -3415,6 +3744,18 @@ def run_live_to_govee(
         callback_at = time.monotonic()
         last_input_callback_at = callback_at
         adc_time = getattr(time_info, "inputBufferAdcTime", None)
+        pa_current_time = getattr(time_info, "currentTime", None)
+        latest_audio_clock = (
+            capture_sample_index,
+            frame_count,
+            float(adc_time) if adc_time is not None else None,
+            (
+                float(pa_current_time)
+                if pa_current_time is not None
+                else None
+            ),
+            callback_at,
+        )
         audio_ring.write_from_callback(
             indata,
             frames=frame_count,
@@ -3455,12 +3796,18 @@ def run_live_to_govee(
     pending_predictive_chord_change = False
     pending_downbeat_nudge_revision = 0
     pending_downbeat_nudge_requested_at = 0.0
+    pending_manual_request_sample_index: int | None = None
     pending_manual_beat_kind = "downbeat"
+    manual_goalpost_registered_revision = 0
+    pending_manual_goalpost_t: float | None = None
+    pending_manual_goalpost_target = ""
     pending_detection_reset = False
     applied_downbeat_nudge_revision = 0
     manual_downbeat_nudge_count = 0
     manual_beat_latch_count = 0
     manual_detection_reset_count = 0
+    automatic_detection_reset_count = 0
+    last_detection_reset_reason = ""
     manual_downbeat_nudge_last_t: float | None = None
     manual_downbeat_nudge_previous_phase: int | None = None
     manual_downbeat_nudge_target = ""
@@ -3603,6 +3950,11 @@ def run_live_to_govee(
             t=applied_t,
             kind=normalized_kind,
             beat_index=beat_index,
+            intent_t=(
+                pending_manual_goalpost_t
+                if pending_manual_goalpost_t is not None
+                else applied_t
+            ),
         )
         manual_beat_latch_count += 1
         if normalized_kind == "downbeat":
@@ -3673,6 +4025,12 @@ def run_live_to_govee(
                     manual_downbeat_nudge_last_t = None
                     manual_downbeat_nudge_previous_phase = None
                     manual_downbeat_nudge_target = ""
+                    manual_goalpost_registered_revision = (
+                        applied_downbeat_nudge_revision
+                    )
+                    pending_manual_goalpost_t = None
+                    pending_manual_goalpost_target = ""
+                    pending_manual_request_sample_index = None
                     last_detected_beat_stream_t = None
                     last_detected_beat_period = (
                         60.0 / current_cycle_bpm
@@ -3686,6 +4044,15 @@ def run_live_to_govee(
                 if request_revision > pending_downbeat_nudge_revision:
                     pending_downbeat_nudge_revision = request_revision
                     pending_downbeat_nudge_requested_at = now
+                    pending_manual_request_sample_index = (
+                        _audio_sample_at_monotonic(
+                            now,
+                            sample_rate=sample_rate,
+                            timing=latest_audio_clock,
+                            captured_samples=captured_samples,
+                            observed_at=now,
+                        )
+                    )
                     pending_manual_beat_kind = "downbeat"
             if downbeat_nudge_request_getter is not None:
                 request = downbeat_nudge_request_getter()
@@ -3694,6 +4061,15 @@ def run_live_to_govee(
                     pending_downbeat_nudge_revision = request_revision
                     pending_downbeat_nudge_requested_at = float(
                         request[1] or now
+                    )
+                    pending_manual_request_sample_index = (
+                        _audio_sample_at_monotonic(
+                            pending_downbeat_nudge_requested_at,
+                            sample_rate=sample_rate,
+                            timing=latest_audio_clock,
+                            captured_samples=captured_samples,
+                            observed_at=now,
+                        )
                     )
                     pending_manual_beat_kind = (
                         str(request[2])
@@ -3704,24 +4080,63 @@ def run_live_to_govee(
                         pending_detection_reset = True
             if (
                 pending_downbeat_nudge_revision
-                > applied_downbeat_nudge_revision
-                and last_detected_beat_stream_t is not None
+                > manual_goalpost_registered_revision
                 and pending_manual_beat_kind != "reset"
+                and (
+                    pending_manual_request_sample_index is None
+                    or pending_manual_request_sample_index
+                    <= captured_samples
+                )
             ):
                 request_stream_t = (
-                    captured_samples / float(sample_rate)
-                ) - max(0.0, now - pending_downbeat_nudge_requested_at)
-                if _nearest_downbeat_target(
-                    request_stream_t,
-                    last_detected_beat_stream_t,
-                    last_detected_beat_period,
-                ) == "previous":
+                    pending_manual_request_sample_index / float(sample_rate)
+                    if pending_manual_request_sample_index is not None
+                    else captured_samples / float(sample_rate)
+                )
+                goalpost_bpm = (
+                    current_cycle_bpm
+                    if current_cycle_bpm > 0.0
+                    else 60.0 / max(1e-6, last_detected_beat_period)
+                )
+                (
+                    pending_manual_goalpost_t,
+                    pending_manual_goalpost_target,
+                ) = cycle_tempo.register_goalpost(
+                    t=request_stream_t,
+                    bpm=goalpost_bpm,
+                    quantum=hop_size / float(sample_rate),
+                )
+                bpm_estimator.nudge_beat_grid(
+                    pending_manual_goalpost_t,
+                    target=pending_manual_goalpost_target,
+                )
+                manual_goalpost_registered_revision = (
+                    pending_downbeat_nudge_revision
+                )
+                if (
+                    pending_manual_goalpost_target == "previous"
+                    and last_detected_beat_stream_t is not None
+                    and meter_tracker.beat_index >= 0
+                ):
+                    previous_beat_t = last_detected_beat_stream_t
                     _register_manual_beat(
                         revision=pending_downbeat_nudge_revision,
-                        applied_t=last_detected_beat_stream_t,
+                        applied_t=previous_beat_t,
                         target="previous",
                         kind=pending_manual_beat_kind,
                     )
+                    if pending_manual_beat_kind == "downbeat":
+                        if (
+                            detected_downbeat_times
+                            and abs(
+                                detected_downbeat_times[-1]
+                                - previous_beat_t
+                            )
+                            <= 1e-6
+                        ):
+                            detected_downbeat_times[-1] = previous_beat_t
+                        else:
+                            detected_downbeat_times.append(previous_beat_t)
             if (
                 structure_action_controls_getter is not None
                 and live_structure.structure_similarity_enabled
@@ -3874,6 +4289,9 @@ def run_live_to_govee(
                     boundary_type = "crossfade"
 
                 if boundary_type is not None:
+                    last_detection_reset_reason = boundary_type
+                    if boundary_type != "manual":
+                        automatic_detection_reset_count += 1
                     # Song boundary: reset all state
                     bpm_estimator.reset()
                     cycle_tempo.reset()
@@ -3946,6 +4364,12 @@ def run_live_to_govee(
                     manual_downbeat_nudge_last_t = None
                     manual_downbeat_nudge_previous_phase = None
                     manual_downbeat_nudge_target = ""
+                    manual_goalpost_registered_revision = (
+                        pending_downbeat_nudge_revision
+                    )
+                    pending_manual_goalpost_t = None
+                    pending_manual_goalpost_target = ""
+                    pending_manual_request_sample_index = None
                     last_detected_beat_stream_t = None
                     last_detected_beat_period = 0.5
                     if boundary_type == "manual":
@@ -3995,8 +4419,13 @@ def run_live_to_govee(
                         )
 
                 if beat:
+                    beat_event_t = (
+                        cycle_tempo.last_emitted_beat_t
+                        if cycle_tempo.last_emitted_beat_t is not None
+                        else stream_t
+                    )
                     meter_state = meter_tracker.observe_beat(
-                        t=stream_t,
+                        t=beat_event_t,
                         bpm=bpm,
                         low_frequency=sf.kick_energy,
                         onset_strength=bpm_estimator.last_onset,
@@ -4018,11 +4447,15 @@ def run_live_to_govee(
                     ):
                         _register_manual_beat(
                             revision=pending_downbeat_nudge_revision,
-                            applied_t=stream_t,
-                            target="next",
+                            applied_t=beat_event_t,
+                            target=(
+                                pending_manual_goalpost_target
+                                if pending_manual_goalpost_target
+                                else "next"
+                            ),
                             kind=pending_manual_beat_kind,
                         )
-                    last_detected_beat_stream_t = stream_t
+                    last_detected_beat_stream_t = beat_event_t
                     last_detected_beat_period = (
                         60.0 / bpm
                         if bpm > 0.0
@@ -4117,9 +4550,9 @@ def run_live_to_govee(
                 if beat:
                     beat_count += 1
                     beat_this_tick = True
-                    detected_beat_times.append(stream_t)
+                    detected_beat_times.append(beat_event_t)
                     if beat_accent.downbeat:
-                        detected_downbeat_times.append(stream_t)
+                        detected_downbeat_times.append(beat_event_t)
                     pending_render_beat = True
                     pending_render_downbeat = (
                         pending_render_downbeat or beat_accent.downbeat
@@ -4721,6 +5154,12 @@ def run_live_to_govee(
                         "manual_detection_reset_count": (
                             manual_detection_reset_count
                         ),
+                        "automatic_detection_reset_count": (
+                            automatic_detection_reset_count
+                        ),
+                        "last_detection_reset_reason": (
+                            last_detection_reset_reason
+                        ),
                         "manual_beat_latch_pending_kind": (
                             pending_manual_beat_kind
                             if pending_downbeat_nudge_revision
@@ -4733,6 +5172,23 @@ def run_live_to_govee(
                         ),
                         "manual_meter_beats_per_bar": (
                             manual_meter_beats_per_bar
+                        ),
+                        "manual_grid_active": cycle_tempo.manual_active,
+                        "manual_grid_bpm": round(
+                            cycle_tempo.manual_bpm,
+                            3,
+                        ),
+                        "manual_grid_last_correction_ms": round(
+                            cycle_tempo.last_goalpost_correction * 1000.0,
+                            3,
+                        ),
+                        "manual_tempo_goal_bpm": round(
+                            bpm_estimator._cyclic_grid.manual_bpm,
+                            3,
+                        ),
+                        "manual_tempo_confidence": round(
+                            bpm_estimator._cyclic_grid.manual_tempo_confidence,
+                            4,
                         ),
                         "meter_time_signature": (
                             manual_meter_beats_per_bar,
@@ -4920,6 +5376,12 @@ def run_live_to_govee(
                         "manual_detection_reset_count": (
                             manual_detection_reset_count
                         ),
+                        "automatic_detection_reset_count": (
+                            automatic_detection_reset_count
+                        ),
+                        "last_detection_reset_reason": (
+                            last_detection_reset_reason
+                        ),
                         "manual_beat_latch_pending_kind": (
                             pending_manual_beat_kind
                             if pending_downbeat_nudge_revision
@@ -4932,6 +5394,23 @@ def run_live_to_govee(
                         ),
                         "manual_meter_beats_per_bar": (
                             manual_meter_beats_per_bar
+                        ),
+                        "manual_grid_active": cycle_tempo.manual_active,
+                        "manual_grid_bpm": round(
+                            cycle_tempo.manual_bpm,
+                            3,
+                        ),
+                        "manual_grid_last_correction_ms": round(
+                            cycle_tempo.last_goalpost_correction * 1000.0,
+                            3,
+                        ),
+                        "manual_tempo_goal_bpm": round(
+                            bpm_estimator._cyclic_grid.manual_bpm,
+                            3,
+                        ),
+                        "manual_tempo_confidence": round(
+                            bpm_estimator._cyclic_grid.manual_tempo_confidence,
+                            4,
                         ),
                         "meter_time_signature": (
                             manual_meter_beats_per_bar,
@@ -5131,6 +5610,14 @@ def run_live_to_govee(
                         "detected_beat_times": tuple(detected_beat_times),
                         "detected_downbeat_times": tuple(
                             detected_downbeat_times
+                        ),
+                        "predicted_beat_times": _predict_upcoming_beats(
+                            now_t=stream_t,
+                            bpm=effective_bpm,
+                            last_beat_t=last_detected_beat_stream_t,
+                            meter_state=meter_state,
+                            beats_per_bar=manual_meter_beats_per_bar,
+                            horizon_seconds=waveform_window_seconds,
                         ),
                         "waveform_window_seconds": waveform_window_seconds,
                     })

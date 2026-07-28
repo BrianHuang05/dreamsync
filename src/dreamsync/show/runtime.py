@@ -67,6 +67,7 @@ class ShowPlaybackRuntime:
         self._frames_sent: int = 0
         self._cues_played: int = 0
         self._beats_hit: int = 0
+        self._prepared_spatial_keys: dict[int, object] = {}
 
     def tick(self, t: float) -> bool:
         """Advance the show to time *t*.
@@ -113,10 +114,36 @@ class ShowPlaybackRuntime:
         runtime_params = dict(effective_cue.params)
         runtime_params["_render_mode"] = effective_cue.render_mode
         runtime_params["_spatial_palette"] = effective_cue.color_palette
+        runtime_params["_spatial_t"] = max(0.0, t - effective_cue.t)
+        prepared_key = None if getattr(control_state, "active", False) else self._prepared_spatial_keys.get(id(cue))
+        if prepared_key is not None:
+            runtime_params["_prepared_spatial_key"] = prepared_key
         sent = self._multi_adapter.send_frame(t, intent, beat=beat, params=runtime_params)
         if sent:
             self._frames_sent += 1
         return sent
+
+    def prepare_spatial_playback(self) -> int:
+        """Resolve cue spatial descriptors before playback starts."""
+        prepare = getattr(self._multi_adapter, "prepare_spatial_cue", None)
+        if not callable(prepare):
+            return 0
+        clear = getattr(self._multi_adapter, "clear_prepared_spatial_cues", None)
+        if callable(clear):
+            clear()
+        prepared = 0
+        self._prepared_spatial_keys.clear()
+        for index, cue in enumerate(self._timeline.cues):
+            intent = self._build_intent(cue, cue.t)
+            params = dict(cue.params)
+            params["_render_mode"] = cue.render_mode
+            params["_spatial_palette"] = cue.color_palette
+            params["_spatial_t"] = 0.0
+            key = (round(float(cue.t), 4), index)
+            if prepare(key, intent, params=params):
+                self._prepared_spatial_keys[id(cue)] = key
+                prepared += 1
+        return prepared
 
     @property
     def current_cue(self) -> ShowCue | None:

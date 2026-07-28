@@ -1,4 +1,4 @@
-"""Show Timeline model — self-contained show file format for pre-sequenced playback."""
+"""Track timeline and multi-track Show models for pre-sequenced playback."""
 
 from __future__ import annotations
 
@@ -25,7 +25,13 @@ class ShowCue:
 
 @dataclass(frozen=True)
 class ShowTimeline:
-    """Self-contained show file: beat grid + lighting cues for one song."""
+    """Compiled lighting timeline for one audio Track.
+
+    ``ShowTimeline`` is retained as the public type for backwards-compatible
+    reading of the original single-track ``.show.json`` files.  New saved
+    Shows compose one or more of these timelines through :class:`ShowTrack`
+    and :class:`Show` below.
+    """
 
     song_path: str                    # original mp3 path (informational)
     duration: float                   # song duration in seconds
@@ -147,6 +153,111 @@ class ShowTimeline:
         """Check if time *t* is within *tolerance* of a downbeat."""
         return _within_tolerance(self.downbeat_times, t, tolerance)
 
+
+@dataclass(frozen=True)
+class ShowTrack:
+    """One ordered audio Track inside a saved :class:`Show`.
+
+    A Track may be uncompiled while it is being arranged.  Once compiled, its
+    timeline is embedded in the saved Show so playback is deterministic and
+    does not depend on the local compilation cache.
+    """
+
+    audio_path: str
+    timeline: ShowTimeline | None = None
+    metadata: dict | None = None
+
+    def __post_init__(self) -> None:
+        if not str(self.audio_path).strip():
+            raise ValueError("ShowTrack.audio_path must not be empty")
+
+    @property
+    def is_compiled(self) -> bool:
+        return self.timeline is not None
+
+    @property
+    def display_name(self) -> str:
+        title = str((self.metadata or {}).get("title", "")).strip()
+        return title or Path(self.audio_path).name
+
+    def to_dict(self) -> dict:
+        return {
+            "audio_path": self.audio_path,
+            "timeline": self.timeline.to_dict() if self.timeline is not None else None,
+            "metadata": dict(self.metadata or {}),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ShowTrack":
+        raw_timeline = data.get("timeline")
+        return cls(
+            audio_path=str(data["audio_path"]),
+            timeline=(ShowTimeline.from_dict(raw_timeline) if isinstance(raw_timeline, dict) else None),
+            metadata=dict(data.get("metadata") or {}),
+        )
+
+
+@dataclass(frozen=True)
+class Show:
+    """A named, ordered playlist of compiled or pending Tracks."""
+
+    name: str
+    tracks: tuple[ShowTrack, ...]
+    metadata: dict
+
+    FORMAT = "dreamsync.show/v2"
+
+    def __post_init__(self) -> None:
+        if not str(self.name).strip():
+            raise ValueError("Show.name must not be empty")
+
+    @property
+    def is_fully_compiled(self) -> bool:
+        return bool(self.tracks) and all(track.is_compiled for track in self.tracks)
+
+    @property
+    def duration(self) -> float:
+        return sum(track.timeline.duration for track in self.tracks if track.timeline is not None)
+
+    def to_dict(self) -> dict:
+        return {
+            "format": self.FORMAT,
+            "name": self.name,
+            "tracks": [track.to_dict() for track in self.tracks],
+            "metadata": dict(self.metadata),
+        }
+
+    def to_json(self, path: Path) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(self.to_dict(), handle, indent=2, ensure_ascii=False)
+
+    @classmethod
+    def from_dict(cls, data: dict, *, legacy_name: str = "Imported Show") -> "Show":
+        if data.get("format") == cls.FORMAT:
+            return cls(
+                name=str(data.get("name") or legacy_name),
+                tracks=tuple(ShowTrack.from_dict(entry) for entry in data.get("tracks", ())),
+                metadata=dict(data.get("metadata") or {}),
+            )
+
+        # The original single-track file remains importable and becomes a
+        # one-Track Show.  This keeps existing generated files useful after
+        # the terminology migration.
+        timeline = ShowTimeline.from_dict(data)
+        return cls(
+            name=str(timeline.metadata.get("track_name") or legacy_name),
+            tracks=(ShowTrack(audio_path=timeline.song_path, timeline=timeline),),
+            metadata={"imported_legacy_timeline": True},
+        )
+
+    @classmethod
+    def from_json(cls, path: Path) -> "Show":
+        path = Path(path)
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return cls.from_dict(data, legacy_name=path.stem.removesuffix(".show"))
 
 def _within_tolerance(
     times: tuple[float, ...], t: float, tolerance: float,

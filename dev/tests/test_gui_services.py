@@ -1263,6 +1263,39 @@ def test_reactive_snapshot_promotes_manual_downbeat_diagnostics():
     assert snapshot["detected_downbeat_times"] == (10.0, 12.0)
 
 
+def test_reactive_snapshot_forwards_upcoming_timeline_contract():
+    adapter = type("Adapter", (), {"devices": []})()
+    session = ReactiveLiveSession(adapter)
+    session._update_runtime_state(
+        {
+            "stream_t": 20.0,
+            "automatic_detection_reset_count": 2,
+            "last_detection_reset_reason": "silence",
+            "predicted_beat_times": (
+                {"t": 20.5, "downbeat": False, "beat_in_bar": 2},
+                {"t": 22.0, "downbeat": True, "beat_in_bar": 1},
+            ),
+            "upcoming_effect_cues": (
+                {
+                    "t": 22.0,
+                    "effect": "pulse",
+                    "cue_class": "boundary",
+                    "state": "armed",
+                    "confidence": 0.75,
+                },
+            ),
+        }
+    )
+
+    snapshot = session.session_snapshot()
+
+    assert snapshot["stream_t"] == 20.0
+    assert snapshot["automatic_detection_reset_count"] == 2
+    assert snapshot["last_detection_reset_reason"] == "silence"
+    assert snapshot["predicted_beat_times"][1]["downbeat"] is True
+    assert snapshot["upcoming_effect_cues"][0]["effect"] == "pulse"
+
+
 def test_session_service_builds_seeded_generated_profile_chain():
     ready = threading.Event()
     release = threading.Event()

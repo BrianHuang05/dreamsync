@@ -193,6 +193,71 @@ class TestIntentConstruction:
         assert params["_spatial_palette"] == cue.color_palette
         assert params["spatial_mode"] == "blend"
 
+    def test_runtime_params_preserve_effect_layer_descriptor(self):
+        effect_layer = {
+            "layer_category": "slice",
+            "effect_mode": "pulse",
+            "origin": {"x": 0.0, "y": 0.0, "z": 0.0},
+            "direction": {"x": 1.0, "y": 0.0, "z": 0.0},
+            "thickness": 0.2,
+            "speed_units_per_second": 1.0,
+        }
+        cue = _make_cue(
+            0.0,
+            render_mode="pulse",
+            params={"effect_layer": effect_layer, "scene_layers": [{"effect_layer": effect_layer}]},
+        )
+        tl = _make_timeline(cues=(cue,))
+        adapter = _mock_multi_adapter()
+        runtime = ShowPlaybackRuntime(tl, adapter)
+        runtime.tick(0.0)
+
+        params = adapter.send_frame.call_args[1]["params"]
+        assert params["effect_layer"]["layer_category"] == "slice"
+        assert params["scene_layers"][0]["effect_layer"]["effect_mode"] == "pulse"
+
+    def test_runtime_params_include_cue_local_spatial_time(self):
+        cue = _make_cue(10.0, render_mode="pulse", params={"spatial_preset": "blend_left_to_right"})
+        tl = _make_timeline(cues=(cue,))
+        adapter = _mock_multi_adapter()
+        runtime = ShowPlaybackRuntime(tl, adapter)
+        runtime.tick(12.25)
+
+        params = adapter.send_frame.call_args[1]["params"]
+        assert params["_spatial_t"] == pytest.approx(2.25)
+
+    def test_prepare_spatial_playback_resolves_cues_before_tick(self):
+        cue = _make_cue(10.0, render_mode="pulse", params={"spatial_preset": "blend_left_to_right"})
+        tl = _make_timeline(cues=(cue,))
+        adapter = _mock_multi_adapter()
+        adapter.prepare_spatial_cue = MagicMock(return_value=True)
+        adapter.clear_prepared_spatial_cues = MagicMock()
+        runtime = ShowPlaybackRuntime(tl, adapter)
+
+        assert runtime.prepare_spatial_playback() == 1
+        adapter.clear_prepared_spatial_cues.assert_called_once()
+        adapter.prepare_spatial_cue.assert_called_once()
+
+        runtime.tick(12.25)
+        params = adapter.send_frame.call_args[1]["params"]
+        assert params["_prepared_spatial_key"] == (10.0, 0)
+
+    def test_active_runtime_control_bypasses_prepared_spatial_key(self):
+        cue = _make_cue(10.0, render_mode="pulse", params={"spatial_preset": "blend_left_to_right"})
+        tl = _make_timeline(cues=(cue,))
+        adapter = _mock_multi_adapter()
+        adapter.prepare_spatial_cue = MagicMock(return_value=True)
+        adapter.clear_prepared_spatial_cues = MagicMock()
+        state = RuntimeControlState(spatial_preset="flash_top_only")
+        runtime = ShowPlaybackRuntime(tl, adapter, control_state_getter=lambda: state)
+
+        assert runtime.prepare_spatial_playback() == 1
+        runtime.tick(12.25)
+
+        params = adapter.send_frame.call_args[1]["params"]
+        assert "_prepared_spatial_key" not in params
+        assert params["spatial_preset"] == "flash_top_only"
+
     def test_runtime_control_can_override_cue_palette_and_render_mode(self):
         cue = _make_cue(
             0.0,

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from dreamsync.show.models import ShowCue, ShowTimeline
+from dreamsync.show.models import Show, ShowCue, ShowTimeline, ShowTrack
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +219,42 @@ class TestSerialization:
         bpm_str = str(d["bpm"])
         if "." in bpm_str:
             assert len(bpm_str.split(".")[1]) <= 2
+
+
+class TestMultiTrackShowSerialization:
+    def test_show_round_trip_preserves_order_and_compiled_state(self, tmp_path: Path):
+        compiled = _make_timeline()
+        show = Show(
+            name="Opening Set",
+            tracks=(
+                ShowTrack(audio_path=str(tmp_path / "intro.mp3"), timeline=compiled),
+                ShowTrack(audio_path=str(tmp_path / "encore.mp3")),
+            ),
+            metadata={"venue": "Studio"},
+        )
+
+        path = tmp_path / "opening-set.show.json"
+        show.to_json(path)
+        loaded = Show.from_json(path)
+
+        assert loaded.name == "Opening Set"
+        assert [track.display_name for track in loaded.tracks] == ["intro.mp3", "encore.mp3"]
+        assert loaded.tracks[0].is_compiled is True
+        assert loaded.tracks[0].timeline is not None
+        assert loaded.tracks[0].timeline.cues == compiled.cues
+        assert loaded.tracks[1].is_compiled is False
+        assert loaded.is_fully_compiled is False
+
+    def test_legacy_timeline_loads_as_one_track_show(self, tmp_path: Path):
+        timeline = _make_timeline()
+        path = tmp_path / "legacy.show.json"
+        timeline.to_json(path)
+
+        loaded = Show.from_json(path)
+
+        assert len(loaded.tracks) == 1
+        assert loaded.tracks[0].timeline == timeline
+        assert loaded.is_fully_compiled is True
 
 
 # ---------------------------------------------------------------------------

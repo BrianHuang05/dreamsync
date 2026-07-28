@@ -10,12 +10,26 @@ class ProfileEditorWidgets:
     widget: object
     profile_name_label: object
     load_profile_button: object
+    library_search_edit: object
+    library_tags_edit: object
+    refresh_library_button: object
+    profile_library_list: object
+    load_library_profile_button: object
+    generation_seed_check: object
+    generation_seed_spin: object
+    generation_pool_size_spin: object
+    preview_generated_profiles_button: object
+    generated_profile_combo: object
+    export_generated_profile_button: object
+    preview_transition_button: object
+    validation_label: object
     palette_combo: object
     add_palette_button: object
     palette_strip_host: object
     palette_strip_layout: object
     seed_color_buttons: tuple[object, ...]
     seed_scheme_combo: object
+    seed_randomness_check: object
     generate_seed_palette_button: object
     quickshow_name_edit: object
     quickshow_energy_spin: object
@@ -24,6 +38,10 @@ class ProfileEditorWidgets:
     add_color_button: object
     remove_color_button: object
     save_palette_button: object
+    show_palette_set_combo: object
+    add_show_palette_set_button: object
+    show_palette_set_members_edit: object
+    save_show_palette_set_button: object
     mood_combo: object
     effects_table: object
     add_effect_button: object
@@ -49,6 +67,13 @@ class ProfileEditorWidgets:
     save_sections_button: object
     save_all_button: object
     status_label: object
+    effects_group: object
+    params_group: object
+    profile_eq_group: object
+    mood_eq_group: object
+    profile_instrument_group: object
+    mood_instrument_group: object
+    transitions_group: object
 
 
 def _build_table(
@@ -56,16 +81,61 @@ def _build_table(
     headers: tuple[str, ...],
     object_name: str,
 ):
-    table = QtWidgets.QTableWidget(0, len(headers))
+    class RowActionTable(QtWidgets.QTableWidget):
+        def _fit_to_contents(self):
+            self.resizeColumnsToContents()
+            for column, label in enumerate(headers):
+                header_width = self.horizontalHeader().sectionSizeHint(column)
+                self.setColumnWidth(column, max(104, header_width, self.columnWidth(column)))
+            total_width = sum(self.columnWidth(column) for column in range(self.columnCount()))
+            self.setFixedWidth(total_width + (self.frameWidth() * 2) + 2)
+
+        def _fit_to_rows(self):
+            header_height = self.horizontalHeader().sizeHint().height()
+            row_height = self.verticalHeader().defaultSectionSize()
+            self.setFixedHeight(header_height + max(1, self.rowCount()) * row_height + 4)
+
+        def insertRow(self, row):  # pragma: no cover - Qt only
+            super().insertRow(row)
+            action = QtWidgets.QToolButton(self)
+            action.setText("−")
+            action.setToolTip("Remove this row")
+            action.setAutoRaise(True)
+            action.setFixedSize(24, 24)
+            action.clicked.connect(lambda: self.removeRow(self.indexAt(action.pos()).row()))
+            self.setCellWidget(row, len(headers), action)
+            self._fit_to_contents()
+            self._fit_to_rows()
+
+        def setCellWidget(self, row, column, cell_widget):  # pragma: no cover - Qt only
+            super().setCellWidget(row, column, cell_widget)
+            self._fit_to_contents()
+
+        def removeRow(self, row):  # pragma: no cover - Qt only
+            super().removeRow(row)
+            self._fit_to_rows()
+
+    table = RowActionTable(0, len(headers) + 1)
     table.setObjectName(object_name)
-    table.setHorizontalHeaderLabels(list(headers))
+    table.setHorizontalHeaderLabels([*headers, ""])
     table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
     table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
     table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
     table.verticalHeader().setVisible(False)
-    table.horizontalHeader().setStretchLastSection(True)
+    table.verticalHeader().setDefaultSectionSize(28)
+    table.verticalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Fixed)
+    table.horizontalHeader().setStretchLastSection(False)
+    table.horizontalHeader().setSectionResizeMode(
+        len(headers), QtWidgets.QHeaderView.ResizeMode.Fixed
+    )
+    table.setColumnWidth(len(headers), 30)
     table.setAlternatingRowColors(True)
-    table.setMinimumHeight(140)
+    table.setSizePolicy(
+        QtWidgets.QSizePolicy.Policy.Fixed,
+        QtWidgets.QSizePolicy.Policy.Fixed,
+    )
+    table._fit_to_contents()
+    table._fit_to_rows()
     return table
 
 
@@ -79,21 +149,28 @@ def _build_table_group(
     remove_label: str,
 ):
     group = QtWidgets.QGroupBox(title)
+    group.setSizePolicy(
+        QtWidgets.QSizePolicy.Policy.Maximum,
+        QtWidgets.QSizePolicy.Policy.Maximum,
+    )
     layout = QtWidgets.QVBoxLayout(group)
-    toolbar = QtWidgets.QHBoxLayout()
     add_button = QtWidgets.QPushButton(add_label)
-    remove_button = QtWidgets.QPushButton(remove_label)
-    toolbar.addWidget(add_button)
-    toolbar.addWidget(remove_button)
-    toolbar.addStretch(1)
-    layout.addLayout(toolbar)
+    add_button.setText("+")
+    add_button.setToolTip(add_label)
+    add_button.setFixedWidth(32)
+    remove_button = None
     table = _build_table(QtWidgets, headers, object_name)
     layout.addWidget(table)
+    toolbar = QtWidgets.QHBoxLayout()
+    toolbar.addWidget(add_button)
+    toolbar.addStretch(1)
+    layout.addLayout(toolbar)
     return group, table, add_button, remove_button
 
 
 def build_profile_editor_panel(qt_modules):
     QtWidgets = qt_modules.QtWidgets
+    QtCore = qt_modules.QtCore
 
     root = QtWidgets.QWidget()
     root_layout = QtWidgets.QVBoxLayout(root)
@@ -117,6 +194,66 @@ def build_profile_editor_panel(qt_modules):
     profile_actions.addWidget(load_profile_button)
     profile_actions.addStretch(1)
     layout.addLayout(profile_actions)
+
+    library_group = QtWidgets.QGroupBox("Profile Library")
+    library_layout = QtWidgets.QVBoxLayout(library_group)
+    library_filters = QtWidgets.QHBoxLayout()
+    library_search_edit = QtWidgets.QLineEdit()
+    library_search_edit.setObjectName("profileLibrarySearchEdit")
+    library_search_edit.setPlaceholderText("Search profile name or tag")
+    library_tags_edit = QtWidgets.QLineEdit()
+    library_tags_edit.setObjectName("profileLibraryTagsEdit")
+    library_tags_edit.setPlaceholderText("Required tags (comma-separated)")
+    refresh_library_button = QtWidgets.QPushButton("Refresh")
+    refresh_library_button.setObjectName("refreshProfileLibraryButton")
+    library_filters.addWidget(library_search_edit, 2)
+    library_filters.addWidget(library_tags_edit, 1)
+    library_filters.addWidget(refresh_library_button)
+    library_layout.addLayout(library_filters)
+    profile_library_list = QtWidgets.QListWidget()
+    profile_library_list.setObjectName("profileLibraryList")
+    profile_library_list.setMaximumHeight(150)
+    library_layout.addWidget(profile_library_list)
+    load_library_profile_button = QtWidgets.QPushButton("Load Selected Profile")
+    load_library_profile_button.setObjectName("loadLibraryProfileButton")
+    library_layout.addWidget(load_library_profile_button)
+    generation_row = QtWidgets.QHBoxLayout()
+    generation_seed_check = QtWidgets.QCheckBox("Seed")
+    generation_seed_check.setObjectName("profileGenerationSeedCheck")
+    generation_seed_spin = QtWidgets.QSpinBox()
+    generation_seed_spin.setRange(-2147483647, 2147483647)
+    generation_seed_spin.setObjectName("profileGenerationSeedSpin")
+    generation_seed_spin.setEnabled(False)
+    generation_seed_check.toggled.connect(generation_seed_spin.setEnabled)
+    generation_pool_size_spin = QtWidgets.QSpinBox()
+    generation_pool_size_spin.setRange(2, 32)
+    generation_pool_size_spin.setValue(8)
+    generation_pool_size_spin.setPrefix("Pool ")
+    generation_pool_size_spin.setObjectName("profileGenerationPoolSizeSpin")
+    preview_generated_profiles_button = QtWidgets.QPushButton("Preview Generated Pool")
+    preview_generated_profiles_button.setObjectName("previewGeneratedProfilesButton")
+    generated_profile_combo = QtWidgets.QComboBox()
+    generated_profile_combo.setObjectName("generatedProfileCombo")
+    export_generated_profile_button = QtWidgets.QPushButton("Save As Profile…")
+    export_generated_profile_button.setObjectName("exportGeneratedProfileButton")
+    preview_transition_button = QtWidgets.QPushButton("Preview Cross-fade")
+    preview_transition_button.setObjectName("previewProfileTransitionButton")
+    for control in (
+        generation_seed_check,
+        generation_seed_spin,
+        generation_pool_size_spin,
+        preview_generated_profiles_button,
+        generated_profile_combo,
+        export_generated_profile_button,
+        preview_transition_button,
+    ):
+        generation_row.addWidget(control)
+    library_layout.addLayout(generation_row)
+    validation_label = QtWidgets.QLabel("Validation: no profile loaded.")
+    validation_label.setObjectName("profileValidationLabel")
+    validation_label.setWordWrap(True)
+    library_layout.addWidget(validation_label)
+    layout.addWidget(library_group)
 
     palette_group = QtWidgets.QGroupBox("Palette")
     palette_layout = QtWidgets.QGridLayout(palette_group)
@@ -154,6 +291,10 @@ def build_profile_editor_panel(qt_modules):
     ):
         seed_scheme_combo.addItem(label, data)
     seed_row.addWidget(seed_scheme_combo)
+    seed_randomness_check = QtWidgets.QCheckBox("Randomness")
+    seed_randomness_check.setToolTip("Salt the seed colors so Generate produces a new palette each time.")
+    seed_randomness_check.setObjectName("profileSeedRandomnessCheck")
+    seed_row.addWidget(seed_randomness_check)
     generate_seed_palette_button = QtWidgets.QPushButton("Generate From Seeds")
     generate_seed_palette_button.setObjectName("generateSeedPaletteButton")
     seed_row.addWidget(generate_seed_palette_button)
@@ -202,6 +343,28 @@ def build_profile_editor_panel(qt_modules):
     palette_layout.addLayout(palette_actions, 8, 0, 1, 3)
     layout.addWidget(palette_group)
 
+    show_palette_set_group = QtWidgets.QGroupBox("Show Palette Sets")
+    show_palette_set_layout = QtWidgets.QGridLayout(show_palette_set_group)
+    show_palette_set_layout.addWidget(QtWidgets.QLabel("Set"), 0, 0)
+    show_palette_set_combo = QtWidgets.QComboBox()
+    show_palette_set_combo.setObjectName("showPaletteSetCombo")
+    show_palette_set_layout.addWidget(show_palette_set_combo, 0, 1)
+    add_show_palette_set_button = QtWidgets.QPushButton("New Set")
+    add_show_palette_set_button.setObjectName("addShowPaletteSetButton")
+    show_palette_set_layout.addWidget(add_show_palette_set_button, 0, 2)
+    show_palette_set_layout.addWidget(QtWidgets.QLabel("Palettes"), 1, 0)
+    show_palette_set_members_edit = QtWidgets.QLineEdit()
+    show_palette_set_members_edit.setObjectName("showPaletteSetMembersEdit")
+    show_palette_set_members_edit.setPlaceholderText("winter-white, evergreen, gold")
+    show_palette_set_members_edit.setToolTip(
+        "Comma-separated profile palette names. Reactive mode uses one palette per detected song."
+    )
+    show_palette_set_layout.addWidget(show_palette_set_members_edit, 1, 1, 1, 2)
+    save_show_palette_set_button = QtWidgets.QPushButton("Save Set")
+    save_show_palette_set_button.setObjectName("saveShowPaletteSetButton")
+    show_palette_set_layout.addWidget(save_show_palette_set_button, 2, 1, 1, 2)
+    layout.addWidget(show_palette_set_group)
+
     mood_row = QtWidgets.QHBoxLayout()
     mood_row.addWidget(QtWidgets.QLabel("Mood"))
     mood_combo = QtWidgets.QComboBox()
@@ -217,7 +380,6 @@ def build_profile_editor_panel(qt_modules):
         add_label="Add Effect",
         remove_label="Remove Effect",
     )
-    layout.addWidget(effects_group)
 
     params_group, params_table, add_param_button, remove_param_button = _build_table_group(
         QtWidgets,
@@ -227,7 +389,6 @@ def build_profile_editor_panel(qt_modules):
         add_label="Add Param",
         remove_label="Remove Param",
     )
-    layout.addWidget(params_group)
 
     profile_eq_group, profile_eq_routes_table, add_profile_eq_route_button, remove_profile_eq_route_button = _build_table_group(
         QtWidgets,
@@ -237,7 +398,6 @@ def build_profile_editor_panel(qt_modules):
         add_label="Add Profile EQ Route",
         remove_label="Remove Selected",
     )
-    layout.addWidget(profile_eq_group)
 
     mood_eq_group, mood_eq_routes_table, add_mood_eq_route_button, remove_mood_eq_route_button = _build_table_group(
         QtWidgets,
@@ -247,7 +407,6 @@ def build_profile_editor_panel(qt_modules):
         add_label="Add Mood EQ Route",
         remove_label="Remove Selected",
     )
-    layout.addWidget(mood_eq_group)
 
     profile_instrument_group, profile_instrument_routes_table, add_profile_instrument_route_button, remove_profile_instrument_route_button = _build_table_group(
         QtWidgets,
@@ -257,7 +416,6 @@ def build_profile_editor_panel(qt_modules):
         add_label="Add Profile Instrument Route",
         remove_label="Remove Selected",
     )
-    layout.addWidget(profile_instrument_group)
 
     mood_instrument_group, mood_instrument_routes_table, add_mood_instrument_route_button, remove_mood_instrument_route_button = _build_table_group(
         QtWidgets,
@@ -267,7 +425,6 @@ def build_profile_editor_panel(qt_modules):
         add_label="Add Mood Instrument Route",
         remove_label="Remove Selected",
     )
-    layout.addWidget(mood_instrument_group)
 
     transitions_group, transitions_table, add_transition_button, remove_transition_button = _build_table_group(
         QtWidgets,
@@ -277,14 +434,71 @@ def build_profile_editor_panel(qt_modules):
         add_label="Add Transition",
         remove_label="Remove Selected",
     )
-    layout.addWidget(transitions_group)
+    sections_grid = QtWidgets.QGridLayout()
+    sections_grid.setAlignment(
+        QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
+    )
+    sections_grid.setHorizontalSpacing(12)
+    section_groups = (
+        effects_group,
+        params_group,
+        transitions_group,
+    )
+    expanded = {group: False for group in section_groups}
+
+    def relayout_sections():
+        while sections_grid.count():
+            item = sections_grid.takeAt(0)
+            if item.widget() is not None:
+                item.widget().setParent(widget)
+        expanded_groups = [group for group in section_groups if expanded[group]]
+        if expanded_groups:
+            for row, group in enumerate(expanded_groups):
+                group.setSizePolicy(
+                    QtWidgets.QSizePolicy.Policy.Expanding,
+                    QtWidgets.QSizePolicy.Policy.Maximum,
+                )
+                sections_grid.addWidget(group, row, 0, 1, 3)
+            row = len(expanded_groups)
+        else:
+            row = 0
+        for index, group in enumerate(group for group in section_groups if not expanded[group]):
+            group.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Maximum,
+                QtWidgets.QSizePolicy.Policy.Maximum,
+            )
+            sections_grid.addWidget(
+                group,
+                row + index // 3,
+                index % 3,
+                QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop,
+            )
+
+    def make_expandable(group):
+        title = group.title()
+        group.setTitle("")
+        header = QtWidgets.QToolButton()
+        header.setText(f"▸ {title}")
+        header.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly)
+        header.setCheckable(True)
+        header.setChecked(False)
+        header.setStyleSheet("QToolButton { font-weight: 600; text-align: left; }")
+        group.layout().insertWidget(0, header)
+        def toggle(checked):
+            expanded[group] = bool(checked)
+            header.setText(f"{'▾' if checked else '▸'} {title}")
+            relayout_sections()
+        header.toggled.connect(toggle)
+
+    # Routing is shown in the Show editor, but remains part of the profile model.
+    for group in section_groups:
+        make_expandable(group)
+    layout.addLayout(sections_grid)
+    relayout_sections()
 
     action_row = QtWidgets.QHBoxLayout()
-    save_sections_button = QtWidgets.QPushButton("Save Sections")
-    save_sections_button.setObjectName("saveProfileSectionsButton")
     save_all_button = QtWidgets.QPushButton("Save All")
     save_all_button.setObjectName("saveProfileAllButton")
-    action_row.addWidget(save_sections_button)
     action_row.addWidget(save_all_button)
     action_row.addStretch(1)
     layout.addLayout(action_row)
@@ -299,12 +513,26 @@ def build_profile_editor_panel(qt_modules):
         widget=root,
         profile_name_label=profile_name_label,
         load_profile_button=load_profile_button,
+        library_search_edit=library_search_edit,
+        library_tags_edit=library_tags_edit,
+        refresh_library_button=refresh_library_button,
+        profile_library_list=profile_library_list,
+        load_library_profile_button=load_library_profile_button,
+        generation_seed_check=generation_seed_check,
+        generation_seed_spin=generation_seed_spin,
+        generation_pool_size_spin=generation_pool_size_spin,
+        preview_generated_profiles_button=preview_generated_profiles_button,
+        generated_profile_combo=generated_profile_combo,
+        export_generated_profile_button=export_generated_profile_button,
+        preview_transition_button=preview_transition_button,
+        validation_label=validation_label,
         palette_combo=palette_combo,
         add_palette_button=add_palette_button,
         palette_strip_host=palette_strip_host,
         palette_strip_layout=palette_strip_layout,
         seed_color_buttons=tuple(seed_color_buttons),
         seed_scheme_combo=seed_scheme_combo,
+        seed_randomness_check=seed_randomness_check,
         generate_seed_palette_button=generate_seed_palette_button,
         quickshow_name_edit=quickshow_name_edit,
         quickshow_energy_spin=quickshow_energy_spin,
@@ -313,6 +541,10 @@ def build_profile_editor_panel(qt_modules):
         add_color_button=add_color_button,
         remove_color_button=remove_color_button,
         save_palette_button=save_palette_button,
+        show_palette_set_combo=show_palette_set_combo,
+        add_show_palette_set_button=add_show_palette_set_button,
+        show_palette_set_members_edit=show_palette_set_members_edit,
+        save_show_palette_set_button=save_show_palette_set_button,
         mood_combo=mood_combo,
         effects_table=effects_table,
         add_effect_button=add_effect_button,
@@ -335,7 +567,14 @@ def build_profile_editor_panel(qt_modules):
         transitions_table=transitions_table,
         add_transition_button=add_transition_button,
         remove_transition_button=remove_transition_button,
-        save_sections_button=save_sections_button,
+        save_sections_button=None,
         save_all_button=save_all_button,
         status_label=status_label,
+        effects_group=effects_group,
+        params_group=params_group,
+        profile_eq_group=profile_eq_group,
+        mood_eq_group=mood_eq_group,
+        profile_instrument_group=profile_instrument_group,
+        mood_instrument_group=mood_instrument_group,
+        transitions_group=transitions_group,
     )

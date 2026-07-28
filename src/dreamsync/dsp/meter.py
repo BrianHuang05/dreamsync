@@ -38,6 +38,8 @@ class ManualBeatRegistration:
         self._markers: deque[ManualBeatMarker] = deque(maxlen=max_markers)
         self._last_downbeat_index: int | None = None
         self._beat_indices_since_downbeat: set[int] = set()
+        self._manual_pulses_since_downbeat = 0
+        self._last_intent_t: float | None = None
         self.count = 0
 
     @property
@@ -50,15 +52,21 @@ class ManualBeatRegistration:
         t: float,
         kind: str,
         beat_index: int,
+        intent_t: float | None = None,
     ) -> int | None:
         normalized = "downbeat" if kind == "downbeat" else "beat"
         index = int(beat_index)
+        tap_t = float(t if intent_t is None else intent_t)
+        distinct_intent = (
+            self._last_intent_t is None
+            or abs(tap_t - self._last_intent_t) > 1e-6
+        )
         inferred: int | None = None
         if normalized == "downbeat":
             if self._last_downbeat_index is not None:
                 candidate = (
-                    len(self._beat_indices_since_downbeat) + 1
-                    if self._beat_indices_since_downbeat
+                    self._manual_pulses_since_downbeat + 1
+                    if self._manual_pulses_since_downbeat
                     else index - self._last_downbeat_index
                 )
                 if 2 <= candidate <= 12:
@@ -66,8 +74,12 @@ class ManualBeatRegistration:
                     self.beats_per_bar = candidate
             self._last_downbeat_index = index
             self._beat_indices_since_downbeat.clear()
+            self._manual_pulses_since_downbeat = 0
         elif self._last_downbeat_index is not None:
             self._beat_indices_since_downbeat.add(index)
+            if distinct_intent:
+                self._manual_pulses_since_downbeat += 1
+        self._last_intent_t = tap_t
         retained = [
             marker
             for marker in self._markers
@@ -91,6 +103,8 @@ class ManualBeatRegistration:
         self._markers.clear()
         self._last_downbeat_index = None
         self._beat_indices_since_downbeat.clear()
+        self._manual_pulses_since_downbeat = 0
+        self._last_intent_t = None
         self.count = 0
 
 

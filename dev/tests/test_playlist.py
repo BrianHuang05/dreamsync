@@ -148,6 +148,19 @@ class TestIteration:
         assert result.name == "a.mp3"
         assert pl.current_index == 0
 
+    def test_repeat_can_be_changed_after_creation(self, tmp_path):
+        for name in ("a.mp3", "b.mp3"):
+            (tmp_path / name).touch()
+
+        pl = PlaylistManager.from_directory(tmp_path)
+        assert pl.repeat_enabled is False
+
+        pl.set_repeat(True)
+        pl.next()
+
+        assert pl.next().name == "a.mp3"
+        assert pl.repeat_enabled is True
+
     def test_peek_next(self, tmp_path):
         """peek_next previews upcoming without advancing."""
         for name in ("a.mp3", "b.mp3", "c.mp3"):

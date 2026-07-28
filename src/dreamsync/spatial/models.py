@@ -24,6 +24,25 @@ class GridCell(str, Enum):
     BACK_RIGHT = "back_right"
 
 
+class SpatialLayerCategory(str, Enum):
+    STATIC = "static"
+    SLICE = "slice"
+    EXPAND = "expand"
+
+
+class SpatialTriggerMode(str, Enum):
+    CONTINUOUS = "continuous"
+    ONESHOT = "oneshot"
+    LATCHED = "latched"
+
+
+class SpatialFalloff(str, Enum):
+    HARD = "hard"
+    LINEAR = "linear"
+    SMOOTHSTEP = "smoothstep"
+    RADIAL = "radial"
+
+
 _X_ALIASES: dict[str, float] = {
     "left": -1.0,
     "center": 0.0,
@@ -95,8 +114,109 @@ class SpatialLayerSpec:
     weight: float
     instrument: str = ""
     blend_mode: str = "max"
+    priority: int = 0
     color_override: str | None = None
     params: dict[str, object] | None = None
+
+
+@dataclass(frozen=True)
+class SpatialEffectLayer:
+    """Canonical 3-D effecting layer resolved from cue/live spatial metadata."""
+
+    category: SpatialLayerCategory
+    effect_mode: str
+    trigger_mode: SpatialTriggerMode = SpatialTriggerMode.CONTINUOUS
+    origin: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    direction: tuple[float, float, float] | None = None
+    extent: tuple[tuple[float, float, float], tuple[float, float, float]] | None = None
+    thickness: float = 0.35
+    radius: float = 0.0
+    speed_units_per_second: float = 1.0
+    falloff: SpatialFalloff = SpatialFalloff.LINEAR
+    palette: tuple[str, ...] = ()
+    color_bias: str | None = None
+    intensity_scale: float = 1.0
+    time_offset_s: float = 0.0
+    duration_s: float = 0.0
+    coordinate_scale: float = 1.0
+
+    def to_mapping(self) -> dict[str, object]:
+        """Serialize this layer descriptor to cue/show JSON-compatible data."""
+
+        data: dict[str, object] = {
+            "layer_category": self.category.value,
+            "effect_mode": self.effect_mode,
+            "trigger_mode": self.trigger_mode.value,
+            "origin": _point_to_mapping(self.origin),
+            "thickness": float(self.thickness),
+            "radius": float(self.radius),
+            "speed_units_per_second": float(self.speed_units_per_second),
+            "falloff": self.falloff.value,
+            "palette": list(self.palette),
+            "intensity_scale": float(self.intensity_scale),
+            "time_offset_s": float(self.time_offset_s),
+            "duration_s": float(self.duration_s),
+            "coordinate_scale": float(self.coordinate_scale),
+        }
+        if self.direction is not None:
+            data["direction"] = _point_to_mapping(self.direction)
+        if self.extent is not None:
+            data["extent"] = {
+                "min": _point_to_mapping(self.extent[0]),
+                "max": _point_to_mapping(self.extent[1]),
+            }
+        if self.color_bias is not None:
+            data["color_bias"] = self.color_bias
+        return data
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, object]) -> "SpatialEffectLayer":
+        """Load a layer descriptor from cue/show JSON-compatible data."""
+
+        category = SpatialLayerCategory(str(data.get("layer_category", SpatialLayerCategory.STATIC.value)))
+        trigger_mode = SpatialTriggerMode(str(data.get("trigger_mode", SpatialTriggerMode.CONTINUOUS.value)))
+        falloff = SpatialFalloff(str(data.get("falloff", SpatialFalloff.LINEAR.value)))
+        direction_raw = data.get("direction")
+        extent_raw = data.get("extent")
+        palette_raw = data.get("palette", ())
+        return cls(
+            category=category,
+            effect_mode=str(data.get("effect_mode", "solid")),
+            trigger_mode=trigger_mode,
+            origin=_point_from_mapping(data.get("origin"), default=(0.0, 0.0, 0.0)),
+            direction=_point_from_mapping(direction_raw, default=(0.0, 0.0, 0.0)) if isinstance(direction_raw, Mapping) else None,
+            extent=_extent_from_mapping(extent_raw),
+            thickness=float(data.get("thickness", 0.35)),
+            radius=float(data.get("radius", 0.0)),
+            speed_units_per_second=float(data.get("speed_units_per_second", 1.0)),
+            falloff=falloff,
+            palette=tuple(str(color) for color in palette_raw) if isinstance(palette_raw, (list, tuple)) else (),
+            color_bias=str(data["color_bias"]) if isinstance(data.get("color_bias"), str) else None,
+            intensity_scale=float(data.get("intensity_scale", 1.0)),
+            time_offset_s=float(data.get("time_offset_s", 0.0)),
+            duration_s=float(data.get("duration_s", 0.0)),
+            coordinate_scale=float(data.get("coordinate_scale", 1.0)),
+        )
+
+
+@dataclass(frozen=True)
+class SpatialLayerState:
+    """Evaluated effecting layer position/state at one runtime timestamp."""
+
+    layer: SpatialEffectLayer
+    t: float
+    center: float = 0.0
+    radius: float = 0.0
+
+
+@dataclass(frozen=True)
+class SpatialActivation:
+    """Intersection payload produced when a node is sampled against a layer."""
+
+    strength: float
+    intensity_scale: float
+    color_override: str | None = None
+    effect_mode: str = ""
 
 
 def parse_device_placement(entry: Mapping[str, object]) -> DevicePlacement | None:
@@ -174,6 +294,39 @@ def parse_device_placement(entry: Mapping[str, object]) -> DevicePlacement | Non
         weight=weight,
         enabled=enabled,
         sections=sections,
+    )
+
+
+def _point_to_mapping(point: tuple[float, float, float]) -> dict[str, float]:
+    return {"x": float(point[0]), "y": float(point[1]), "z": float(point[2])}
+
+
+def _point_from_mapping(
+    raw: object,
+    *,
+    default: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    if not isinstance(raw, Mapping):
+        return default
+    return (
+        float(raw.get("x", default[0])),
+        float(raw.get("y", default[1])),
+        float(raw.get("z", default[2])),
+    )
+
+
+def _extent_from_mapping(
+    raw: object,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
+    if not isinstance(raw, Mapping):
+        return None
+    min_raw = raw.get("min")
+    max_raw = raw.get("max")
+    if not isinstance(min_raw, Mapping) or not isinstance(max_raw, Mapping):
+        return None
+    return (
+        _point_from_mapping(min_raw, default=(-1.0, -1.0, -1.0)),
+        _point_from_mapping(max_raw, default=(1.0, 1.0, 1.0)),
     )
 
 

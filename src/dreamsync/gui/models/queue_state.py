@@ -7,10 +7,14 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class QueueTrackState:
+    queue_index: int = -1
     track_key: str = ""
     display_name: str = ""
     path: str = ""
     is_current: bool = False
+    is_next: bool = False
+    show_editable: bool = True
+    edit_lock_reason: str = ""
     assignment_label: str = ""
     assignment_colors: tuple[str, ...] = field(default_factory=tuple)
 
@@ -40,3 +44,8 @@ class QueueState:
             if track.track_key == self.selected_track_key:
                 return track
         return None
+
+    @property
+    def selected_track_index(self) -> int:
+        track = self.selected_track
+        return track.queue_index if track is not None else -1

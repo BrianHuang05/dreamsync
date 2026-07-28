@@ -665,6 +665,11 @@ def test_profile_instrument_route_overrides_eq_route_on_micro_cue():
                 "color_bias": "#ddeeff",
                 "render_mode": "gradient",
                 "spatial_preset": "blend_front_to_back",
+                "effect_layer": {"layer_category": "slice", "effect_mode": "pulse"},
+                "layer_category": "slice",
+                "speed_units_per_second": 1.4,
+                "falloff": "linear",
+                "layer_priority": 6,
                 "pan_follow": 0.7,
                 "confidence_min": 0.5,
             },
@@ -686,6 +691,11 @@ def test_profile_instrument_route_overrides_eq_route_on_micro_cue():
     assert micro.params["scene_layers"][0]["instrument"] == "vocals"
     assert micro.params["eq_layers"][0]["instrument"] == "vocals"
     assert micro.params["eq_layers"][1]["band"] == "bass"
+    assert micro.params["scene_layers"][0]["effect_layer"]["layer_category"] == "slice"
+    assert micro.params["scene_layers"][0]["layer_category"] == "slice"
+    assert micro.params["scene_layers"][0]["speed_units_per_second"] == 1.4
+    assert micro.params["scene_layers"][0]["layer_priority"] == 6
+    assert micro.params["falloff"] == "linear"
     assert micro.color_palette[0] == "#ddeeff"
     assert micro.params["active_instrument_routes"][0]["spatial_origin"]["x"] > 0.5
     assert micro.params["active_instrument_routes"][0]["spatial_width"] > 0.12

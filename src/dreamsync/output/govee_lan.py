@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable
 
-from dreamsync.director import LightingIntent
+from dreamsync.director import EffectMode, LightingIntent
 from dreamsync.output.roles import DeviceRole, DeviceType, adapt_render_mode, transform_intent
 from dreamsync.render import RenderMode, SegmentRenderer
 from dreamsync.spatial.grid import resolve_grid_cell
@@ -18,6 +18,34 @@ from dreamsync.spatial.models import DevicePlacement, GridCell, SpatialCellState
 _logger = logging.getLogger(__name__)
 
 GOVEE_COMMAND_PORT = 4003
+
+_SPATIAL_RENDER_PARAM_KEYS = frozenset({
+    "active_eq_routes",
+    "active_instrument_routes",
+    "color_bias",
+    "duration_s",
+    "effect_layer",
+    "eq_layers",
+    "eq_routes",
+    "falloff",
+    "instrument_routes",
+    "intensity_scale",
+    "layer_category",
+    "layer_priority",
+    "radius",
+    "scene_layers",
+    "spatial_blend",
+    "spatial_delay_ms",
+    "spatial_direction",
+    "spatial_extent",
+    "spatial_mode",
+    "spatial_origin",
+    "spatial_preset",
+    "spatial_width",
+    "speed_units_per_second",
+    "time_offset_s",
+    "trigger_mode",
+})
 
 
 class TransportMode(str, Enum):
@@ -386,6 +414,8 @@ class MultiGoveeLanAdapter:
         # list of GoveeBleAdapter instances or tuples carrying follower metadata
         self._ble_followers: list = ble_followers or []
         self._spatial_mapper = spatial_mapper
+        self._prepared_spatial_cues: dict[object, tuple[object, tuple]] = {}
+        self._placement_section_cache: dict[tuple[int, int], tuple[DevicePlacement, ...]] = {}
 
     def activate(self, brightness: int = 100) -> None:
         """Turn on all devices and set brightness.
@@ -415,6 +445,7 @@ class MultiGoveeLanAdapter:
     ) -> None:
         """Atomically replace the device list (GIL-safe reference swap)."""
         self.devices = [self._normalize_device_tuple(d) for d in new_devices]
+        self._placement_section_cache.clear()
 
     def replace_ble_followers(self, new_followers: list) -> None:
         """Atomically replace the BLE follower list (GIL-safe reference swap)."""
@@ -436,10 +467,11 @@ class MultiGoveeLanAdapter:
             return self.send_continuous_spatial_frame(t, intent, beat=beat, params=params)
 
         any_sent = False
+        render_params = self._public_render_params(params)
         for adapter, renderer, role, bs, _placement in self.devices:
             device_intent = transform_intent(intent, role, brightness_scale=bs)
             self._apply_render_mode_override(renderer, params)
-            colors = renderer.render(t, device_intent, beat=beat, params=params)
+            colors = renderer.render(t, device_intent, beat=beat, params=render_params)
             if adapter.send_frame(colors):
                 any_sent = True
         # Push to BLE followers (fire-and-forget, they rate-limit internally)
@@ -500,7 +532,8 @@ class MultiGoveeLanAdapter:
         if self._spatial_mapper is None:
             return self.send_frame(t, intent, beat=beat, params=params)
 
-        spec, layers = self._spatial_mapper.resolve_spatial_layers(intent, params=params)
+        spec, layers = self._resolve_runtime_spatial_layers(intent, params=params)
+        spatial_t = self._spatial_time(t, params)
         render_params = self._public_render_params(params)
         any_sent = False
 
@@ -518,7 +551,7 @@ class MultiGoveeLanAdapter:
             colors = self._spatialize_colors(
                 colors,
                 placement=placement,
-                t=t,
+                t=spatial_t,
                 intent=device_intent,
                 spec=spec,
                 layers=layers,
@@ -542,7 +575,7 @@ class MultiGoveeLanAdapter:
                 follower_colors = self._spatialize_colors(
                     follower_colors,
                     placement=follower_placement,
-                    t=t,
+                    t=spatial_t,
                     intent=follower_intent,
                     spec=spec,
                     layers=layers,
@@ -550,9 +583,9 @@ class MultiGoveeLanAdapter:
                 brightness = max(30, min(100, int(max(0.0, min(1.0, follower_intent.intensity)) * 100)))
                 follower_adapter.send_segment_colors(follower_colors, brightness=brightness)
             elif follower_placement is not None:
-                sample = self._spatial_mapper.sample_point(t, follower_placement, follower_intent, spec)
+                sample = self._spatial_mapper.sample_point(spatial_t, follower_placement, follower_intent, spec)
                 layer_samples = self._layer_samples(
-                    t=t,
+                    t=spatial_t,
                     placement=follower_placement,
                     intent=follower_intent,
                     layers=layers,
@@ -575,6 +608,54 @@ class MultiGoveeLanAdapter:
 
         return any_sent
 
+    def send_baked_frame(
+        self,
+        t: float,
+        node_colors: dict[str, str],
+        *,
+        fallback_color: str = "#000000",
+    ) -> bool:
+        """Send precomputed logical node colors to devices.
+
+        Section keys use ``"{address}#section:{index}"``. A device-level
+        ``"{address}"`` color fills the entire device when section colors are
+        absent. Missing devices receive *fallback_color*.
+        """
+        any_sent = False
+        for adapter, renderer, _role, _bs, _placement in self.devices:
+            address = str(adapter.config.device_ip)
+            colors = self._baked_device_colors(
+                address,
+                max(1, int(getattr(renderer, "segments", 1))),
+                node_colors,
+                fallback_color=fallback_color,
+            )
+            if adapter.send_frame(colors):
+                any_sent = True
+
+        fallback_intent = LightingIntent(
+            mode=EffectMode.AMBIENT,
+            intensity=1.0,
+            speed=0.0,
+            bpm=120.0,
+            color=fallback_color,
+        )
+        for follower in self._ble_followers:
+            self._ble_adapter_for(follower).emit(t, fallback_intent)
+            any_sent = True
+
+        return any_sent
+
+    def prepare_spatial_cue(self, key: object, intent: LightingIntent, params: dict | None = None) -> bool:
+        if self._spatial_mapper is None:
+            return False
+        self._prepared_spatial_cues[key] = self._spatial_mapper.resolve_spatial_layers(intent, params=params)
+        return True
+
+    def clear_prepared_spatial_cues(self) -> None:
+        self._prepared_spatial_cues.clear()
+        self._placement_section_cache.clear()
+
     @staticmethod
     def _normalize_device_tuple(device: tuple):
         if len(device) == 3:
@@ -584,6 +665,21 @@ class MultiGoveeLanAdapter:
         if len(device) == 5:
             return device
         raise ValueError(f"Device tuple must have length 3, 4, or 5; got {len(device)}")
+
+    @staticmethod
+    def _baked_device_colors(
+        address: str,
+        segments: int,
+        node_colors: dict[str, str],
+        *,
+        fallback_color: str,
+    ) -> list[tuple[int, int, int]]:
+        device_color = node_colors.get(address, fallback_color)
+        colors: list[tuple[int, int, int]] = []
+        for index in range(max(1, int(segments))):
+            key = f"{address}#section:{index}"
+            colors.append(_parse_hex_color(node_colors.get(key, device_color)))
+        return colors
 
     @staticmethod
     def _ble_adapter_for(follower):
@@ -601,6 +697,17 @@ class MultiGoveeLanAdapter:
             raise ValueError(f"BLE follower tuple must have length 4 or 5; got {len(follower)}")
         return follower, DeviceRole.PRIMARY, 1.0, None, None
 
+    def _resolve_runtime_spatial_layers(
+        self,
+        intent: LightingIntent,
+        *,
+        params: dict | None,
+    ) -> tuple[object, tuple]:
+        key = params.get("_prepared_spatial_key") if params else None
+        if key is not None and key in self._prepared_spatial_cues:
+            return self._prepared_spatial_cues[key]
+        return self._spatial_mapper.resolve_spatial_layers(intent, params=params)
+
     @staticmethod
     def _public_render_params(params: dict | None) -> dict | None:
         if not params:
@@ -608,8 +715,17 @@ class MultiGoveeLanAdapter:
         return {
             key: value
             for key, value in params.items()
-            if not str(key).startswith("_")
+            if not str(key).startswith("_") and str(key) not in _SPATIAL_RENDER_PARAM_KEYS
         }
+
+    @staticmethod
+    def _spatial_time(t: float, params: dict | None) -> float:
+        if not params or "_spatial_t" not in params:
+            return t
+        try:
+            return max(0.0, float(params["_spatial_t"]))
+        except (TypeError, ValueError):
+            return t
 
     @staticmethod
     def _render_with_orientation(
@@ -665,18 +781,9 @@ class MultiGoveeLanAdapter:
             return colors
 
         if placement.sections:
-            section_map = {section.index: section for section in placement.sections}
+            section_placements = self._section_placements_for(placement, len(colors))
             result: list[tuple[int, int, int]] = []
-            for index, color in enumerate(colors):
-                section = section_map.get(index)
-                section_placement = placement if section is None else DevicePlacement(
-                    x=section.x,
-                    y=section.y,
-                    z=section.z,
-                    orientation=placement.orientation,
-                    weight=section.weight,
-                    enabled=section.enabled,
-                )
+            for color, section_placement in zip(colors, section_placements):
                 sample = self._spatial_mapper.sample_point(t, section_placement, intent, spec)
                 layer_samples = self._layer_samples(
                     t=t,
@@ -695,6 +802,34 @@ class MultiGoveeLanAdapter:
             layers=layers,
         )
         return [self._apply_spatial_sample(color, sample, layer_samples) for color in colors]
+
+    def _section_placements_for(
+        self,
+        placement: DevicePlacement,
+        color_count: int,
+    ) -> tuple[DevicePlacement, ...]:
+        cache_key = (id(placement), color_count)
+        cached = self._placement_section_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        section_map = {section.index: section for section in placement.sections}
+        placements: list[DevicePlacement] = []
+        for index in range(color_count):
+            section = section_map.get(index)
+            if section is None:
+                placements.append(placement)
+                continue
+            placements.append(DevicePlacement(
+                x=section.x,
+                y=section.y,
+                z=section.z,
+                orientation=placement.orientation,
+                weight=section.weight,
+                enabled=section.enabled,
+            ))
+        prepared = tuple(placements)
+        self._placement_section_cache[cache_key] = prepared
+        return prepared
 
     def _layer_samples(
         self,
@@ -764,15 +899,17 @@ class MultiGoveeLanAdapter:
         layer_samples: list[tuple[object, object]],
     ) -> str | None:
         color = sample.color_override or base_color
-        strongest = 0.0
+        strongest_key = (0, 0.0)
         for layer, layer_sample in layer_samples:
             strength = max(0.0, min(1.0, layer.weight * layer_sample.intensity_scale))
-            if strength < strongest:
+            priority = int(getattr(layer, "priority", 0))
+            candidate_key = (priority, strength)
+            if candidate_key < strongest_key:
                 continue
             candidate = layer_sample.color_override or layer.color_override
             if isinstance(candidate, str):
                 color = candidate
-                strongest = strength
+                strongest_key = candidate_key
         return color
 
     @staticmethod

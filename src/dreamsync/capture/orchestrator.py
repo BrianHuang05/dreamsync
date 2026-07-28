@@ -643,6 +643,10 @@ class CaptureOrchestrator:
         """Start background periodic timing refresh."""
         self._timing.start_periodic_refresh(fetch_fn)
 
+    def stop_periodic_timing(self) -> None:
+        """Stop background periodic timing refresh without stopping capture."""
+        self._timing.stop()
+
     # ------------------------------------------------------------------
     # Callback dispatch
     # ------------------------------------------------------------------

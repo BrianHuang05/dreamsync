@@ -14,7 +14,8 @@ from dreamsync.director import EffectMode, LightingIntent
 from dreamsync.gui.services.session_service import SessionService
 from dreamsync.local_session import LocalShowSession
 from dreamsync.output.auto_detect import load_device_config
-from dreamsync.output.null_adapter import NullMultiAdapter, SimulationMultiAdapter
+from dreamsync.output.null_adapter import NullMultiAdapter, PreviewMirrorAdapter, SimulationMultiAdapter
+from dreamsync.render import RenderMode
 from dreamsync.show.models import ShowCue, ShowTimeline
 
 
@@ -156,8 +157,9 @@ class PreviewSimulationTests(unittest.TestCase):
             ],
         )
         self.assertTrue(all(str(color).startswith("#") for color in node_colors.values()))
+        self.assertTrue(any(str(color).lower() != "#000000" for color in node_colors.values()))
 
-    def test_simulation_preview_colors_are_normalized_to_full_brightness(self) -> None:
+    def test_simulation_preview_preserves_rendered_brightness(self) -> None:
         tmp_dir = Path(self.id().replace(".", "_"))
         tmp_dir.mkdir(parents=True, exist_ok=True)
         path = tmp_dir / "devices.yaml"
@@ -185,8 +187,144 @@ class PreviewSimulationTests(unittest.TestCase):
         color_hex = snapshot["node_colors"]["10.0.0.11"]
         rgb = tuple(int(color_hex[index : index + 2], 16) for index in (1, 3, 5))
 
-        self.assertEqual(max(rgb), 255)
-        self.assertEqual(rgb, (128, 255, 64))
+        self.assertEqual(rgb, (32, 64, 16))
+
+    def test_simulation_preview_preserves_pulse_decay_instead_of_flickering(self) -> None:
+        tmp_dir = Path(self.id().replace(".", "_"))
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        path = tmp_dir / "devices.yaml"
+        path.write_text(
+            textwrap.dedent(
+                """
+                devices:
+                  - name: Preview Bulb
+                    address: 10.0.0.13
+                    protocol: bulb
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        adapter = SimulationMultiAdapter.from_configs(
+            load_device_config(path),
+            render_mode=RenderMode.PULSE,
+        )
+        intent = LightingIntent(
+            mode=EffectMode.PULSE,
+            intensity=1.0,
+            speed=1.0,
+            bpm=120.0,
+            color="#ffffff",
+        )
+
+        adapter.send_frame(1.0, intent, beat=True)
+        bright = adapter.preview_snapshot()["node_colors"]["10.0.0.13"]
+        adapter.send_frame(1.25, intent, beat=False)
+        faded = adapter.preview_snapshot()["node_colors"]["10.0.0.13"]
+
+        bright_level = int(bright[1:3], 16)
+        faded_level = int(faded[1:3], 16)
+        assert bright_level > faded_level > 0
+
+    def test_simulation_adapter_captures_baked_frame_node_colors(self) -> None:
+        tmp_dir = Path(self.id().replace(".", "_"))
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        path = tmp_dir / "devices.yaml"
+        path.write_text(
+            textwrap.dedent(
+                """
+                devices:
+                  - name: Baked Preview Strip
+                    address: 10.0.0.12
+                    type: lan
+                    segments: 3
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        adapter = SimulationMultiAdapter.from_configs(load_device_config(path))
+
+        self.assertTrue(adapter.send_baked_frame(
+            0.0,
+            {
+                "10.0.0.12#section:0": "#ff0000",
+                "10.0.0.12#section:1": "#00ff00",
+                "10.0.0.12#section:2": "#0000ff",
+            },
+        ))
+
+        self.assertEqual(
+            adapter.preview_snapshot()["node_colors"],
+            {
+                "10.0.0.12#section:0": "#ff0000",
+                "10.0.0.12#section:1": "#00ff00",
+                "10.0.0.12#section:2": "#0000ff",
+            },
+        )
+
+    def test_preview_mirror_exposes_hardware_show_frames_to_the_gui(self) -> None:
+        tmp_dir = Path(self.id().replace(".", "_"))
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        path = tmp_dir / "devices.yaml"
+        path.write_text(
+            textwrap.dedent(
+                """
+                devices:
+                  - name: Preview Bulb
+                    address: 10.0.0.13
+                    protocol: bulb
+                    x: 0.0
+                    y: 0.0
+                    z: 0.0
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        class HardwareAdapter:
+            device_status_label = "hardware output"
+            devices: list[object] = []
+
+            def __init__(self) -> None:
+                self.frames = 0
+
+            def activate(self, brightness: int = 100) -> None:
+                del brightness
+
+            def deactivate(self) -> None:
+                pass
+
+            def send_frame(self, *args, **kwargs) -> bool:
+                del args, kwargs
+                self.frames += 1
+                return True
+
+        hardware = HardwareAdapter()
+        mirror = PreviewMirrorAdapter(
+            hardware,
+            SimulationMultiAdapter.from_configs(load_device_config(path)),
+        )
+        mirror.activate()
+        self.assertTrue(
+            mirror.send_frame(
+                0.0,
+                LightingIntent(
+                    mode=EffectMode.AMBIENT,
+                    intensity=1.0,
+                    speed=0.0,
+                    bpm=120.0,
+                    color="#ff4400",
+                ),
+                params={"_render_mode": "solid"},
+            )
+        )
+
+        self.assertEqual(hardware.frames, 1)
+        self.assertTrue(
+            any(color.lower() != "#000000" for color in mirror.preview_snapshot()["node_colors"].values())
+        )
 
     def test_local_show_session_reports_simulation_mode_without_devices(self) -> None:
         tmp_dir = Path(self.id().replace(".", "_"))

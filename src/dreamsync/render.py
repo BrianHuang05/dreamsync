@@ -99,10 +99,14 @@ class SegmentRenderer:
         params: dict | None = None,
     ) -> list[tuple[int, int, int]]:
         decay = params.get("pulse_decay", self._pulse_decay) if params else self._pulse_decay
+        self._pulse_brightness *= math.exp(-decay * dt)
         if beat:
-            self._pulse_brightness = 1.0
-        else:
-            self._pulse_brightness *= math.exp(-decay * dt)
+            accent = float(params.get("beat_accent", 1.0)) if params else 1.0
+            accent = max(0.0, min(1.0, accent))
+            # A secondary beat only lifts the existing envelope. Full
+            # downbeats still reach 100%, while intervening beats add a gentle
+            # rhythmic nudge instead of a hard flash.
+            self._pulse_brightness = max(self._pulse_brightness, accent)
 
         r, g, b = _parse_hex(intent.color) if intent.color else _DEFAULT_COLOR
         level = self._pulse_brightness * max(0.0, min(1.0, intent.intensity))
@@ -150,12 +154,18 @@ class SegmentRenderer:
         # pattern is visible on large segment counts.
         if beat:
             color = _parse_hex(intent.color) if intent.color else _DEFAULT_COLOR
+            accent = float(params.get("beat_accent", 1.0)) if params else 1.0
+            accent = max(0.0, min(1.0, accent))
             cf = (float(color[0]), float(color[1]), float(color[2]))
             # Inject center + neighbors: ~20% of half-buffer, minimum 2 pixels
             inject_frac = params.get("scroll_inject_width", 0.2) if params else 0.2
             inject_width = max(2, int(half * inject_frac))
             for i in range(min(inject_width, half)):
-                self._scroll_buf[i] = cf
+                previous = self._scroll_buf[i]
+                self._scroll_buf[i] = tuple(
+                    current + ((target - current) * accent)
+                    for current, target in zip(previous, cf, strict=True)
+                )
 
         # Fade: distance-based attenuation tuned so a pixel reaches ~3%
         # brightness by the time it scrolls to the strip edge (~3s at

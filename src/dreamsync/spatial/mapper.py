@@ -8,7 +8,18 @@ from typing import Any, Literal
 from dreamsync.director import EffectMode, LightingIntent
 from dreamsync.show.models import ShowCue
 
-from .models import DevicePlacement, GridCell, SpatialCellState, SpatialLayerSpec
+from .models import (
+    DevicePlacement,
+    GridCell,
+    SpatialActivation,
+    SpatialCellState,
+    SpatialEffectLayer,
+    SpatialFalloff,
+    SpatialLayerCategory,
+    SpatialLayerSpec,
+    SpatialLayerState,
+    SpatialTriggerMode,
+)
 from .patterns import cell_coordinates, shift_hex_color
 
 SpatialAxis = Literal["x", "y", "z", "horizontal", "vertical", "depth", "diagonal", "radial"]
@@ -39,6 +50,7 @@ class SpatialSpec:
     extent: tuple[tuple[float, float, float], tuple[float, float, float]] | None
     delay_ms: float
     palette: tuple[str, ...] = ()
+    effect_layer: SpatialEffectLayer | None = None
 
 
 @dataclass(frozen=True)
@@ -66,6 +78,7 @@ ALL_CELLS: tuple[GridCell, ...] = (
 
 SPATIAL_PRESETS: dict[str, dict[str, object]] = {
     "ripple_left_to_right": {
+        "layer_category": "slice",
         "spatial_mode": "wave",
         "spatial_direction": "x+",
         "spatial_width": 0.30,
@@ -73,6 +86,7 @@ SPATIAL_PRESETS: dict[str, dict[str, object]] = {
         "spatial_delay_ms": 120.0,
     },
     "ripple_right_to_left": {
+        "layer_category": "slice",
         "spatial_mode": "wave",
         "spatial_direction": "x-",
         "spatial_width": 0.30,
@@ -80,6 +94,7 @@ SPATIAL_PRESETS: dict[str, dict[str, object]] = {
         "spatial_delay_ms": 120.0,
     },
     "ripple_from_center": {
+        "layer_category": "expand",
         "spatial_mode": "emanation",
         "spatial_origin": {"x": 0.0, "y": 0.0, "z": 0.0},
         "spatial_width": 0.32,
@@ -87,6 +102,7 @@ SPATIAL_PRESETS: dict[str, dict[str, object]] = {
         "spatial_delay_ms": 140.0,
     },
     "wave_top_to_bottom": {
+        "layer_category": "slice",
         "spatial_mode": "wave",
         "spatial_direction": "y-",
         "spatial_width": 0.28,
@@ -94,6 +110,7 @@ SPATIAL_PRESETS: dict[str, dict[str, object]] = {
         "spatial_delay_ms": 115.0,
     },
     "wave_bottom_to_top": {
+        "layer_category": "slice",
         "spatial_mode": "wave",
         "spatial_direction": "y+",
         "spatial_width": 0.28,
@@ -101,6 +118,7 @@ SPATIAL_PRESETS: dict[str, dict[str, object]] = {
         "spatial_delay_ms": 115.0,
     },
     "wave_front_to_back": {
+        "layer_category": "slice",
         "spatial_mode": "wave",
         "spatial_direction": "z+",
         "spatial_width": 0.28,
@@ -108,6 +126,7 @@ SPATIAL_PRESETS: dict[str, dict[str, object]] = {
         "spatial_delay_ms": 115.0,
     },
     "wave_back_to_front": {
+        "layer_category": "slice",
         "spatial_mode": "wave",
         "spatial_direction": "z-",
         "spatial_width": 0.28,
@@ -115,6 +134,7 @@ SPATIAL_PRESETS: dict[str, dict[str, object]] = {
         "spatial_delay_ms": 115.0,
     },
     "flash_top_only": {
+        "layer_category": "static",
         "spatial_mode": "wash",
         "spatial_extent": {
             "min": {"x": -1.0, "y": 0.35, "z": -1.0},
@@ -122,6 +142,7 @@ SPATIAL_PRESETS: dict[str, dict[str, object]] = {
         },
     },
     "flash_floor_only": {
+        "layer_category": "static",
         "spatial_mode": "wash",
         "spatial_extent": {
             "min": {"x": -1.0, "y": -1.0, "z": -1.0},
@@ -129,12 +150,14 @@ SPATIAL_PRESETS: dict[str, dict[str, object]] = {
         },
     },
     "blend_left_to_right": {
+        "layer_category": "slice",
         "spatial_mode": "blend",
         "spatial_direction": "x+",
         "spatial_width": 1.0,
         "spatial_blend": "linear",
     },
     "blend_front_to_back": {
+        "layer_category": "slice",
         "spatial_mode": "blend",
         "spatial_direction": "z+",
         "spatial_width": 1.0,
@@ -236,6 +259,17 @@ class SpatialMapper:
         delay_ms = float(params.get("spatial_delay_ms", params.get("rear_delay_ms", self.rear_delay_ms)))
         palette_raw = params.get("_spatial_palette")
         palette = tuple(str(color) for color in palette_raw) if isinstance(palette_raw, (list, tuple)) else ()
+        effect_layer = self.resolve_effect_layer(
+            intent,
+            params=params,
+            mode=mode,
+            origin=origin,
+            direction=direction,
+            width=width,
+            blend=blend,
+            extent=extent,
+            palette=palette,
+        )
         return SpatialSpec(
             mode=mode,
             origin=origin,
@@ -245,6 +279,89 @@ class SpatialMapper:
             extent=extent,
             delay_ms=delay_ms,
             palette=palette,
+            effect_layer=effect_layer,
+        )
+
+    def resolve_effect_layer(
+        self,
+        intent: LightingIntent,
+        *,
+        params: dict | None = None,
+        mode: SpatialMode | None = None,
+        origin: tuple[float, float, float] | None = None,
+        direction: tuple[float, float, float] | None = None,
+        width: float | None = None,
+        blend: str | None = None,
+        extent: tuple[tuple[float, float, float], tuple[float, float, float]] | None = None,
+        palette: tuple[str, ...] = (),
+    ) -> SpatialEffectLayer:
+        """Resolve legacy spatial metadata into the first-class effecting layer."""
+
+        normalized = self._normalize_spatial_params(intent, params=params)
+        explicit_layer = self._explicit_effect_layer(normalized.get("effect_layer"))
+        if explicit_layer is not None:
+            return self._layer_with_param_overrides(explicit_layer, normalized)
+        render_mode = str(normalized.get("_render_mode") or "")
+        resolved_mode = mode or self._resolve_mode(
+            normalized.get("spatial_mode"),
+            render_mode=render_mode,
+            intent_mode=intent.mode,
+        )
+        resolved_direction = direction
+        if resolved_direction is None:
+            resolved_direction = self._resolve_direction(
+                normalized.get("spatial_direction"),
+                axis=normalized.get("spatial_axis"),
+                fallback=self._default_direction_for_mode(resolved_mode),
+            )
+        resolved_origin = origin or self._resolve_origin(
+            normalized.get("spatial_origin"),
+            focus=normalized.get("spatial_focus"),
+            mode=resolved_mode,
+        )
+        width_raw = width if width is not None else normalized.get("spatial_width", 0.35)
+        resolved_width = max(0.05, min(2.0, float(width_raw)))
+        resolved_blend = blend or str(
+            normalized.get("spatial_blend", "radial" if resolved_mode == "emanation" else "linear")
+        )
+        implicit_layer = bool(normalized.get("_implicit_spatial_layer"))
+        resolved_extent = (
+            None
+            if implicit_layer
+            else extent if extent is not None else self._resolve_extent(normalized.get("spatial_extent"))
+        )
+        category = (
+            SpatialLayerCategory.STATIC
+            if implicit_layer
+            else self._resolve_layer_category(normalized.get("layer_category"), mode=resolved_mode)
+        )
+        falloff = self._resolve_layer_falloff(normalized.get("falloff", resolved_blend))
+        has_explicit_speed = "speed_units_per_second" in normalized
+        speed = self._resolve_layer_speed(normalized, intent=intent)
+        palette_raw = normalized.get("_spatial_palette")
+        resolved_palette = palette or (
+            tuple(str(color) for color in palette_raw) if isinstance(palette_raw, (list, tuple)) else ()
+        )
+        trigger_mode = self._resolve_trigger_mode(normalized.get("trigger_mode"))
+        color_bias = normalized.get("color_bias")
+        intensity_scale = self._clamp(float(normalized.get("intensity_scale", 1.0)), 0.0, 2.0)
+        return SpatialEffectLayer(
+            category=category,
+            effect_mode=render_mode or self._infer_render_mode_from_intent(intent),
+            trigger_mode=trigger_mode,
+            origin=resolved_origin,
+            direction=resolved_direction,
+            extent=resolved_extent,
+            thickness=resolved_width,
+            radius=self._clamp(float(normalized.get("radius", 0.0)), 0.0, 2.0),
+            speed_units_per_second=speed,
+            falloff=falloff,
+            palette=resolved_palette,
+            color_bias=str(color_bias) if isinstance(color_bias, str) else None,
+            intensity_scale=intensity_scale,
+            time_offset_s=float(normalized.get("time_offset_s", 0.0)),
+            duration_s=max(0.0, float(normalized.get("duration_s", 0.0))),
+            coordinate_scale=1.0 if has_explicit_speed else 0.5,
         )
 
     def resolve_spatial_layers(
@@ -279,13 +396,14 @@ class SpatialMapper:
                         weight=weight,
                         instrument=str(layer.get("instrument", "")),
                         blend_mode=str(layer.get("layer_blend", "max") or "max"),
+                        priority=self._layer_priority(layer),
                         color_override=str(layer["color_bias"]) if isinstance(layer.get("color_bias"), str) else None,
                         params=spatial_params,
                     ),
                     spec=spec,
                 )
             )
-        return base_spec, tuple(layers)
+        return base_spec, tuple(sorted(layers, key=lambda resolved: (resolved.layer.priority, resolved.layer.band, resolved.layer.instrument)))
 
     def sample_point(
         self,
@@ -298,29 +416,96 @@ class SpatialMapper:
             return SpatialSample(intensity_scale=0.0)
 
         point = (placement.x, placement.y, placement.z)
-        extent_factor = self._extent_factor(point, spec.extent)
-        if extent_factor <= 0.0:
+        activation = self.sample_effect_layer(t, placement, intent, spec)
+        if activation.strength <= 0.0:
             return SpatialSample(intensity_scale=0.0)
 
         if spec.mode == "wash":
-            return SpatialSample(intensity_scale=max(0.0, min(1.5, extent_factor * placement.weight)))
+            return SpatialSample(
+                intensity_scale=max(0.0, min(1.5, placement.weight * activation.intensity_scale)),
+                color_override=activation.color_override,
+            )
 
         if spec.mode == "blend":
             blend_factor = self._blend_factor(point, spec)
-            color_override = self._blend_palette(spec.palette, blend_factor)
+            color_override = activation.color_override or self._blend_palette(spec.palette, blend_factor)
             return SpatialSample(
-                intensity_scale=max(0.0, min(1.5, extent_factor * placement.weight)),
+                intensity_scale=max(0.0, min(1.5, placement.weight * activation.intensity_scale)),
                 color_override=color_override,
             )
 
-        freq = max(0.05, intent.speed) * max(0.5, intent.bpm / 60.0)
-        if spec.mode == "wave":
-            activation = self._wave_activation(t, point, spec, freq)
-        else:
-            activation = self._emanation_activation(t, point, spec, freq)
-
         return SpatialSample(
-            intensity_scale=max(0.0, min(1.5, extent_factor * placement.weight * (0.15 + (0.85 * activation)))),
+            intensity_scale=max(0.0, min(1.5, placement.weight * (0.15 + (0.85 * activation.intensity_scale)))),
+            color_override=activation.color_override,
+        )
+
+    def evaluate_effect_layer(
+        self,
+        t: float,
+        layer: SpatialEffectLayer,
+    ) -> SpatialLayerState:
+        local_t = max(0.0, t - layer.time_offset_s)
+        if layer.category == SpatialLayerCategory.SLICE:
+            speed = max(layer.speed_units_per_second, 0.0)
+            if layer.coordinate_scale < 1.0:
+                center = -1.0 + (2.0 * ((local_t * speed) % 1.0))
+            else:
+                center = -1.0 + ((local_t * speed) % 2.0)
+            return SpatialLayerState(layer=layer, t=local_t, center=center, radius=layer.radius)
+        if layer.category == SpatialLayerCategory.EXPAND:
+            radius = layer.radius + (local_t * max(layer.speed_units_per_second, 0.0))
+            return SpatialLayerState(layer=layer, t=local_t, center=0.0, radius=min(2.0, radius))
+        return SpatialLayerState(layer=layer, t=local_t, center=0.0, radius=layer.radius)
+
+    def sample_effect_layer(
+        self,
+        t: float,
+        placement: DevicePlacement,
+        intent: LightingIntent,
+        spec: SpatialSpec,
+    ) -> SpatialActivation:
+        layer = spec.effect_layer or self.resolve_effect_layer(
+            intent,
+            params={
+                "spatial_mode": spec.mode,
+                "spatial_origin": {"x": spec.origin[0], "y": spec.origin[1], "z": spec.origin[2]},
+                "spatial_direction": (
+                    {"x": spec.direction[0], "y": spec.direction[1], "z": spec.direction[2]}
+                    if spec.direction is not None
+                    else None
+                ),
+                "spatial_width": spec.width,
+                "spatial_blend": spec.blend,
+            },
+            mode=spec.mode,
+            origin=spec.origin,
+            direction=spec.direction,
+            width=spec.width,
+            blend=spec.blend,
+            extent=spec.extent,
+            palette=spec.palette,
+        )
+        state = self.evaluate_effect_layer(t, layer)
+        point = (placement.x, placement.y, placement.z)
+        if spec.mode == "blend" and self._extent_factor(point, layer.extent) > 0.0:
+            color_override = layer.color_bias
+            if color_override is None and layer.palette:
+                color_override = self._blend_palette(layer.palette, self._blend_factor(point, spec))
+            return SpatialActivation(
+                strength=1.0,
+                intensity_scale=max(0.0, min(1.5, layer.intensity_scale)),
+                color_override=color_override,
+                effect_mode=layer.effect_mode,
+            )
+        strength = self._layer_activation_strength(point, state)
+        color_override = layer.color_bias if strength > 0.0 else None
+        if color_override is None and layer.palette and spec.mode == "blend":
+            color_override = self._blend_palette(layer.palette, self._blend_factor(point, spec))
+        return SpatialActivation(
+            strength=strength,
+            intensity_scale=max(0.0, min(1.5, strength * layer.intensity_scale)),
+            color_override=color_override,
+            effect_mode=layer.effect_mode,
         )
 
     def _balanced_scene(
@@ -507,6 +692,51 @@ class SpatialMapper:
             return "emanation"
         return "wash"
 
+    def _resolve_layer_category(
+        self,
+        raw: object,
+        *,
+        mode: SpatialMode,
+    ) -> SpatialLayerCategory:
+        if isinstance(raw, str):
+            alias = raw.strip().lower()
+            if alias in {"static", "slice", "expand"}:
+                return SpatialLayerCategory(alias)
+        if mode in {"wave", "blend"}:
+            return SpatialLayerCategory.SLICE
+        if mode == "emanation":
+            return SpatialLayerCategory.EXPAND
+        return SpatialLayerCategory.STATIC
+
+    def _resolve_layer_falloff(self, raw: object) -> SpatialFalloff:
+        if isinstance(raw, str):
+            alias = raw.strip().lower()
+            if alias in {"hard", "linear", "smoothstep", "radial"}:
+                return SpatialFalloff(alias)
+        return SpatialFalloff.LINEAR
+
+    def _resolve_trigger_mode(self, raw: object) -> SpatialTriggerMode:
+        if isinstance(raw, str):
+            alias = raw.strip().lower()
+            if alias in {"continuous", "oneshot", "latched"}:
+                return SpatialTriggerMode(alias)
+        return SpatialTriggerMode.CONTINUOUS
+
+    def _resolve_layer_speed(
+        self,
+        params: dict[str, object],
+        *,
+        intent: LightingIntent,
+    ) -> float:
+        raw = params.get("speed_units_per_second")
+        if raw is not None:
+            try:
+                return max(0.0, float(raw))
+            except (TypeError, ValueError):
+                pass
+        bpm_factor = max(0.5, intent.bpm / 60.0)
+        return max(0.05, intent.speed) * bpm_factor
+
     def _resolve_direction(
         self,
         raw: object,
@@ -629,17 +859,108 @@ class SpatialMapper:
             normalized.get("_render_mode") or self._infer_render_mode_from_intent(intent)
         )
 
+        explicit_layer = self._explicit_effect_layer(normalized.get("effect_layer"))
+        if explicit_layer is not None:
+            self._apply_effect_layer_compatibility(normalized, explicit_layer)
+
         preset_name = normalized.get("spatial_preset")
-        if isinstance(preset_name, str):
+        if explicit_layer is not None:
+            pass
+        elif isinstance(preset_name, str):
             self._apply_spatial_preset(normalized, preset_name)
         elif not self._has_explicit_spatial_metadata(normalized):
             implicit = self._default_preset_for_intent(intent, render_mode=effective_render_mode)
             if implicit is not None:
+                # Implicit presets describe the room projection for an ordinary
+                # rendered cue.  They must not apply a second moving mask to the
+                # renderer output; explicit presets/layers remain effecting.
+                normalized["_implicit_spatial_layer"] = True
                 self._apply_spatial_preset(normalized, implicit)
 
         self._apply_legacy_spatial_compatibility(normalized)
         normalized.setdefault("_render_mode", effective_render_mode)
         return normalized
+
+    def _explicit_effect_layer(self, raw: object) -> SpatialEffectLayer | None:
+        if isinstance(raw, SpatialEffectLayer):
+            return raw
+        if isinstance(raw, dict):
+            try:
+                return SpatialEffectLayer.from_mapping(raw)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _layer_with_param_overrides(
+        self,
+        layer: SpatialEffectLayer,
+        params: dict[str, object],
+    ) -> SpatialEffectLayer:
+        updates: dict[str, object] = {}
+        for key in ("time_offset_s", "duration_s", "intensity_scale", "radius"):
+            if key not in params:
+                continue
+            try:
+                updates[key] = float(params[key])
+            except (TypeError, ValueError):
+                continue
+        if "falloff" in params:
+            updates["falloff"] = self._resolve_layer_falloff(params.get("falloff"))
+        if "trigger_mode" in params:
+            updates["trigger_mode"] = self._resolve_trigger_mode(params.get("trigger_mode"))
+        if "speed_units_per_second" in params:
+            try:
+                updates["speed_units_per_second"] = max(0.0, float(params["speed_units_per_second"]))
+            except (TypeError, ValueError):
+                pass
+        if "spatial_width" in params:
+            try:
+                updates["thickness"] = max(0.05, float(params["spatial_width"]))
+            except (TypeError, ValueError):
+                pass
+        return replace(layer, **updates) if updates else layer
+
+    def _apply_effect_layer_compatibility(
+        self,
+        params: dict[str, object],
+        layer: SpatialEffectLayer,
+    ) -> None:
+        params.setdefault("layer_category", layer.category.value)
+        params.setdefault("trigger_mode", layer.trigger_mode.value)
+        params.setdefault("falloff", layer.falloff.value)
+        params.setdefault("spatial_mode", self._mode_for_layer_category(layer.category, layer.effect_mode))
+        params.setdefault("spatial_origin", {"x": layer.origin[0], "y": layer.origin[1], "z": layer.origin[2]})
+        if layer.direction is not None:
+            params.setdefault("spatial_direction", {"x": layer.direction[0], "y": layer.direction[1], "z": layer.direction[2]})
+        if layer.extent is not None:
+            params.setdefault(
+                "spatial_extent",
+                {
+                    "min": {"x": layer.extent[0][0], "y": layer.extent[0][1], "z": layer.extent[0][2]},
+                    "max": {"x": layer.extent[1][0], "y": layer.extent[1][1], "z": layer.extent[1][2]},
+                },
+            )
+        params.setdefault("spatial_width", layer.thickness)
+        params.setdefault("radius", layer.radius)
+        params.setdefault("speed_units_per_second", layer.speed_units_per_second)
+        params.setdefault("intensity_scale", layer.intensity_scale)
+        params.setdefault("time_offset_s", layer.time_offset_s)
+        params.setdefault("duration_s", layer.duration_s)
+        if layer.palette:
+            params.setdefault("_spatial_palette", layer.palette)
+        if layer.color_bias is not None:
+            params.setdefault("color_bias", layer.color_bias)
+
+    def _mode_for_layer_category(
+        self,
+        category: SpatialLayerCategory,
+        effect_mode: str,
+    ) -> SpatialMode:
+        if category == SpatialLayerCategory.SLICE:
+            return "blend" if effect_mode == "gradient" else "wave"
+        if category == SpatialLayerCategory.EXPAND:
+            return "emanation"
+        return "wash"
 
     def _infer_render_mode_from_intent(self, intent: LightingIntent) -> str:
         if intent.mode == EffectMode.RIPPLE:
@@ -672,6 +993,15 @@ class SpatialMapper:
                 "spatial_extent",
                 "spatial_delay_ms",
                 "spatial_preset",
+                "effect_layer",
+                "layer_category",
+                "trigger_mode",
+                "falloff",
+                "radius",
+                "speed_units_per_second",
+                "intensity_scale",
+                "time_offset_s",
+                "duration_s",
             )
         )
 
@@ -756,6 +1086,36 @@ class SpatialMapper:
             return 1.0
         return 0.0
 
+    def _layer_activation_strength(
+        self,
+        point: tuple[float, float, float],
+        state: SpatialLayerState,
+    ) -> float:
+        layer = state.layer
+        if self._extent_factor(point, layer.extent) <= 0.0:
+            return 0.0
+        if layer.category == SpatialLayerCategory.STATIC:
+            return 1.0
+        if layer.category == SpatialLayerCategory.SLICE:
+            if layer.direction is None:
+                return 1.0
+            projection = self._raw_project(point, layer.origin, layer.direction) * layer.coordinate_scale
+            return self._layer_falloff(abs(projection - state.center), layer.thickness, layer.falloff)
+        if layer.category == SpatialLayerCategory.EXPAND:
+            distance = self._distance(point, layer.origin)
+            return self._layer_falloff(abs(distance - state.radius), layer.thickness, layer.falloff)
+        return 0.0
+
+    def _layer_falloff(
+        self,
+        distance: float,
+        thickness: float,
+        falloff: SpatialFalloff,
+    ) -> float:
+        if falloff == SpatialFalloff.HARD:
+            return 1.0 if distance <= max(thickness, 0.05) else 0.0
+        return self._falloff(distance, thickness, falloff.value)
+
     def _blend_factor(
         self,
         point: tuple[float, float, float],
@@ -809,6 +1169,19 @@ class SpatialMapper:
         )
         return max(-1.0, min(1.0, raw / 2.0))
 
+    def _raw_project(
+        self,
+        point: tuple[float, float, float],
+        origin: tuple[float, float, float],
+        direction: tuple[float, float, float],
+    ) -> float:
+        raw = (
+            ((point[0] - origin[0]) * direction[0])
+            + ((point[1] - origin[1]) * direction[1])
+            + ((point[2] - origin[2]) * direction[2])
+        )
+        return max(-1.0, min(1.0, raw))
+
     def _distance(
         self,
         point: tuple[float, float, float],
@@ -830,6 +1203,10 @@ class SpatialMapper:
     def _smoothstep(self, value: float) -> float:
         value = min(1.0, max(0.0, value))
         return value * value * (3.0 - (2.0 * value))
+
+    @staticmethod
+    def _clamp(value: float, low: float, high: float) -> float:
+        return max(low, min(high, value))
 
     def _blend_palette(self, palette: tuple[str, ...], factor: float) -> str | None:
         if not palette:
@@ -861,8 +1238,18 @@ class SpatialMapper:
             "spatial_extent",
             "spatial_delay_ms",
             "spatial_preset",
+            "effect_layer",
             "spatial_axis",
             "spatial_focus",
+            "layer_category",
+            "trigger_mode",
+            "falloff",
+            "radius",
+            "speed_units_per_second",
+            "intensity_scale",
+            "time_offset_s",
+            "duration_s",
+            "color_bias",
         ):
             if key in layer:
                 params[key] = self._copy_spatial_value(layer[key])
@@ -877,6 +1264,14 @@ class SpatialMapper:
             return max(0.0, min(1.5, float(raw)))
         except (TypeError, ValueError):
             return 0.0
+
+    @staticmethod
+    def _layer_priority(layer: dict[str, object]) -> int:
+        raw = layer.get("layer_priority", layer.get("priority", 0))
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 0
 
 
 def _interpolate_hex(a: str, b: str, t: float) -> str:

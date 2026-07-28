@@ -7,7 +7,14 @@ import unittest
 from dreamsync.director import EffectMode, LightingIntent
 from dreamsync.show.models import ShowCue
 from dreamsync.spatial.mapper import SpatialMapper
-from dreamsync.spatial.models import GridCell
+from dreamsync.spatial.models import (
+    DevicePlacement,
+    GridCell,
+    SpatialEffectLayer,
+    SpatialFalloff,
+    SpatialLayerCategory,
+    SpatialTriggerMode,
+)
 
 
 def _intent(
@@ -161,6 +168,110 @@ class SpatialMapperTests(unittest.TestCase):
         self.assertIsNotNone(spec.extent)
         assert spec.extent is not None
         self.assertGreater(spec.extent[0][1], 0.0)
+        assert spec.effect_layer is not None
+        self.assertEqual(spec.effect_layer.category, SpatialLayerCategory.STATIC)
+
+    def test_implicit_spatial_preset_does_not_mask_ordinary_renderer_output(self) -> None:
+        mapper = SpatialMapper(enabled=True)
+        intent = _intent()
+        spec = mapper.resolve_spatial_spec(
+            intent,
+            params={"_render_mode": "scroll", "scroll_inject_width": 0.35},
+        )
+
+        assert spec.effect_layer is not None
+        self.assertEqual(spec.effect_layer.category, SpatialLayerCategory.STATIC)
+        self.assertIsNone(spec.effect_layer.extent)
+        left = mapper.sample_point(
+            0.0,
+            DevicePlacement(x=-1.0, y=0.0, z=0.0),
+            intent,
+            spec,
+        )
+        right = mapper.sample_point(
+            0.0,
+            DevicePlacement(x=1.0, y=0.0, z=0.0),
+            intent,
+            spec,
+        )
+        self.assertGreater(left.intensity_scale, 0.0)
+        self.assertGreater(right.intensity_scale, 0.0)
+
+    def test_spatial_presets_resolve_to_canonical_layer_categories(self) -> None:
+        mapper = SpatialMapper(enabled=True)
+        static = mapper.resolve_spatial_spec(
+            _intent(mode=EffectMode.AMBIENT),
+            params={"spatial_preset": "flash_top_only"},
+        )
+        slice_layer = mapper.resolve_spatial_spec(
+            _intent(),
+            params={"spatial_preset": "ripple_left_to_right"},
+        )
+        expand = mapper.resolve_spatial_spec(
+            _intent(mode=EffectMode.RIPPLE),
+            params={"spatial_preset": "ripple_from_center"},
+        )
+        assert static.effect_layer is not None
+        assert slice_layer.effect_layer is not None
+        assert expand.effect_layer is not None
+        self.assertEqual(static.effect_layer.category, SpatialLayerCategory.STATIC)
+        self.assertEqual(slice_layer.effect_layer.category, SpatialLayerCategory.SLICE)
+        self.assertEqual(expand.effect_layer.category, SpatialLayerCategory.EXPAND)
+
+    def test_static_layer_extent_samples_only_matching_region(self) -> None:
+        mapper = SpatialMapper(enabled=True)
+        spec = mapper.resolve_spatial_spec(
+            _intent(mode=EffectMode.AMBIENT),
+            params={"spatial_preset": "flash_top_only"},
+        )
+        top = mapper.sample_point(0.0, DevicePlacement(x=0.0, y=0.8, z=0.0), _intent(), spec)
+        floor = mapper.sample_point(0.0, DevicePlacement(x=0.0, y=-0.8, z=0.0), _intent(), spec)
+        self.assertGreater(top.intensity_scale, 0.0)
+        self.assertEqual(floor.intensity_scale, 0.0)
+
+    def test_slice_layer_activates_in_left_to_right_x_order(self) -> None:
+        mapper = SpatialMapper(enabled=True)
+        spec = mapper.resolve_spatial_spec(
+            _intent(speed=1.0, bpm=60.0),
+            params={
+                "spatial_preset": "ripple_left_to_right",
+                "spatial_width": 0.2,
+                "falloff": "hard",
+                "speed_units_per_second": 1.0,
+            },
+        )
+        left = DevicePlacement(x=-1.0, y=0.0, z=0.0)
+        right = DevicePlacement(x=1.0, y=0.0, z=0.0)
+        self.assertGreater(
+            mapper.sample_point(0.0, left, _intent(speed=1.0, bpm=60.0), spec).intensity_scale,
+            mapper.sample_point(0.0, right, _intent(speed=1.0, bpm=60.0), spec).intensity_scale,
+        )
+        self.assertGreater(
+            mapper.sample_point(1.9, right, _intent(speed=1.0, bpm=60.0), spec).intensity_scale,
+            mapper.sample_point(1.9, left, _intent(speed=1.0, bpm=60.0), spec).intensity_scale,
+        )
+
+    def test_expand_layer_propagates_from_center_origin(self) -> None:
+        mapper = SpatialMapper(enabled=True)
+        spec = mapper.resolve_spatial_spec(
+            _intent(mode=EffectMode.RIPPLE, speed=1.0, bpm=60.0),
+            params={
+                "spatial_preset": "ripple_from_center",
+                "spatial_width": 0.2,
+                "falloff": "hard",
+                "speed_units_per_second": 1.0,
+            },
+        )
+        center = DevicePlacement(x=0.0, y=0.0, z=0.0)
+        edge = DevicePlacement(x=1.0, y=0.0, z=0.0)
+        self.assertGreater(
+            mapper.sample_point(0.0, center, _intent(mode=EffectMode.RIPPLE), spec).intensity_scale,
+            mapper.sample_point(0.0, edge, _intent(mode=EffectMode.RIPPLE), spec).intensity_scale,
+        )
+        self.assertGreater(
+            mapper.sample_point(1.0, edge, _intent(mode=EffectMode.RIPPLE), spec).intensity_scale,
+            mapper.sample_point(1.0, center, _intent(mode=EffectMode.RIPPLE), spec).intensity_scale,
+        )
 
     def test_resolve_spatial_layers_extracts_multiple_band_layers(self) -> None:
         mapper = SpatialMapper(enabled=True)
@@ -219,6 +330,102 @@ class SpatialMapperTests(unittest.TestCase):
         )
         self.assertEqual(len(layers), 1)
         self.assertEqual(layers[0].layer.instrument, "vocals")
+
+    def test_resolve_spatial_layers_orders_by_explicit_priority(self) -> None:
+        mapper = SpatialMapper(enabled=True)
+        _base_spec, layers = mapper.resolve_spatial_layers(
+            _intent(mode=EffectMode.AMBIENT),
+            params={
+                "spatial_mode": "wash",
+                "scene_layers": [
+                    {
+                        "band": "presence",
+                        "spatial_preset": "flash_top_only",
+                        "color_bias": "#66ccff",
+                        "layer_priority": 10,
+                    },
+                    {
+                        "band": "bass",
+                        "spatial_preset": "flash_floor_only",
+                        "color_bias": "#ff8800",
+                        "layer_priority": 2,
+                    },
+                ],
+            },
+        )
+        self.assertEqual([layer.layer.band for layer in layers], ["bass", "presence"])
+        self.assertEqual([layer.layer.priority for layer in layers], [2, 10])
+
+    def test_resolve_spatial_spec_accepts_explicit_effect_layer_descriptor(self) -> None:
+        mapper = SpatialMapper(enabled=True)
+        layer = SpatialEffectLayer(
+            category=SpatialLayerCategory.SLICE,
+            effect_mode="pulse",
+            trigger_mode=SpatialTriggerMode.ONESHOT,
+            origin=(0.0, 0.0, 0.0),
+            direction=(1.0, 0.0, 0.0),
+            thickness=0.2,
+            speed_units_per_second=1.0,
+            falloff=SpatialFalloff.HARD,
+            color_bias="#ff00ff",
+        )
+
+        spec = mapper.resolve_spatial_spec(
+            _intent(mode=EffectMode.PULSE),
+            params={"effect_layer": layer.to_mapping()},
+        )
+        assert spec.effect_layer is not None
+        self.assertEqual(spec.effect_layer, layer)
+        self.assertEqual(spec.mode, "wave")
+        self.assertEqual(spec.direction, (1.0, 0.0, 0.0))
+        sample = mapper.sample_point(
+            0.0,
+            DevicePlacement(x=-1.0, y=0.0, z=0.0),
+            _intent(mode=EffectMode.PULSE),
+            spec,
+        )
+        self.assertEqual(sample.color_override, "#ff00ff")
+        self.assertGreater(sample.intensity_scale, 0.0)
+
+    def test_explicit_effect_layer_accepts_top_level_timing_overrides(self) -> None:
+        mapper = SpatialMapper(enabled=True)
+        layer = SpatialEffectLayer(
+            category=SpatialLayerCategory.SLICE,
+            effect_mode="pulse",
+            direction=(1.0, 0.0, 0.0),
+            speed_units_per_second=1.0,
+        )
+
+        spec = mapper.resolve_spatial_spec(
+            _intent(mode=EffectMode.PULSE),
+            params={
+                "effect_layer": layer.to_mapping(),
+                "duration_s": 0.25,
+                "speed_units_per_second": 0.5,
+                "spatial_width": 0.3,
+            },
+        )
+        assert spec.effect_layer is not None
+        self.assertAlmostEqual(spec.effect_layer.duration_s, 0.25)
+        self.assertAlmostEqual(spec.effect_layer.speed_units_per_second, 0.5)
+        self.assertAlmostEqual(spec.effect_layer.thickness, 0.3)
+
+    def test_resolve_spatial_layers_accepts_effect_layer_descriptor(self) -> None:
+        mapper = SpatialMapper(enabled=True)
+        layer = SpatialEffectLayer(
+            category=SpatialLayerCategory.STATIC,
+            effect_mode="ambient",
+            extent=((-1.0, 0.0, -1.0), (1.0, 1.0, 1.0)),
+            color_bias="#44ccff",
+        )
+
+        _base_spec, layers = mapper.resolve_spatial_layers(
+            _intent(mode=EffectMode.AMBIENT),
+            params={"scene_layers": [{"band": "presence", "effect_layer": layer.to_mapping()}]},
+        )
+        self.assertEqual(len(layers), 1)
+        self.assertEqual(layers[0].spec.effect_layer, layer)
+        self.assertEqual(layers[0].spec.mode, "wash")
 
     def test_mapping_is_deterministic(self) -> None:
         mapper = SpatialMapper(enabled=True)

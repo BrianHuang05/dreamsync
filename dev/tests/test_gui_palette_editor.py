@@ -132,6 +132,18 @@ def test_profile_service_generates_complementary_palette_from_two_seeds():
     assert all(color.startswith("#") for color in palette)
 
 
+def test_profile_service_randomness_salts_seed_colors_only_when_requested():
+    service = ProfileService()
+
+    stable_a = service.generate_palette_from_seed_colors(["#ff8800"], scheme="analogous")
+    stable_b = service.generate_palette_from_seed_colors(["#ff8800"], scheme="analogous")
+    salted_a = service.generate_palette_from_seed_colors(["#ff8800"], scheme="analogous", rng_seed=1)
+    salted_b = service.generate_palette_from_seed_colors(["#ff8800"], scheme="analogous", rng_seed=2)
+
+    assert stable_a == stable_b
+    assert salted_a != salted_b
+
+
 def test_profile_service_generates_quickshow_document_without_spatial_defaults():
     service = ProfileService()
 

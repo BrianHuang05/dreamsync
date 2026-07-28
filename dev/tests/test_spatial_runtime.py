@@ -40,6 +40,7 @@ class _FakeRenderer:
         self.calls: list[dict] = []
         self.mirror = True
         self._colors = colors or [(1, 2, 3)]
+        self.segments = len(self._colors)
 
     def render(self, t, intent, beat=False, params=None):
         self.calls.append({
@@ -64,6 +65,16 @@ class _FakeBleFollower:
 
     def stop(self):
         pass
+
+
+class _CountingSpatialMapper(SpatialMapper):
+    def __init__(self):
+        super().__init__(enabled=True)
+        self.resolve_calls = 0
+
+    def resolve_spatial_layers(self, intent, *, params=None):
+        self.resolve_calls += 1
+        return super().resolve_spatial_layers(intent, params=params)
 
 
 def _intent(intensity: float = 0.5, color: str = "#3366ff") -> LightingIntent:
@@ -134,6 +145,120 @@ class SpatialRuntimeTests(unittest.TestCase):
         left_frame = multi.devices[0][0].frames[0]
         right_frame = multi.devices[1][0].frames[0]
         self.assertGreater(sum(left_frame[0]), sum(right_frame[0]))
+
+    def test_continuous_spatial_frame_uses_cue_local_spatial_time(self) -> None:
+        left_adapter = _FakeAdapter()
+        right_adapter = _FakeAdapter()
+        layer = {
+            "layer_category": "slice",
+            "effect_mode": "pulse",
+            "origin": {"x": 0.0, "y": 0.0, "z": 0.0},
+            "direction": {"x": 1.0, "y": 0.0, "z": 0.0},
+            "thickness": 0.2,
+            "speed_units_per_second": 0.25,
+            "falloff": "hard",
+        }
+        multi = MultiGoveeLanAdapter(
+            [
+                (
+                    left_adapter,
+                    _FakeRenderer(colors=[(100, 100, 100)]),
+                    DeviceRole.PRIMARY,
+                    1.0,
+                    DevicePlacement(x=-1.0, y=0.0, z=0.0),
+                ),
+                (
+                    right_adapter,
+                    _FakeRenderer(colors=[(100, 100, 100)]),
+                    DeviceRole.PRIMARY,
+                    1.0,
+                    DevicePlacement(x=1.0, y=0.0, z=0.0),
+                ),
+            ],
+            spatial_mapper=SpatialMapper(enabled=True),
+        )
+
+        multi.send_frame(20.0, _intent(), params={"effect_layer": layer, "_spatial_t": 0.0})
+        self.assertGreater(sum(left_adapter.frames[-1][0]), sum(right_adapter.frames[-1][0]))
+
+        multi.send_frame(20.0, _intent(), params={"effect_layer": layer, "_spatial_t": 7.6})
+        self.assertGreater(sum(right_adapter.frames[-1][0]), sum(left_adapter.frames[-1][0]))
+
+    def test_spatial_control_params_are_not_forwarded_to_renderer(self) -> None:
+        adapter = _FakeAdapter()
+        renderer = _FakeRenderer(colors=[(100, 100, 100)])
+        multi = MultiGoveeLanAdapter(
+            [
+                (
+                    adapter,
+                    renderer,
+                    DeviceRole.PRIMARY,
+                    1.0,
+                    DevicePlacement(x=0.0, y=0.0, z=0.0),
+                ),
+            ],
+            spatial_mapper=SpatialMapper(enabled=True),
+        )
+        multi.send_frame(
+            0.0,
+            _intent(),
+            params={
+                "effect_layer": {"layer_category": "slice"},
+                "duration_s": 0.25,
+                "spatial_width": 0.4,
+                "speed_units_per_second": 0.25,
+                "_spatial_t": 0.0,
+                "wave_rate_mult": 1.5,
+            },
+        )
+
+        render_params = renderer.calls[-1]["params"]
+        self.assertEqual(render_params, {"wave_rate_mult": 1.5})
+
+    def test_prepared_spatial_cue_skips_runtime_layer_resolution(self) -> None:
+        adapter = _FakeAdapter()
+        renderer = _FakeRenderer(colors=[(100, 100, 100)])
+        mapper = _CountingSpatialMapper()
+        multi = MultiGoveeLanAdapter(
+            [
+                (
+                    adapter,
+                    renderer,
+                    DeviceRole.PRIMARY,
+                    1.0,
+                    DevicePlacement(x=0.0, y=0.0, z=0.0),
+                ),
+            ],
+            spatial_mapper=mapper,
+        )
+        params = {
+            "effect_layer": {"layer_category": "slice", "spatial_direction": "x+"},
+            "_prepared_spatial_key": "cue-1",
+        }
+
+        self.assertTrue(multi.prepare_spatial_cue("cue-1", _intent(), params=params))
+        multi.send_frame(0.0, _intent(), params=params)
+
+        self.assertEqual(mapper.resolve_calls, 1)
+
+    def test_legacy_send_path_also_hides_spatial_control_params(self) -> None:
+        adapter = _FakeAdapter()
+        renderer = _FakeRenderer(colors=[(100, 100, 100)])
+        multi = MultiGoveeLanAdapter([(adapter, renderer, DeviceRole.PRIMARY)])
+
+        multi.send_frame(
+            0.0,
+            _intent(),
+            params={
+                "effect_layer": {"layer_category": "slice"},
+                "duration_s": 0.25,
+                "_spatial_t": 0.0,
+                "wave_rate_mult": 1.5,
+            },
+        )
+
+        render_params = renderer.calls[-1]["params"]
+        self.assertEqual(render_params, {"wave_rate_mult": 1.5})
 
     def test_vertical_wave_can_run_top_to_bottom(self) -> None:
         top = _FakeAdapter()
@@ -286,6 +411,38 @@ class SpatialRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(ble.calls[0][1].color, "#ffffff")
 
+    def test_ble_follower_layer_color_prefers_higher_priority(self) -> None:
+        ble = _FakeBleFollower()
+        multi = MultiGoveeLanAdapter(
+            [],
+            ble_followers=[(ble, DeviceRole.PRIMARY, 1.0, DevicePlacement(x=0.0, y=1.0, z=0.0))],
+            spatial_mapper=SpatialMapper(enabled=True),
+        )
+        multi.send_frame(
+            0.0,
+            LightingIntent(mode=EffectMode.AMBIENT, intensity=1.0, speed=0.0, bpm=60.0, color="#101010"),
+            params={
+                "spatial_mode": "wash",
+                "scene_layers": [
+                    {
+                        "band": "presence",
+                        "spatial_preset": "flash_top_only",
+                        "color_bias": "#66ccff",
+                        "layer_weight": 0.8,
+                        "layer_priority": 1,
+                    },
+                    {
+                        "band": "air",
+                        "spatial_preset": "flash_top_only",
+                        "color_bias": "#dff6ff",
+                        "layer_weight": 0.7,
+                        "layer_priority": 5,
+                    },
+                ],
+            },
+        )
+        self.assertEqual(ble.calls[0][1].color, "#dff6ff")
+
     def test_spatial_on_routes_by_resolved_grid_cell(self) -> None:
         adapter = _FakeAdapter()
         renderer = _FakeRenderer()
@@ -385,6 +542,54 @@ class SpatialRuntimeTests(unittest.TestCase):
             (_FakeAdapter(returns=True), _FakeRenderer(), DeviceRole.PRIMARY, 1.0, None),
         ])
         self.assertTrue(multi.send_spatial_scene(0.0, _scene(), base_intent=_intent()))
+
+    def test_baked_frame_maps_section_keys_to_segments(self) -> None:
+        adapter = _FakeAdapter()
+        adapter.config.device_ip = "10.0.0.2"
+        renderer = _FakeRenderer(colors=[(0, 0, 0), (0, 0, 0), (0, 0, 0)])
+        multi = MultiGoveeLanAdapter([
+            (adapter, renderer, DeviceRole.PRIMARY, 1.0, None)
+        ])
+
+        sent = multi.send_baked_frame(
+            0.5,
+            {
+                "10.0.0.2#section:0": "#ff0000",
+                "10.0.0.2#section:1": "#00ff00",
+                "10.0.0.2#section:2": "#0000ff",
+            },
+        )
+
+        self.assertTrue(sent)
+        self.assertEqual(adapter.frames[0], [(255, 0, 0), (0, 255, 0), (0, 0, 255)])
+
+    def test_baked_frame_uses_device_color_and_fallback(self) -> None:
+        known = _FakeAdapter()
+        known.config.device_ip = "10.0.0.2"
+        missing = _FakeAdapter()
+        missing.config.device_ip = "10.0.0.3"
+        multi = MultiGoveeLanAdapter([
+            (known, _FakeRenderer(colors=[(0, 0, 0), (0, 0, 0)]), DeviceRole.PRIMARY, 1.0, None),
+            (missing, _FakeRenderer(colors=[(0, 0, 0)]), DeviceRole.PRIMARY, 1.0, None),
+        ])
+
+        multi.send_baked_frame(
+            0.5,
+            {"10.0.0.2": "#123456"},
+            fallback_color="#010203",
+        )
+
+        self.assertEqual(known.frames[0], [(18, 52, 86), (18, 52, 86)])
+        self.assertEqual(missing.frames[0], [(1, 2, 3)])
+
+    def test_baked_frame_emits_ble_fallback_intent(self) -> None:
+        ble = _FakeBleFollower()
+        multi = MultiGoveeLanAdapter([], ble_followers=[ble])
+
+        self.assertTrue(multi.send_baked_frame(1.25, {}, fallback_color="#abcdef"))
+
+        self.assertEqual(ble.calls[0][0], 1.25)
+        self.assertEqual(ble.calls[0][1].color, "#abcdef")
 
     def test_replace_devices_preserves_placement_metadata(self) -> None:
         placement = DevicePlacement(x=0.0, y=1.0)

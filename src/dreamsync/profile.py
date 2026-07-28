@@ -106,6 +106,7 @@ class ProfileConfig:
     cycle_interval: float | None = None
     eq_routes: tuple[EqRouteRule, ...] = ()
     instrument_routes: tuple[InstrumentRouteRule, ...] = ()
+    show_palette_sets: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +347,31 @@ def load_profile(path: Path) -> ProfileConfig:
             _validate_hex_color(c, f"palette '{pal_name}'")
         palettes[pal_name] = tuple(colors)
 
+    # --- show palette sets (optional) ---
+    show_palette_sets_raw = raw.get("show_palette_sets", {})
+    if not isinstance(show_palette_sets_raw, dict):
+        raise ProfileError("'show_palette_sets' must be a mapping of set_name -> [palette names]")
+    show_palette_sets: dict[str, tuple[str, ...]] = {}
+    for set_name, palette_names in show_palette_sets_raw.items():
+        if not isinstance(set_name, str) or not set_name.strip():
+            raise ProfileError("Show Palette set names must be non-empty strings")
+        if not isinstance(palette_names, list) or not palette_names:
+            raise ProfileError(
+                f"Show Palette set '{set_name}' must contain at least one palette name"
+            )
+        normalized_names = tuple(str(name).strip() for name in palette_names)
+        if any(not name for name in normalized_names):
+            raise ProfileError(f"Show Palette set '{set_name}' contains an empty palette name")
+        if len(set(normalized_names)) != len(normalized_names):
+            raise ProfileError(f"Show Palette set '{set_name}' cannot contain duplicate palettes")
+        for palette_name in normalized_names:
+            if palette_name not in palettes:
+                raise ProfileError(
+                    f"Show Palette set '{set_name}' references unknown profile palette "
+                    f"'{palette_name}'"
+                )
+        show_palette_sets[set_name] = normalized_names
+
     # --- moods ---
     moods_raw = raw.get("moods", {})
     if not isinstance(moods_raw, dict):
@@ -451,6 +477,7 @@ def load_profile(path: Path) -> ProfileConfig:
         cycle_interval=cycle_interval,
         eq_routes=profile_eq_routes,
         instrument_routes=profile_instrument_routes,
+        show_palette_sets=show_palette_sets,
     )
 
 
@@ -463,6 +490,12 @@ def profile_to_data(profile: ProfileConfig) -> dict[str, Any]:
         "author": profile.author,
         "tags": list(profile.tags),
         "palettes": {name: list(colors) for name, colors in profile.palettes.items()},
+        **({
+            "show_palette_sets": {
+                name: list(palette_names)
+                for name, palette_names in profile.show_palette_sets.items()
+            }
+        } if profile.show_palette_sets else {}),
         "moods": {
             mood: {
                 "palettes": list(config.palettes),
@@ -526,6 +559,7 @@ def update_profile_palette(
         cycle_interval=profile.cycle_interval,
         eq_routes=profile.eq_routes,
         instrument_routes=profile.instrument_routes,
+        show_palette_sets=dict(profile.show_palette_sets),
     )
     return save_profile(next_profile, path=path)
 
@@ -681,6 +715,12 @@ class ProfileRotation:
             return self._profiles[self._index]
 
         return None
+
+    def force_switch(self, t: float) -> ProfileConfig:
+        """Advance immediately, for an externally detected song boundary."""
+        self._index = (self._index + 1) % len(self._profiles)
+        self._last_switch_t = t
+        return self._profiles[self._index]
 
 
 # ---------------------------------------------------------------------------

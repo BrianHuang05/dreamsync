@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -13,8 +14,13 @@ from dreamsync.color_utils import (
     hex_to_hsl,
     interpolate_hex_hsl,
 )
-from dreamsync.profile_generator import generate_random_profile
+from dreamsync.profile_generator import (
+    export_profile_yaml,
+    generate_profile_set,
+    generate_random_profile,
+)
 from dreamsync.profile import (
+    BUILTIN_PROFILES_DIR,
     EqRouteRule,
     InstrumentRouteRule,
     MoodEffectEntry,
@@ -22,7 +28,26 @@ from dreamsync.profile import (
     TransitionRule,
     list_available_profiles,
     load_profile,
+    validate_color_harmony,
 )
+
+
+@dataclass(frozen=True)
+class ProfileLibraryEntry:
+    name: str
+    path: Path
+    tags: tuple[str, ...]
+    palette_count: int
+    moods: tuple[str, ...]
+    valid: bool
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class ProfileValidationResult:
+    valid: bool
+    errors: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
 
 
 class ProfileService:
@@ -43,6 +68,95 @@ class ProfileService:
 
     def list_profiles(self) -> list[dict[str, object]]:
         return list_available_profiles()
+
+    def search_profiles(
+        self,
+        directories: Iterable[Path] = (),
+        *,
+        query: str = "",
+        tags: Iterable[str] = (),
+    ) -> tuple[ProfileLibraryEntry, ...]:
+        roots = [BUILTIN_PROFILES_DIR, *(Path(path).expanduser() for path in directories)]
+        requested_tags = {str(tag).strip().casefold() for tag in tags if str(tag).strip()}
+        query_text = query.strip().casefold()
+        entries: list[ProfileLibraryEntry] = []
+        seen: set[Path] = set()
+        for root in roots:
+            if not root.is_dir():
+                continue
+            for path in sorted((*root.glob("*.yaml"), *root.glob("*.yml"))):
+                resolved = path.resolve()
+                if resolved in seen or path.name.startswith("_"):
+                    continue
+                seen.add(resolved)
+                try:
+                    profile = load_profile(path)
+                    entry = ProfileLibraryEntry(
+                        name=profile.name,
+                        path=resolved,
+                        tags=tuple(profile.tags),
+                        palette_count=len(profile.palettes),
+                        moods=tuple(sorted(profile.moods)),
+                        valid=True,
+                    )
+                except Exception as exc:
+                    entry = ProfileLibraryEntry(
+                        name=path.stem,
+                        path=resolved,
+                        tags=(),
+                        palette_count=0,
+                        moods=(),
+                        valid=False,
+                        error=str(exc).strip() or type(exc).__name__,
+                    )
+                searchable = " ".join((entry.name, *entry.tags, entry.path.stem)).casefold()
+                entry_tags = {tag.casefold() for tag in entry.tags}
+                if query_text and query_text not in searchable:
+                    continue
+                if requested_tags and not requested_tags.issubset(entry_tags):
+                    continue
+                entries.append(entry)
+        return tuple(sorted(entries, key=lambda entry: (not entry.valid, entry.name.casefold())))
+
+    def validate_profile_file(self, path: Path) -> ProfileValidationResult:
+        try:
+            profile = load_profile(path)
+        except Exception as exc:
+            return ProfileValidationResult(
+                valid=False,
+                errors=(str(exc).strip() or type(exc).__name__,),
+            )
+        warnings: list[str] = []
+        for palette_name, colors in profile.palettes.items():
+            warnings.extend(
+                f"{palette_name}: {warning}"
+                for warning in validate_color_harmony(colors)
+            )
+        return ProfileValidationResult(valid=True, warnings=tuple(warnings))
+
+    def generate_profile_pool(self, count: int, *, seed: int | None) -> tuple[ProfileConfig, ...]:
+        if not 2 <= int(count) <= 32:
+            raise ValueError("Generated profile pool size must be between 2 and 32.")
+        return tuple(generate_profile_set(int(count), seed=seed))
+
+    def export_generated_profile(
+        self,
+        profile: ProfileConfig,
+        path: Path,
+        *,
+        seed: int | None,
+        index: int,
+    ) -> Path:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.stem}.dreamsync-tmp{path.suffix or '.yaml'}")
+        try:
+            export_profile_yaml(profile, temporary, seed=seed, index=index)
+            load_profile(temporary)
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return path
 
     def load_palette_choices(self, path: Path) -> list[dict[str, object]]:
         profile = self.load_profile(path)
@@ -74,12 +188,29 @@ class ProfileService:
         *,
         scheme: str,
         count: int = 6,
+        rng_seed: int | None = None,
     ) -> tuple[str, ...]:
         colors = tuple(color.strip() for color in seed_colors if color and color.strip())
         if not colors:
             raise ValueError("Choose at least one seed color.")
         if count < 3:
             raise ValueError("Generated palettes must have at least 3 colors.")
+
+        if rng_seed is not None:
+            rng = random.Random(rng_seed)
+            from dreamsync.color_utils import hsl_to_hex
+
+            salted: list[str] = []
+            for color in colors:
+                hue, saturation, lightness = hex_to_hsl(color)
+                salted.append(
+                    hsl_to_hex(
+                        (hue + rng.uniform(-18.0, 18.0)) % 360.0,
+                        max(0.12, min(1.0, saturation + rng.uniform(-0.08, 0.08))),
+                        max(0.12, min(0.88, lightness + rng.uniform(-0.06, 0.06))),
+                    )
+                )
+            colors = tuple(salted)
 
         if scheme == "gradient":
             return self._gradient_palette(colors, count=count)
@@ -376,7 +507,15 @@ class ProfileService:
 
     def save_profile_document(self, path: Path, raw: dict[str, object]) -> ProfileConfig:
         yaml = self._require_yaml()
-        path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.stem}.dreamsync-tmp{path.suffix or '.yaml'}")
+        try:
+            temporary.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+            load_profile(temporary)
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
         return load_profile(path)
 
     def update_palette(self, path: Path, palette_name: str, colors: tuple[str, ...]) -> ProfileConfig:
@@ -385,6 +524,19 @@ class ProfileService:
         if not isinstance(palettes, dict):
             raise ValueError("Profile palettes must be a mapping")
         palettes[palette_name] = list(colors)
+        return self.save_profile_document(path, raw)
+
+    def update_show_palette_set(
+        self,
+        path: Path,
+        set_name: str,
+        palette_names: tuple[str, ...],
+    ) -> ProfileConfig:
+        raw = self.load_profile_document(path)
+        show_palette_sets = raw.setdefault("show_palette_sets", {})
+        if not isinstance(show_palette_sets, dict):
+            raise ValueError("Profile show_palette_sets must be a mapping")
+        show_palette_sets[set_name] = list(palette_names)
         return self.save_profile_document(path, raw)
 
     def update_mood_effects(

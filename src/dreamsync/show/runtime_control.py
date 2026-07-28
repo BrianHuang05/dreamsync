@@ -16,6 +16,7 @@ class RuntimeControlState:
     palette_override: tuple[str, ...] = ()
     color_bias: str = ""
     render_mode: str = ""
+    effect_bank: tuple[str, ...] = ()
     intensity_multiplier: float = 1.0
     intensity_offset: float = 0.0
     speed_multiplier: float = 1.0
@@ -36,6 +37,7 @@ class RuntimeControlState:
                 self.palette_override,
                 self.color_bias,
                 self.render_mode,
+                self.effect_bank,
                 self.spatial_preset,
                 self.spatial_origin,
                 self.spatial_width is not None,
@@ -144,6 +146,7 @@ def runtime_control_to_dict(state: RuntimeControlState | None) -> dict[str, Any]
         "palette_override": tuple(state.palette_override),
         "color_bias": state.color_bias,
         "render_mode": state.render_mode,
+        "effect_bank": tuple(state.effect_bank),
         "intensity_multiplier": state.intensity_multiplier,
         "intensity_offset": state.intensity_offset,
         "speed_multiplier": state.speed_multiplier,
@@ -192,11 +195,22 @@ def apply_runtime_control_to_intent_params(
 
     next_params = _apply_runtime_control_to_params(params or {}, state)
     next_params.setdefault("runtime_control", runtime_control_to_dict(state))
-    if state.render_mode:
-        next_params["_render_mode"] = state.render_mode
+    selected_render_mode = state.render_mode or _select_effect_bank_render_mode(
+        intent.mode,
+        state.effect_bank,
+    )
+    if selected_render_mode:
+        next_params["_render_mode"] = selected_render_mode
+        if selected_render_mode == "ripple":
+            next_params.setdefault("spatial_preset", "ripple_from_center")
 
     if state.color_bias:
         next_color = state.color_bias
+    elif state.palette_override:
+        next_color = _map_color_to_palette(
+            intent.color,
+            state.palette_override,
+        )
     else:
         next_color = intent.color
 
@@ -215,6 +229,59 @@ def apply_runtime_control_to_intent_params(
         ),
         next_params,
     )
+
+
+def _select_effect_bank_render_mode(
+    intent_mode: object,
+    effect_bank: tuple[str, ...],
+) -> str:
+    """Choose the closest enabled renderer for a live director intent."""
+    enabled = tuple(
+        value
+        for value in (
+            str(candidate).strip().lower()
+            for candidate in effect_bank
+        )
+        if value in {
+            "pulse",
+            "wave",
+            "ripple",
+            "scroll",
+            "breathe",
+            "gradient",
+            "solid",
+        }
+    )
+    if not enabled:
+        return ""
+
+    intent_value = str(getattr(intent_mode, "value", intent_mode)).strip().lower()
+    preferences = {
+        "pulse": ("pulse", "ripple", "wave", "scroll", "breathe", "gradient", "solid"),
+        "ripple": ("ripple", "pulse", "wave", "scroll", "breathe", "gradient", "solid"),
+        "motion": ("wave", "scroll", "ripple", "pulse", "gradient", "breathe", "solid"),
+        "ambient": ("breathe", "gradient", "solid", "scroll", "wave", "pulse", "ripple"),
+    }
+    for candidate in preferences.get(intent_value, enabled):
+        if candidate in enabled:
+            return candidate
+    return enabled[0]
+
+
+def _map_color_to_palette(
+    source_color: str | None,
+    palette: tuple[str, ...],
+) -> str | None:
+    """Map changing director colors onto a stable slot in an override palette."""
+    colors = tuple(str(color) for color in palette if str(color).strip())
+    if not colors:
+        return source_color
+    normalized = str(source_color or "").strip().lstrip("#")
+    try:
+        source_value = int(normalized, 16)
+    except ValueError:
+        source_value = 0
+    return colors[source_value % len(colors)]
 
 
 def _apply_palette_override(

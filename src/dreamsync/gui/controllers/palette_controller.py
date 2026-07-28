@@ -22,6 +22,7 @@ class PaletteController:
         profile = self.service.load_profile(path)
         raw = self.service.load_profile_document(path)
         first_palette = next(iter(profile.palettes), "")
+        first_show_palette_set = next(iter(profile.show_palette_sets), "")
         moods = tuple(profile.moods.keys())
         first_mood = moods[0] if moods else ""
         self.state = PaletteEditorState(
@@ -29,6 +30,11 @@ class PaletteController:
             profile_path=str(path),
             selected_palette=first_palette,
             palettes=dict(profile.palettes),
+            selected_show_palette_set=first_show_palette_set,
+            show_palette_sets=dict(profile.show_palette_sets),
+            show_palette_set_members_text=", ".join(
+                profile.show_palette_sets.get(first_show_palette_set, ())
+            ),
             selected_mood=first_mood,
             moods=moods,
             palette_colors_text=", ".join(profile.palettes.get(first_palette, ())),
@@ -63,6 +69,51 @@ class PaletteController:
             mood_instrument_routes_text=self._json_text(mood_doc.get("instrument_routes", [])),
         )
         return self.state
+
+    def select_show_palette_set(self, set_name: str) -> PaletteEditorState:
+        if set_name in self.state.show_palette_sets:
+            self.state = self.state.with_show_palette_set_selection(set_name)
+        return self.state
+
+    def create_show_palette_set(
+        self,
+        *,
+        name: str | None = None,
+        palette_names: tuple[str, ...] | None = None,
+    ) -> PaletteEditorState:
+        set_name = (name or self._next_show_palette_set_name()).strip()
+        if not set_name:
+            raise ValueError("Show Palette set name cannot be empty.")
+        members = palette_names or ((self.state.selected_palette,) if self.state.selected_palette else ())
+        if not members:
+            raise ValueError("Create a palette before adding it to a Show Palette set.")
+        self._validate_show_palette_set_members(members)
+        self.state = self.state.with_show_palette_set(set_name, tuple(members))
+        return self.state
+
+    def set_show_palette_set_members_text(self, text: str) -> PaletteEditorState:
+        self.state = self._replace_text(show_palette_set_members_text=text)
+        return self.state
+
+    def save_show_palette_set(self) -> PaletteEditorState:
+        profile_path = Path(self.state.profile_path)
+        set_name = self.state.selected_show_palette_set.strip()
+        if not set_name:
+            raise ValueError("Choose or create a Show Palette set first.")
+        members = tuple(
+            name.strip()
+            for name in self.state.show_palette_set_members_text.split(",")
+            if name.strip()
+        )
+        self._validate_show_palette_set_members(members)
+        self.service.update_show_palette_set(profile_path, set_name, members)
+        self.load(profile_path)
+        self.state = self._replace_text(
+            selected_show_palette_set=set_name,
+            status_message=f"Saved Show Palette set '{set_name}'.",
+            unsaved_changes=False,
+        )
+        return self.select_show_palette_set(set_name)
 
     def update_hex(self, palette_name: str, color_index: int, color: str) -> PaletteEditorState:
         colors = list(self.state.palettes[palette_name])
@@ -205,6 +256,8 @@ class PaletteController:
         return self.select_mood(mood)
 
     def save_all(self) -> PaletteEditorState:
+        if self.state.selected_show_palette_set:
+            self.save_show_palette_set()
         self.save()
         return self.save_sections()
 
@@ -214,6 +267,16 @@ class PaletteController:
             profile_path=str(changes.get("profile_path", self.state.profile_path)),
             selected_palette=str(changes.get("selected_palette", self.state.selected_palette)),
             palettes=dict(changes.get("palettes", self.state.palettes)),
+            selected_show_palette_set=str(
+                changes.get("selected_show_palette_set", self.state.selected_show_palette_set)
+            ),
+            show_palette_sets=dict(changes.get("show_palette_sets", self.state.show_palette_sets)),
+            show_palette_set_members_text=str(
+                changes.get(
+                    "show_palette_set_members_text",
+                    self.state.show_palette_set_members_text,
+                )
+            ),
             selected_mood=str(changes.get("selected_mood", self.state.selected_mood)),
             moods=tuple(changes.get("moods", self.state.moods)),
             palette_colors_text=str(changes.get("palette_colors_text", self.state.palette_colors_text)),
@@ -248,6 +311,24 @@ class PaletteController:
             if candidate.casefold() not in existing:
                 return candidate
             index += 1
+
+    def _next_show_palette_set_name(self) -> str:
+        existing = {name.casefold() for name in self.state.show_palette_sets}
+        index = 1
+        while True:
+            candidate = f"new show palette set {index}"
+            if candidate.casefold() not in existing:
+                return candidate
+            index += 1
+
+    def _validate_show_palette_set_members(self, members: tuple[str, ...]) -> None:
+        if not members:
+            raise ValueError("A Show Palette set must contain at least one palette.")
+        if len(set(members)) != len(members):
+            raise ValueError("A Show Palette set cannot contain duplicate palettes.")
+        unknown = [name for name in members if name not in self.state.palettes]
+        if unknown:
+            raise ValueError(f"Unknown palette(s): {', '.join(unknown)}")
 
     @staticmethod
     def _parse_palette_colors(text: str) -> tuple[str, ...]:

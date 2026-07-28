@@ -11,6 +11,9 @@ class PaletteEditorState:
     profile_path: str = ""
     selected_palette: str = ""
     palettes: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    selected_show_palette_set: str = ""
+    show_palette_sets: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    show_palette_set_members_text: str = ""
     selected_mood: str = ""
     moods: tuple[str, ...] = field(default_factory=tuple)
     palette_colors_text: str = ""
@@ -41,6 +44,28 @@ class PaletteEditorState:
             self,
             selected_palette=name,
             palette_colors_text=", ".join(colors),
+        )
+
+    def with_show_palette_set(
+        self,
+        name: str,
+        palette_names: tuple[str, ...],
+    ) -> "PaletteEditorState":
+        new_sets = dict(self.show_palette_sets)
+        new_sets[name] = palette_names
+        return replace(
+            self,
+            selected_show_palette_set=name,
+            show_palette_sets=new_sets,
+            show_palette_set_members_text=", ".join(palette_names),
+            unsaved_changes=True,
+        )
+
+    def with_show_palette_set_selection(self, name: str) -> "PaletteEditorState":
+        return replace(
+            self,
+            selected_show_palette_set=name,
+            show_palette_set_members_text=", ".join(self.show_palette_sets.get(name, ())),
         )
 
     def with_mood_selection(

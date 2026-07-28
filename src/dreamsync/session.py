@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from dreamsync.director import DirectorConfig
-from dreamsync.live import run_live_to_govee
+from dreamsync.live import LiveStructureConfig, run_live_to_govee
 from dreamsync.output.auto_detect import (
     build_multi_adapter,
     detect_all_devices,
@@ -68,6 +68,7 @@ def run_session(
     playback_device: int | None = None,
     purge: bool = False,
     profile_chain: Any | None = None,
+    structure_config: LiveStructureConfig | None = None,
 ) -> dict[str, Any]:
     """Run an infinite DreamSync session from a YAML config.
 
@@ -372,6 +373,7 @@ def run_session(
                 profile=profile,
                 effect_cycler_override=effect_cycler,
                 profile_chain=profile_chain,
+                structure_config=structure_config,
             )
         elif v3 and spotify_watcher is not None:
             from dreamsync.v3_session import run_v3_session
@@ -409,6 +411,7 @@ def run_session(
                 profile=profile,
                 effect_cycler_override=effect_cycler,
                 profile_chain=profile_chain,
+                structure_config=structure_config,
             )
     finally:
         # 7. Cleanup — shutdown capture before Spotify (needs timing data)

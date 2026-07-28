@@ -75,6 +75,11 @@ class TestNullMultiAdapter:
         adapter.send_frame(0.2, intent)
         assert adapter._frames_sent == 3
 
+    def test_send_baked_frame_counts(self):
+        adapter = NullMultiAdapter()
+        assert adapter.send_baked_frame(0.0, {"node": "#112233"}) is True
+        assert adapter.preview_snapshot()["frames_sent"] == 1
+
     def test_devices_empty_list(self):
         adapter = NullMultiAdapter()
         assert adapter.devices == []

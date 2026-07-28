@@ -72,13 +72,27 @@ class DeviceService:
             return True
         return int(entry.get("segments", 1)) > 1
 
+    @staticmethod
+    def _section_count(entry: dict[str, Any]) -> int:
+        configured_count = int(entry.get("segments", 1))
+        sections = entry.get("sections", [])
+        if not isinstance(sections, list):
+            return max(1, configured_count)
+        section_indices = [
+            int(section.get("index", index))
+            for index, section in enumerate(sections)
+            if isinstance(section, dict)
+        ]
+        indexed_count = max(section_indices, default=-1) + 1
+        return max(1, configured_count, len(sections), indexed_count)
+
     def load_scene(self, path: Path) -> list[DeviceSceneEntry]:
         entries: list[DeviceSceneEntry] = []
         for entry in self._iter_device_entries(path):
             address = str(entry.get("address", ""))
             name = str(entry.get("name", address))
             protocol = str(entry.get("protocol", "")).strip().lower() or None
-            segments = int(entry.get("segments", 1))
+            segments = self._section_count(entry)
             placement = parse_device_placement(entry)
             base_x = placement.x if placement else 0.0
             base_y = placement.y if placement else 0.0
@@ -137,7 +151,7 @@ class DeviceService:
                 continue
             key = str(entry.get("address", ""))
             if self._should_expand_sections(entry):
-                segments = int(entry.get("segments", 1))
+                segments = self._section_count(entry)
                 prior_sections = entry.get("sections", [])
                 prior_map = {
                     int(section.get("index", idx)): dict(section)

@@ -177,6 +177,11 @@ class ShowCache:
         fp = profile_fingerprint(profile)
         return self._entry_path(track_id, fp).exists()
 
+    def entry_path(self, track_id: str, profile: ProfileConfig | None = None) -> Path:
+        """Return the on-disk path used for a track/profile cache entry."""
+
+        return self._entry_path(track_id, profile_fingerprint(profile))
+
     def invalidate(self, track_id: str) -> int:
         track_dir = self._track_dir(track_id)
         if not track_dir.exists():

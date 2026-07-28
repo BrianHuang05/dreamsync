@@ -3,8 +3,10 @@
 import unittest
 
 import numpy as np
+import pytest
 
 from dreamsync.dsp.features import _estimate_bpm
+from dreamsync.dsp.meter import LiveMeterState
 from dreamsync.live import (
     HARMONIC_RATIOS,
     CyclicBeatGridTracker,
@@ -26,6 +28,7 @@ from dreamsync.live import (
     _feature_row_from_frame,
     _prepare_bass_window,
     _prepare_live_audio_chunk,
+    _predict_upcoming_beats,
     _resolve_live_eq_routes,
     _resolve_live_instrument_routes,
     _spectral_features,
@@ -79,6 +82,78 @@ def test_cycle_tempo_override_doubles_with_midpoint_subdivision():
         detected_bpm=120.0,
         detected_beat=True,
     ) == (240.0, True)
+
+
+def test_manual_goalpost_moves_nearest_previous_beat_and_realigns_grid():
+    override = LiveCycleTempoOverride()
+    assert override.update(
+        t=1.0,
+        detected_bpm=120.0,
+        detected_beat=True,
+    ) == (120.0, True)
+
+    goal_t, target = override.register_goalpost(
+        t=1.12,
+        bpm=120.0,
+        quantum=0.01,
+    )
+
+    assert goal_t == pytest.approx(1.12)
+    assert target == "previous"
+    assert override.manual_active
+    assert override.last_emitted_beat_t == pytest.approx(1.0)
+    assert override.update(
+        t=1.5,
+        detected_bpm=120.0,
+        detected_beat=True,
+    ) == (120.0, True)
+    assert override.last_emitted_beat_t == pytest.approx(1.5)
+
+
+def test_manual_goalposts_never_replace_auto_tempo_or_beat_events():
+    override = LiveCycleTempoOverride()
+    override.register_goalpost(t=0.0, bpm=120.0, quantum=0.01)
+    assert override.update(
+        t=0.0,
+        detected_bpm=120.0,
+        detected_beat=False,
+    ) == (120.0, False)
+
+    goal_t, target = override.register_goalpost(
+        t=0.6,
+        bpm=120.0,
+        quantum=0.01,
+    )
+
+    assert goal_t == pytest.approx(0.6)
+    assert target == "next"
+    assert override.manual_bpm == pytest.approx(100.0)
+    assert override.update(
+        t=0.5,
+        detected_bpm=120.0,
+        detected_beat=True,
+    ) == (120.0, True)
+
+
+def test_upcoming_beat_projection_preserves_meter_phase():
+    rows = _predict_upcoming_beats(
+        now_t=10.1,
+        bpm=120.0,
+        last_beat_t=10.0,
+        meter_state=LiveMeterState(
+            t=10.0,
+            beat=True,
+            bar_phase=2,
+            meter_confident=True,
+        ),
+        beats_per_bar=4,
+        horizon_seconds=1.0,
+    )
+
+    assert rows == (
+        {"t": 10.5, "downbeat": False, "beat_in_bar": 4},
+        {"t": 11.0, "downbeat": True, "beat_in_bar": 1},
+    )
 
 
 def _make_pulse_audio(
@@ -1758,6 +1833,85 @@ class TestCyclicBeatGridTracker(unittest.TestCase):
 
         self.assertEqual(bpm, 0.0)
         self.assertFalse(tracker.active)
+
+    def test_manual_goalpost_preserves_audio_derived_phase(self):
+        tracker = CyclicBeatGridTracker(retention_seconds=24.0)
+        for index in range(48):
+            tracker.observe(index * 0.5 + 0.08, strength=1.0)
+        self.assertGreater(tracker.update((120.0,), t=24.0), 0.0)
+
+        self.assertTrue(
+            tracker.nudge_to_goalpost(24.12, target="previous")
+        )
+        self.assertFalse(tracker.advance(24.57))
+        self.assertTrue(tracker.advance(24.58))
+
+        # The keypress was 40 ms late, but phase remains on the audio recurrence
+        # at .08/.58 rather than moving to the human tap at .12/.62.
+        tracker.observe(24.58, strength=1.0)
+        self.assertGreater(tracker.update((120.0,), t=24.7), 0.0)
+        self.assertTrue(tracker.active)
+        self.assertFalse(tracker.advance(25.07))
+        self.assertTrue(tracker.advance(25.08))
+
+    def test_repeated_taps_select_audio_supported_half_time(self):
+        tracker = CyclicBeatGridTracker(retention_seconds=24.0)
+        for index in range(48):
+            tracker.observe(index * 0.5 + 0.08, strength=1.0)
+        self.assertAlmostEqual(
+            tracker.update((120.0,), t=24.0),
+            120.0,
+            delta=2.0,
+        )
+
+        for goal_t in (24.08, 25.08, 26.08, 27.08):
+            tracker.nudge_to_goalpost(goal_t, target="previous")
+        for timestamp in (24.08, 24.58, 25.08, 25.58, 26.08, 26.58, 27.08):
+            tracker.observe(timestamp, strength=1.0)
+
+        selected_bpm = tracker.update((120.0,), t=27.1)
+
+        self.assertAlmostEqual(tracker.manual_bpm, 60.0, delta=0.5)
+        self.assertAlmostEqual(selected_bpm, 60.0, delta=5.0)
+        self.assertTrue(tracker.manual_interpretation_active)
+
+    def test_repeated_taps_select_audio_supported_double_time(self):
+        tracker = CyclicBeatGridTracker(retention_seconds=24.0)
+        for index in range(48):
+            tracker.observe(index * 0.5 + 0.08, strength=1.0)
+        self.assertGreater(tracker.update((120.0,), t=24.0), 0.0)
+        for goal_t in (24.08, 24.33, 24.58, 24.83):
+            tracker.nudge_to_goalpost(goal_t, target="previous")
+        tracker.observe(24.08, strength=1.0)
+        tracker.observe(24.58, strength=1.0)
+
+        selected_bpm = tracker.update((120.0,), t=24.9)
+
+        self.assertAlmostEqual(tracker.manual_bpm, 240.0, delta=1.0)
+        self.assertAlmostEqual(selected_bpm, 240.0, delta=8.0)
+        self.assertTrue(tracker.manual_interpretation_active)
+
+    def test_triplet_taps_can_select_compound_meter_pulse(self):
+        tracker = CyclicBeatGridTracker(retention_seconds=24.0)
+        for index in range(96):
+            tracker.observe(
+                index * 0.25 + 0.04,
+                strength=1.0 if index % 3 == 0 else 0.15,
+            )
+        self.assertGreater(tracker.update((120.0,), t=24.0), 0.0)
+        for goal_t in (24.04, 24.79, 25.54, 26.29):
+            tracker.nudge_to_goalpost(goal_t, target="previous")
+        for index in range(10):
+            tracker.observe(
+                24.04 + index * 0.25,
+                strength=1.0 if index % 3 == 0 else 0.15,
+            )
+
+        selected_bpm = tracker.update((120.0,), t=26.4)
+
+        self.assertAlmostEqual(tracker.manual_bpm, 80.0, delta=0.5)
+        self.assertAlmostEqual(selected_bpm, 80.0, delta=6.0)
+        self.assertTrue(tracker.manual_interpretation_active)
 
 
 class TestEqBeatOnset(unittest.TestCase):

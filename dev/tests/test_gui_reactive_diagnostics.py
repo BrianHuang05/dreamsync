@@ -22,6 +22,9 @@ from dreamsync.gui.widgets.reactive_chord_history_view import (
 from dreamsync.gui.widgets.reactive_harmonic_debug_view import (
     build_reactive_harmonic_debug_view,
 )
+from dreamsync.gui.widgets.reactive_waveform_view import (
+    build_reactive_waveform_view,
+)
 
 
 def _application():
@@ -71,6 +74,49 @@ def test_beat_detector_heading_reflects_overridden_cycle_bpm():
     assert _format_reactive_bpm_heading(240.0) == (
         "Beat detector: 240.0 BPM"
     )
+
+
+def test_waveform_widget_renders_centered_upcoming_beats_and_effects():
+    app = _application()
+    view = build_reactive_waveform_view(require_qt())
+    view.set_diagnostic_data(
+        ((9.0, 0.2), (9.5, 0.8), (10.0, 0.4)),
+        (9.0, 9.5, 10.0),
+        downbeats=(9.0,),
+        manual_beats=(
+            {"t": 9.5, "kind": "beat"},
+            {"t": 10.0, "kind": "downbeat"},
+        ),
+        predicted_beats=(
+            {"t": 10.5, "downbeat": False, "beat_in_bar": 2},
+            {"t": 11.0, "downbeat": True, "beat_in_bar": 1},
+        ),
+        upcoming_effects=(
+            {
+                "t": 11.0,
+                "effect": "ripple",
+                "cue_class": "boundary",
+                "state": "scheduled",
+                "confidence": 0.8,
+            },
+        ),
+        now_t=10.0,
+        window_seconds=2.0,
+        bpm=120.0,
+    )
+    view.resize(900, 260)
+    view.show()
+    app.processEvents()
+
+    assert not view.grab().isNull()
+    assert view.property("timelineNow") == 10.0
+    assert view.property("predictedBeats")[1] == {
+        "t": 11.0,
+        "downbeat": True,
+        "beat_in_bar": 1,
+    }
+    assert view.property("upcomingEffects")[0]["effect"] == "ripple"
+    view.deleteLater()
 
 
 def test_structure_similarity_readout_exposes_causal_evidence_and_action():

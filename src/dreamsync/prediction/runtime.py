@@ -417,6 +417,42 @@ class LivePredictiveRuntime:
     def diagnostics(self, *, now_t: float) -> dict[str, object]:
         snapshot = self.engine.snapshot
         structure_diagnostics = self.structure_similarity.diagnostics()
+        upcoming_effect_cues = []
+        for item in self.cue_policy.active:
+            if item.state not in {"armed", "scheduled"}:
+                continue
+            target_t = (
+                item.target.target_t
+                if item.target is not None
+                else item.execute_t
+            )
+            if target_t < now_t - 1e-6:
+                continue
+            effect = item.requested_effect or (
+                item.effect_candidates[0]
+                if item.effect_candidates
+                else ""
+            )
+            upcoming_effect_cues.append(
+                {
+                    "t": target_t,
+                    "effect": effect,
+                    "cue_class": item.cue_class,
+                    "state": item.state,
+                    "confidence": item.confidence,
+                    "target_bar": (
+                        item.target.target_bar_index
+                        if item.target is not None
+                        else None
+                    ),
+                    "target_beat": (
+                        item.target.target_beat_index
+                        if item.target is not None
+                        else None
+                    ),
+                }
+            )
+        upcoming_effect_cues.sort(key=lambda row: float(row["t"]))
         return {
             "predictive_analysis_enabled": self.config.analysis_enabled,
             "predictive_shadow_mode": self.config.shadow_mode,
@@ -457,6 +493,7 @@ class LivePredictiveRuntime:
                 dataclasses.asdict(item)
                 for item in self.cue_policy.history[-5:]
             ),
+            "upcoming_effect_cues": tuple(upcoming_effect_cues[:8]),
             "structure_similarity_enabled": self.config.structure_similarity_enabled,
             "structure_similarity_shadow_mode": (
                 self.cue_policy.config.shadow_mode

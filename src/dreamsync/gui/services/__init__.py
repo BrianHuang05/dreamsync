@@ -2,6 +2,9 @@
 
 __all__ = [
     "AudioDeviceService",
+    "AppInfoService",
+    "DeviceDiscoveryService",
+    "DeviceHealthService",
     "DeviceService",
     "ProfileService",
     "QueueService",
@@ -11,14 +14,27 @@ __all__ = [
     "ShowService",
     "ShowPatchStore",
     "SongPaletteStore",
+    "StorageService",
 ]
 
 
 def __getattr__(name: str):
+    if name == "AppInfoService":
+        from .app_info_service import AppInfoService
+
+        return AppInfoService
     if name == "AudioDeviceService":
         from .audio_device_service import AudioDeviceService
 
         return AudioDeviceService
+    if name == "DeviceDiscoveryService":
+        from .device_discovery_service import DeviceDiscoveryService
+
+        return DeviceDiscoveryService
+    if name == "DeviceHealthService":
+        from .device_health_service import DeviceHealthService
+
+        return DeviceHealthService
     if name == "DeviceService":
         from .device_service import DeviceService
 
@@ -55,4 +71,8 @@ def __getattr__(name: str):
         from .song_palette_store import SongPaletteStore
 
         return SongPaletteStore
+    if name == "StorageService":
+        from .storage_service import StorageService
+
+        return StorageService
     raise AttributeError(name)

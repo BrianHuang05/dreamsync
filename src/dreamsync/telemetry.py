@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import statistics
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any, TextIO
@@ -95,7 +96,11 @@ class SongTelemetryWriter:
         self._last_t = t
         self._frame_count = 0
         self._beat_count = 0
-        self._bpm_values: list[float] = []
+        # Keep summary memory bounded even when song-boundary detection is
+        # unavailable during a long reactive session. At the normal 20 Hz
+        # live telemetry cadence this retains ten minutes of recent tempo
+        # samples, which is ample for a useful per-song summary.
+        self._bpm_values: deque[float] = deque(maxlen=12_000)
         self._energy_sum = 0.0
         self._energy_max = 0.0
         self._stability_sum = 0.0

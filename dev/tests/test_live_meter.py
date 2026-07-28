@@ -246,6 +246,37 @@ def test_duplicate_manual_beat_on_same_detection_does_not_expand_meter():
     )
 
 
+def test_distinct_fast_taps_count_even_before_slow_grid_reinterprets():
+    registration = ManualBeatRegistration()
+    registration.register(
+        t=0.0,
+        kind="downbeat",
+        beat_index=40,
+        intent_t=0.0,
+    )
+    registration.register(
+        t=0.0,
+        kind="beat",
+        beat_index=40,
+        intent_t=0.25,
+    )
+    registration.register(
+        t=0.5,
+        kind="beat",
+        beat_index=41,
+        intent_t=0.5,
+    )
+
+    inferred = registration.register(
+        t=0.5,
+        kind="downbeat",
+        beat_index=41,
+        intent_t=0.75,
+    )
+
+    assert inferred == 3
+
+
 def test_manual_registration_reset_clears_markers_and_meter_history():
     registration = ManualBeatRegistration(beats_per_bar=4)
     registration.register(t=0.0, kind="downbeat", beat_index=1)

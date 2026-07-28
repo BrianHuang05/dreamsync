@@ -720,6 +720,12 @@ class ReactiveLiveSession:
                 runtime_state.get("predictive_cycle", {}) or {}
             ),
             "song_boundaries": int(runtime_state.get("song_boundaries", 0) or 0),
+            "automatic_detection_reset_count": int(
+                runtime_state.get("automatic_detection_reset_count", 0) or 0
+            ),
+            "last_detection_reset_reason": str(
+                runtime_state.get("last_detection_reset_reason", "") or ""
+            ),
             "captured_samples": int(runtime_state.get("captured_samples", 0) or 0),
             "input_overflows": int(runtime_state.get("input_overflows", 0) or 0),
             "audio_ring_capacity": int(runtime_state.get("audio_ring_capacity", 0) or 0),
@@ -747,6 +753,13 @@ class ReactiveLiveSession:
             "detected_downbeat_times": tuple(
                 runtime_state.get("detected_downbeat_times", ()) or ()
             ),
+            "predicted_beat_times": tuple(
+                runtime_state.get("predicted_beat_times", ()) or ()
+            ),
+            "upcoming_effect_cues": tuple(
+                runtime_state.get("upcoming_effect_cues", ()) or ()
+            ),
+            "stream_t": float(runtime_state.get("stream_t", 0.0) or 0.0),
             "waveform_window_seconds": float(
                 runtime_state.get("waveform_window_seconds", 10.0) or 10.0
             ),

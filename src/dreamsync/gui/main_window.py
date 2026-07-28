@@ -5213,6 +5213,12 @@ def create_main_window(
         palette_cycle_mode = str(snapshot.get("palette_cycle_mode", "") or "")
         palette_seconds_until_next = snapshot.get("palette_seconds_until_next")
         song_boundaries = int(snapshot.get("song_boundaries", 0) or 0)
+        automatic_reset_count = int(
+            snapshot.get("automatic_detection_reset_count", 0) or 0
+        )
+        last_reset_reason = str(
+            snapshot.get("last_detection_reset_reason", "") or ""
+        )
         last_beat = float(snapshot.get("last_beat_monotonic", 0.0) or 0.0)
         downbeat_nudge_pending = bool(
             snapshot.get("manual_downbeat_nudge_pending", False)
@@ -5222,6 +5228,12 @@ def create_main_window(
         )
         downbeat_nudge_count = int(
             snapshot.get("manual_downbeat_nudge_count", 0) or 0
+        )
+        manual_tempo_goal_bpm = float(
+            snapshot.get("manual_tempo_goal_bpm", 0.0) or 0.0
+        )
+        manual_tempo_confidence = float(
+            snapshot.get("manual_tempo_confidence", 0.0) or 0.0
         )
         meter_time_signature = tuple(
             snapshot.get("meter_time_signature", ()) or ()
@@ -5239,6 +5251,9 @@ def create_main_window(
             snapshot.get("detected_downbeat_times", ()) or ()
         )
         manual_beats = snapshot.get("manual_beat_markers", ()) or ()
+        predicted_beats = snapshot.get("predicted_beat_times", ()) or ()
+        upcoming_effects = snapshot.get("upcoming_effect_cues", ()) or ()
+        stream_t = float(snapshot.get("stream_t", 0.0) or 0.0)
         detected_chord = str(snapshot.get("detected_chord", "") or "")
         live_chord, chord_change_confirming = _reactive_display_chord(
             snapshot
@@ -5375,6 +5390,9 @@ def create_main_window(
             chord_changes=detected_chord_changes,
             downbeats=detected_downbeats,
             manual_beats=manual_beats,
+            predicted_beats=predicted_beats,
+            upcoming_effects=upcoming_effects,
+            now_t=stream_t if stream_t > 0.0 else None,
             window_seconds=waveform_window,
             bpm=bpm,
         )
@@ -5540,7 +5558,19 @@ def create_main_window(
             queue_panel.reactive_bpm_label.setText(
                 f"{_format_reactive_bpm_heading(bpm)} · {cycle_text} · "
                 f"timing variation {stability:.3f} · changes {song_boundaries}"
+                + (
+                    f" · detector resets {automatic_reset_count}"
+                    f" ({last_reset_reason})"
+                    if automatic_reset_count
+                    else ""
+                )
                 + (f" · meter {meter_text}" if meter_text else "")
+                + (
+                    f" · tap pulse {manual_tempo_goal_bpm:.1f} BPM"
+                    f" ({manual_tempo_confidence:.0%})"
+                    if manual_tempo_goal_bpm > 0.0
+                    else ""
+                )
                 + (
                     (
                         " · manual downbeat queued (D)"
@@ -8751,6 +8781,8 @@ def create_main_window(
     for sequence, handler in live_shortcut_actions:
         shortcut = QtGui.QShortcut(QtGui.QKeySequence(sequence), queue_panel.widget)
         shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        if sequence in {"D", "S", "N"}:
+            shortcut.setAutoRepeat(False)
         shortcut.activated.connect(handler)
         live_shortcuts.append(shortcut)
     window._dreamsync_live_shortcuts = live_shortcuts

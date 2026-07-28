@@ -24,13 +24,22 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
     capture_status = window.findChild(QtWidgets.QLabel, "captureStatusLabel")
     pipeline_status = window.findChild(QtWidgets.QLabel, "pipelineStatusLabel")
     saved_show = window.findChild(QtWidgets.QLabel, "savedShowLabel")
+    show_preview = window.findChild(QtWidgets.QGroupBox, "showSimulationGroup")
+    show_preview_canvas = window.findChild(QtWidgets.QWidget, "showSimulationSpatialCanvas")
+    show_preview_view = window.findChild(QtWidgets.QComboBox, "showSimulationViewCombo")
+    show_preview_background = window.findChild(QtWidgets.QComboBox, "showSimulationBackgroundCombo")
     routing_status = window.findChild(QtWidgets.QLabel, "routingStatusLabel")
     ready_list = window.findChild(QtWidgets.QListWidget, "capturedReadyList")
     recent_saved = window.findChild(QtWidgets.QListWidget, "recentSavedShowsList")
     compile_show_button = window.findChild(QtWidgets.QPushButton, "compileShowButton")
     load_show_button = window.findChild(QtWidgets.QPushButton, "loadShowButton")
+    load_saved_show_button = window.findChild(QtWidgets.QPushButton, "loadSavedShowButton")
+    load_saved_track_button = window.findChild(QtWidgets.QPushButton, "loadSavedTrackButton")
+    cue_track_button = window.findChild(QtWidgets.QPushButton, "cueUncompiledTrackButton")
     save_show_button = window.findChild(QtWidgets.QPushButton, "saveShowButton")
+    bake_show_button = window.findChild(QtWidgets.QPushButton, "bakeShowButton")
     play_saved_show_button = window.findChild(QtWidgets.QPushButton, "playSavedShowButton")
+    baked_playback_combo = window.findChild(QtWidgets.QComboBox, "bakedPlaybackModeCombo")
     play_selected_cue_button = window.findChild(QtWidgets.QPushButton, "playSelectedCueButton")
     pause_show_button = window.findChild(QtWidgets.QPushButton, "pauseShowButton")
     stop_show_button = window.findChild(QtWidgets.QPushButton, "stopShowButton")
@@ -90,27 +99,64 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
     profile_eq_table = window.findChild(QtWidgets.QTableWidget, "profileEqRoutesTable")
     profile_instrument_table = window.findChild(QtWidgets.QTableWidget, "profileInstrumentRoutesTable")
     transitions_table = window.findChild(QtWidgets.QTableWidget, "profileTransitionsTable")
+    discovery_panel = window.findChild(QtWidgets.QWidget, "deviceDiscoveryPanel")
+    discovery_status = window.findChild(QtWidgets.QLabel, "deviceDiscoveryStatusLabel")
+    discovery_table = window.findChild(QtWidgets.QTableWidget, "discoveredDevicesTable")
+    scan_lan_button = window.findChild(QtWidgets.QPushButton, "scanLanDevicesButton")
+    scan_ble_button = window.findChild(QtWidgets.QPushButton, "scanBleDevicesButton")
+    scan_all_button = window.findChild(QtWidgets.QPushButton, "scanAllDevicesButton")
+    identify_device_button = window.findChild(QtWidgets.QPushButton, "identifyDeviceButton")
+    assign_device_button = window.findChild(QtWidgets.QPushButton, "assignDiscoveredDeviceButton")
+    save_discovery_button = window.findChild(QtWidgets.QPushButton, "saveDiscoveredConfigButton")
+    discovered_name_edit = window.findChild(QtWidgets.QLineEdit, "discoveredDeviceNameEdit")
+    discovered_type_combo = window.findChild(QtWidgets.QComboBox, "discoveredDeviceTypeCombo")
+    discovered_segments_spin = window.findChild(QtWidgets.QSpinBox, "discoveredDeviceSegmentsSpin")
+    discovered_transport_combo = window.findChild(QtWidgets.QComboBox, "discoveredDeviceTransportCombo")
+    discovered_protocol_combo = window.findChild(QtWidgets.QComboBox, "discoveredDeviceProtocolCombo")
+    discovered_role_combo = window.findChild(QtWidgets.QComboBox, "discoveredDeviceRoleCombo")
+    discovered_brightness_spin = window.findChild(QtWidgets.QDoubleSpinBox, "discoveredDeviceBrightnessSpin")
+    discovered_x_spin = window.findChild(QtWidgets.QDoubleSpinBox, "discoveredDeviceXSpin")
+    discovered_y_spin = window.findChild(QtWidgets.QDoubleSpinBox, "discoveredDeviceYSpin")
+    discovered_z_spin = window.findChild(QtWidgets.QDoubleSpinBox, "discoveredDeviceZSpin")
 
     assert isinstance(tabs, QtWidgets.QTabWidget)
     assert [tabs.tabText(index) for index in range(tabs.count())] == [
-        "Devices / Spatial",
+        "Device Discovery",
+        "Room Layout",
         "Palettes",
-        "Queue",
         "Shows",
+        "Live",
         "Config",
-        "Logs / Diagnostics",
+        "Diagnostics",
     ]
     assert output_mode is not None
     assert capture_status is not None
     assert pipeline_status is not None
     assert saved_show is not None
+    assert show_preview is not None
+    assert show_preview_canvas is not None
+    assert show_preview_view is not None
+    assert show_preview_background is not None
     assert routing_status is not None
     assert ready_list is not None
     assert recent_saved is not None
     assert compile_show_button is not None
     assert load_show_button is not None
+    assert load_show_button.text() == "Open Saved Show"
+    assert load_saved_show_button is not None
+    assert load_saved_show_button.text() == "Load Saved Show"
+    assert load_saved_track_button is not None
+    assert load_saved_track_button.text() == "Cue Compiled Track"
+    assert cue_track_button is not None
+    assert cue_track_button.text() == "Cue Audio to Compile"
     assert save_show_button is not None
+    assert bake_show_button is not None
     assert play_saved_show_button is not None
+    assert baked_playback_combo is not None
+    assert [
+        baked_playback_combo.itemData(index)
+        for index in range(baked_playback_combo.count())
+    ] == ["auto", "off", "require"]
     assert play_selected_cue_button is not None
     assert pause_show_button is not None
     assert stop_show_button is not None
@@ -135,7 +181,19 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
     assert show_timeline_fit_button is not None
     assert show_timeline_scroll_bar is not None
     assert show_cues_table is not None
-    assert show_cues_table.columnCount() == 20
+    assert show_cues_table.columnCount() == 27
+    assert [
+        show_cues_table.horizontalHeaderItem(index).text()
+        for index in range(20, show_cues_table.columnCount())
+    ] == [
+        "Layer Category",
+        "Layer Target",
+        "Layer Trigger",
+        "Layer Falloff",
+        "Layer Thickness",
+        "Layer Speed",
+        "Layer Priority",
+    ]
     assert add_show_cue_button is not None
     assert duplicate_show_cue_button is not None
     assert remove_show_cue_button is not None
@@ -171,6 +229,38 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
     assert profile_eq_table is not None
     assert profile_instrument_table is not None
     assert transitions_table is not None
+    assert discovery_panel is not None
+    assert discovery_status is not None
+    assert discovery_table is not None
+    assert [
+        discovery_table.horizontalHeaderItem(index).text()
+        for index in range(discovery_table.columnCount())
+    ] == ["Status", "Source", "Name", "Address", "Latency", "RSSI"]
+    assert scan_lan_button is not None
+    assert scan_ble_button is not None
+    assert scan_all_button is not None
+    assert identify_device_button is not None
+    assert assign_device_button is not None
+    assert save_discovery_button is not None
+    assert discovered_name_edit is not None
+    assert discovered_type_combo is not None
+    assert discovered_segments_spin is not None
+    assert discovered_transport_combo is not None
+    assert discovered_protocol_combo is not None
+    assert discovered_role_combo is not None
+    assert discovered_brightness_spin is not None
+    assert discovered_x_spin is not None
+    assert discovered_y_spin is not None
+    assert discovered_z_spin is not None
+    assert [shortcut.key().toString() for shortcut in window._dreamsync_discovery_shortcuts] == [
+        "L",
+        "B",
+        "S",
+        "I",
+        "A",
+        "Ctrl+S",
+        "Ctrl+Shift+S",
+    ]
     assert profile_palette_combo.count() > 0
     assert profile_mood_combo.count() > 0
     assert seed_scheme_combo.count() >= 4

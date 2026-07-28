@@ -11,13 +11,32 @@ structure and structure similarity are mutually exclusive.
 
 ## Manual timing and cycle controls
 
-- **D** registers a manual downbeat and snaps it to the nearest detected beat.
-- **S** registers a manual regular beat and snaps it to the nearest detected
-  beat.
+- **D** registers a manual downbeat goalpost. **S** registers a manual regular
+  beat goalpost. Each keypress is mapped through the input device's PortAudio
+  ADC clock, quantized to the nearest audio-analysis hop, and moves the nearest
+  cycle-grid beat to that timestamp. GUI repaint and analysis-queue latency do
+  not define the goalpost time.
+- A goalpost labels the nearest audio-supported grid pulse; it never replaces
+  the audio-tracked clock or suppresses later automatic beat evidence. The taps
+  select the intended pulse and meter interpretation; audio recurrence selects
+  the exact phase. Repeated taps can select supported half-time, double-time,
+  or compound-meter pulse families without dragging the grid to keypress
+  jitter.
 - A sequence such as **D S S S D** establishes the beat latch and infers 4/4.
+  The detector readout shows the tap-derived pulse BPM and confidence while it
+  reconciles that interpretation with the audio.
 - The waveform uses orange for automatic beats, red for automatic downbeats,
   blue for manual beats, and green for manual downbeats.
+- **NOW** divides the waveform: captured input is on the left, while dashed
+  predicted beats/downbeats and labeled armed or scheduled effects appear on
+  the right.
+- The simulation preview preserves rendered brightness. Pulse effects should
+  visibly decay between beats rather than switching between full brightness
+  and black.
 - **N** clears beat history and starts a fresh song/session detection state.
+  D/S/N do not auto-repeat when held. The detector readout reports automatic
+  reset count and its last reason (`silence` or `crossfade`) so an unexpected
+  reacquisition can be distinguished from a D/S structure realignment.
 - **Shift+[** / **{** halves the detector cycle tempo; **Shift+]** / **}**
   doubles it. The adjacent 1/2x, 1x, and 2x cycle buttons perform the same
   operation, and the Beat Detector readout reports the adjusted cycle BPM.
@@ -27,6 +46,7 @@ structure and structure similarity are mutually exclusive.
 ## Simulation-first acceptance
 
 1. Start DreamSync with simulation output and open Reactive Live mode.
+   Confirm the waveform has a centered **NOW** line and a future half.
 2. Leave **Legacy harmonic structure** disabled.
 3. Enable **Structure similarity analysis**.
 4. Enable **Log/show structure similarity evidence**.
@@ -40,6 +60,8 @@ structure and structure similarity are mutually exclusive.
    - the leading phrase hypothesis says whether it is a duration prior or
      song-local recurrence;
    - a predicted target bar appears before a likely boundary.
+   On the waveform, confirm the target effect is labeled on the future half
+   before it fires, then crosses **NOW** at the displayed beat.
 9. Confirm shadow mode does not change the current effect, palette, brightness,
    spatial state, or continuous animation.
 10. Disable shadow mode and enable **Enable ordinary bar actions** only.

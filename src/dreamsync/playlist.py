@@ -134,6 +134,15 @@ class PlaylistManager:
         with self._lock:
             return self._index
 
+    @property
+    def repeat_enabled(self) -> bool:
+        with self._lock:
+            return self._repeat
+
+    def set_repeat(self, enabled: bool) -> None:
+        with self._lock:
+            self._repeat = bool(enabled)
+
     def next(self) -> Path | None:
         with self._lock:
             if not self._tracks:

@@ -630,6 +630,17 @@ class TestProfileRotation:
         assert result is not None
         assert result.name == "one"
 
+    def test_force_switch_advances_without_waiting_for_timer(self):
+        p1 = self._make_profile("one")
+        p2 = self._make_profile("two")
+        rotation = ProfileRotation([p1, p2], interval_seconds=300.0)
+
+        result = rotation.force_switch(4.0)
+
+        assert result.name == "two"
+        assert rotation.current.name == "two"
+        assert rotation.update(5.0) is None
+
 
 # ---------------------------------------------------------------------------
 # ProfileWatcher

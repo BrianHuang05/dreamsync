@@ -29,6 +29,7 @@ def launch_gui(
         settings,
         config_path=config_path,
         profile_path=profile_path,
+        settings_store=store,
     )
     window.show()
 
@@ -36,10 +37,15 @@ def launch_gui(
         QtCore.QTimer.singleShot(close_after_ms, window.close)
 
     result = int(app.exec())
-    snapshot_fn = getattr(window, "_dreamsync_settings_snapshot", None)
-    if callable(snapshot_fn):
-        store.save(snapshot_fn())
-    else:
+    # The current window exposes an explicit validated Save Configuration
+    # action.  Do not bypass it by persisting potentially invalid edits on
+    # shutdown.  Retain the legacy fallback for older/custom windows.
+    explicit_save_fn = getattr(window, "_dreamsync_save_configuration", None)
+    if not callable(explicit_save_fn):
+        snapshot_fn = getattr(window, "_dreamsync_settings_snapshot", None)
+        if callable(snapshot_fn):
+            store.save(snapshot_fn())
+            return result
         current_tab = window.centralWidget().tabText(window.centralWidget().currentIndex())
         store.save(
             type(settings)(

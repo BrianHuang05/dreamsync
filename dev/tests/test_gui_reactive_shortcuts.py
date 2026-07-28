@@ -281,6 +281,18 @@ class ReactiveShortcutTests(unittest.TestCase):
         self.assertIn("Downbeat nearest", button.text())
         self.assertIn("nearest the keypress", button.toolTip())
         self.assertFalse(button.isEnabled())
+        manual_shortcuts = {
+            shortcut.key().toString(): shortcut
+            for shortcut in self.window._dreamsync_live_shortcuts
+            if shortcut.key().toString() in {"D", "S", "N"}
+        }
+        self.assertEqual(set(manual_shortcuts), {"D", "S", "N"})
+        self.assertTrue(
+            all(
+                not shortcut.autoRepeat()
+                for shortcut in manual_shortcuts.values()
+            )
+        )
 
         live_widget.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         live_widget.setFocus()

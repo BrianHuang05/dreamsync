@@ -21,15 +21,13 @@ def _rgb_to_hex(color: tuple[int, int, int]) -> str:
 
 
 def _normalize_preview_color(color: tuple[int, int, int]) -> tuple[int, int, int]:
+    """Clamp rendered RGB without discarding its brightness envelope."""
+
     r, g, b = color
-    peak = max(r, g, b)
-    if peak <= 0:
-        return (0, 0, 0)
-    scale = 255.0 / float(peak)
     return (
-        min(255, max(0, int(round(r * scale)))),
-        min(255, max(0, int(round(g * scale)))),
-        min(255, max(0, int(round(b * scale)))),
+        min(255, max(0, int(round(r)))),
+        min(255, max(0, int(round(g)))),
+        min(255, max(0, int(round(b)))),
     )
 
 
@@ -90,8 +88,87 @@ class NullMultiAdapter:
         self._frames_sent += 1
         return True
 
+    def send_baked_frame(
+        self,
+        t: float,
+        node_colors: dict[str, str],
+        *,
+        fallback_color: str = "#000000",
+    ) -> bool:
+        self._frames_sent += 1
+        return True
+
     def preview_snapshot(self) -> dict[str, Any]:
         return {"node_colors": {}, "frames_sent": self._frames_sent}
+
+
+class PreviewMirrorAdapter:
+    """Send real output normally while mirroring frames into a GUI simulation."""
+
+    def __init__(self, output_adapter: Any, preview_adapter: "SimulationMultiAdapter") -> None:
+        self._output_adapter = output_adapter
+        self._preview_adapter = preview_adapter
+
+    @property
+    def devices(self):
+        return getattr(self._output_adapter, "devices", [])
+
+    @property
+    def device_status_label(self) -> str:
+        label = getattr(self._output_adapter, "device_status_label", "hardware output")
+        return f"{label} + GUI simulation mirror"
+
+    def activate(self, brightness: int = 100) -> None:
+        self._output_adapter.activate(brightness=brightness)
+        self._preview_adapter.activate(brightness=brightness)
+
+    def deactivate(self) -> None:
+        try:
+            self._output_adapter.deactivate()
+        finally:
+            self._preview_adapter.deactivate()
+
+    def send_frame(self, t, intent, beat=False, params=None) -> bool:
+        preview_sent = self._preview_adapter.send_frame(t, intent, beat=beat, params=params)
+        output_sent = self._output_adapter.send_frame(t, intent, beat=beat, params=params)
+        return bool(preview_sent or output_sent)
+
+    def send_spatial_scene(self, t, scene, *, beat=False, base_intent=None) -> bool:
+        preview_sent = self._preview_adapter.send_spatial_scene(
+            t, scene, beat=beat, base_intent=base_intent
+        )
+        output_sent = self._output_adapter.send_spatial_scene(
+            t, scene, beat=beat, base_intent=base_intent
+        )
+        return bool(preview_sent or output_sent)
+
+    def send_baked_frame(self, t: float, node_colors: dict[str, str], *, fallback_color: str = "#000000") -> bool:
+        preview_sent = self._preview_adapter.send_baked_frame(
+            t, node_colors, fallback_color=fallback_color
+        )
+        output_sent = self._output_adapter.send_baked_frame(
+            t, node_colors, fallback_color=fallback_color
+        )
+        return bool(preview_sent or output_sent)
+
+    def prepare_spatial_cue(self, key, intent, *, params=None) -> bool:
+        preview_prepare = getattr(self._preview_adapter, "prepare_spatial_cue", None)
+        output_prepare = getattr(self._output_adapter, "prepare_spatial_cue", None)
+        preview_prepared = bool(preview_prepare(key, intent, params=params)) if callable(preview_prepare) else False
+        output_prepared = bool(output_prepare(key, intent, params=params)) if callable(output_prepare) else False
+        return preview_prepared or output_prepared
+
+    def clear_prepared_spatial_cues(self) -> None:
+        for adapter in (self._preview_adapter, self._output_adapter):
+            clear = getattr(adapter, "clear_prepared_spatial_cues", None)
+            if callable(clear):
+                clear()
+
+    def preview_snapshot(self) -> dict[str, Any]:
+        return self._preview_adapter.preview_snapshot()
+
+    def __getattr__(self, name: str):
+        return getattr(self._output_adapter, name)
 
 
 class SimulationMultiAdapter(MultiGoveeLanAdapter):
@@ -178,6 +255,19 @@ class SimulationMultiAdapter(MultiGoveeLanAdapter):
 
     def send_spatial_scene(self, t, scene, *, beat=False, base_intent=None) -> bool:
         sent = super().send_spatial_scene(t, scene, beat=beat, base_intent=base_intent)
+        if sent:
+            self._frames_sent += 1
+            self._capture_preview_colors()
+        return sent
+
+    def send_baked_frame(
+        self,
+        t: float,
+        node_colors: dict[str, str],
+        *,
+        fallback_color: str = "#000000",
+    ) -> bool:
+        sent = super().send_baked_frame(t, node_colors, fallback_color=fallback_color)
         if sent:
             self._frames_sent += 1
             self._capture_preview_colors()
