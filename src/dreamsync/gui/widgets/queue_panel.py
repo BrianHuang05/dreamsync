@@ -239,6 +239,8 @@ class QueuePanelWidgets:
     input_device_status_label: object
     simulation_view_combo: object
     simulation_background_combo: object
+    simulation_freeze_check: object
+    simulation_frame_diagnostics_label: object
     simulation_popout_button: object
     simulation_fullscreen_button: object
     simulation_host: object
@@ -1666,6 +1668,12 @@ def build_queue_panel(qt_modules):
     simulation_background_combo.addItem("White", "light")
     simulation_background_combo.setObjectName("simulationBackgroundCombo")
     simulation_controls.addWidget(simulation_background_combo, 1)
+    simulation_freeze_check = QtWidgets.QCheckBox("Freeze frame")
+    simulation_freeze_check.setObjectName("simulationFreezeFrameCheck")
+    simulation_freeze_check.setToolTip(
+        "Hold the last valid per-device RGB frame for optical inspection."
+    )
+    simulation_controls.addWidget(simulation_freeze_check)
     simulation_popout_button = QtWidgets.QPushButton("Pop Out")
     simulation_popout_button.setObjectName("simulationPopoutButton")
     simulation_controls.addWidget(simulation_popout_button)
@@ -1678,6 +1686,14 @@ def build_queue_panel(qt_modules):
     simulation_layout = QtWidgets.QVBoxLayout(simulation_host)
     simulation_layout.setContentsMargins(0, 0, 0, 0)
     playback_layout.addWidget(simulation_host)
+    simulation_frame_diagnostics_label = QtWidgets.QLabel(
+        "Frame: waiting for output"
+    )
+    simulation_frame_diagnostics_label.setObjectName(
+        "simulationFrameDiagnosticsLabel"
+    )
+    simulation_frame_diagnostics_label.setWordWrap(True)
+    playback_layout.addWidget(simulation_frame_diagnostics_label)
     queue_right_layout.addWidget(playback_group, 3)
 
     palette_group = QtWidgets.QGroupBox("Live Palette")
@@ -2305,6 +2321,8 @@ def build_queue_panel(qt_modules):
         input_device_status_label=input_device_status_label,
         simulation_view_combo=simulation_view_combo,
         simulation_background_combo=simulation_background_combo,
+        simulation_freeze_check=simulation_freeze_check,
+        simulation_frame_diagnostics_label=simulation_frame_diagnostics_label,
         simulation_popout_button=simulation_popout_button,
         simulation_fullscreen_button=simulation_fullscreen_button,
         simulation_host=simulation_host,

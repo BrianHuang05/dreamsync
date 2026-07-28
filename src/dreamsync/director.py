@@ -129,6 +129,18 @@ class Director:
             self._color_idx = 0
 
     @property
+    def colors(self) -> tuple[str, ...]:
+        """Return the active palette used to produce frame intent colors."""
+
+        return tuple(self._colors)
+
+    @property
+    def current_color(self) -> str | None:
+        if not self._colors:
+            return None
+        return self._colors[self._color_idx % len(self._colors)]
+
+    @property
     def ema_rms(self) -> float:
         return self._ema_rms
 

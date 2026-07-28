@@ -1,7 +1,12 @@
 import unittest
 
 from dreamsync.director import EffectMode, LightingIntent
-from dreamsync.render import RenderMode, SegmentRenderer
+from dreamsync.render import (
+    CONTINUOUS_MIN_BRIGHTNESS_FLOOR,
+    PULSE_DEFAULT_BRIGHTNESS_FLOOR,
+    RenderMode,
+    SegmentRenderer,
+)
 
 
 class SolidRenderTests(unittest.TestCase):
@@ -70,27 +75,30 @@ class PulseRenderTests(unittest.TestCase):
         self.assertLess(frame[0][0], 200)
         self.assertGreater(frame[0][0], 0)
 
-    def test_pulse_fully_decays_to_near_black(self) -> None:
+    def test_pulse_fully_decays_to_documented_floor(self) -> None:
         renderer = SegmentRenderer(segments=3, mode=RenderMode.PULSE)
         intent = LightingIntent(
             mode=EffectMode.PULSE, intensity=1.0, speed=0.5, bpm=120.0,
             color="#ff0000",
         )
         renderer.render(1.0, intent, beat=True)
-        # 2 seconds later, should be near black
+        # Two seconds later, the envelope rests at the chromatic safety floor.
         frame = renderer.render(3.0, intent, beat=False)
-        self.assertLessEqual(frame[0][0], 1)
+        self.assertEqual(frame[0][0], int(255 * PULSE_DEFAULT_BRIGHTNESS_FLOOR))
 
-    def test_pulse_no_beat_starts_dark(self) -> None:
+    def test_pulse_no_beat_starts_at_documented_floor(self) -> None:
         renderer = SegmentRenderer(segments=3, mode=RenderMode.PULSE)
         intent = LightingIntent(
             mode=EffectMode.PULSE, intensity=1.0, speed=0.5, bpm=120.0,
             color="#ff0000",
         )
         frame = renderer.render(1.0, intent, beat=False)
-        # No beat ever triggered, should be black
+        # No beat ever triggered: keep the hue-visible baseline.
         for pixel in frame:
-            self.assertEqual(pixel, (0, 0, 0))
+            self.assertEqual(
+                pixel,
+                (int(255 * PULSE_DEFAULT_BRIGHTNESS_FLOOR), 0, 0),
+            )
 
     def test_pulse_second_beat_resets(self) -> None:
         renderer = SegmentRenderer(segments=3, mode=RenderMode.PULSE)
@@ -475,7 +483,10 @@ class GradientRenderTests(unittest.TestCase):
         params = {"gradient_speed": 0.0}
         frame = renderer.render(1.0, intent, params=params)
         self.assertEqual(frame[0], (255, 0, 0))
-        self.assertEqual(frame[2], (0, 0, 0))
+        self.assertEqual(
+            frame[2],
+            (int(255 * CONTINUOUS_MIN_BRIGHTNESS_FLOOR), 0, 0),
+        )
 
     def test_gradient_three_color_stops(self) -> None:
         renderer = SegmentRenderer(segments=5, mode=RenderMode.GRADIENT)

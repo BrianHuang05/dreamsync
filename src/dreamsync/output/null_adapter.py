@@ -108,6 +108,10 @@ class PreviewMirrorAdapter:
     def __init__(self, output_adapter: Any, preview_adapter: "SimulationMultiAdapter") -> None:
         self._output_adapter = output_adapter
         self._preview_adapter = preview_adapter
+        self._last_mirror_parity: dict[str, Any] = {
+            "available": False,
+            "matches": None,
+        }
 
     @property
     def devices(self):
@@ -128,26 +132,53 @@ class PreviewMirrorAdapter:
         finally:
             self._preview_adapter.deactivate()
 
+    def configure_frame_trace(
+        self,
+        *,
+        enabled: bool,
+        max_frames: int = 120,
+        sample_every: int = 1,
+    ) -> None:
+        for adapter in (self._output_adapter, self._preview_adapter):
+            configure = getattr(adapter, "configure_frame_trace", None)
+            if callable(configure):
+                configure(
+                    enabled=enabled,
+                    max_frames=max_frames,
+                    sample_every=sample_every,
+                )
+
     def send_frame(self, t, intent, beat=False, params=None) -> bool:
-        preview_sent = self._preview_adapter.send_frame(t, intent, beat=beat, params=params)
         output_sent = self._output_adapter.send_frame(t, intent, beat=beat, params=params)
+        preview_sent = self._mirror_final_output(
+            fallback=lambda: self._preview_adapter.send_frame(
+                t, intent, beat=beat, params=params
+            ),
+            t=t,
+        )
         return bool(preview_sent or output_sent)
 
     def send_spatial_scene(self, t, scene, *, beat=False, base_intent=None) -> bool:
-        preview_sent = self._preview_adapter.send_spatial_scene(
-            t, scene, beat=beat, base_intent=base_intent
-        )
         output_sent = self._output_adapter.send_spatial_scene(
             t, scene, beat=beat, base_intent=base_intent
+        )
+        preview_sent = self._mirror_final_output(
+            fallback=lambda: self._preview_adapter.send_spatial_scene(
+                t, scene, beat=beat, base_intent=base_intent
+            ),
+            t=t,
         )
         return bool(preview_sent or output_sent)
 
     def send_baked_frame(self, t: float, node_colors: dict[str, str], *, fallback_color: str = "#000000") -> bool:
-        preview_sent = self._preview_adapter.send_baked_frame(
-            t, node_colors, fallback_color=fallback_color
-        )
         output_sent = self._output_adapter.send_baked_frame(
             t, node_colors, fallback_color=fallback_color
+        )
+        preview_sent = self._mirror_final_output(
+            fallback=lambda: self._preview_adapter.send_baked_frame(
+                t, node_colors, fallback_color=fallback_color
+            ),
+            t=t,
         )
         return bool(preview_sent or output_sent)
 
@@ -165,7 +196,36 @@ class PreviewMirrorAdapter:
                 clear()
 
     def preview_snapshot(self) -> dict[str, Any]:
-        return self._preview_adapter.preview_snapshot()
+        snapshot = self._preview_adapter.preview_snapshot()
+        snapshot["hardware_mirror_parity"] = dict(self._last_mirror_parity)
+        return snapshot
+
+    def _mirror_final_output(self, *, fallback, t: float) -> bool:
+        final_snapshot = getattr(self._output_adapter, "final_frame_snapshot", None)
+        if not callable(final_snapshot):
+            self._last_mirror_parity = {"available": False, "matches": None}
+            return bool(fallback())
+        hardware = dict(final_snapshot())
+        node_colors = hardware.get("node_colors", {})
+        if not isinstance(node_colors, dict) or not node_colors:
+            self._last_mirror_parity = {"available": False, "matches": None}
+            return bool(fallback())
+        sent = self._preview_adapter.accept_mirrored_frame(t, hardware)
+        preview_colors = self._preview_adapter.preview_snapshot().get("node_colors", {})
+        normalized_hardware = {
+            str(key): str(value).lower() for key, value in node_colors.items()
+        }
+        normalized_preview = {
+            str(key): str(value).lower()
+            for key, value in dict(preview_colors).items()
+        }
+        self._last_mirror_parity = {
+            "available": True,
+            "matches": normalized_preview == normalized_hardware,
+            "hardware_node_colors": normalized_hardware,
+            "preview_node_colors": normalized_preview,
+        }
+        return bool(sent)
 
     def __getattr__(self, name: str):
         return getattr(self._output_adapter, name)
@@ -273,15 +333,41 @@ class SimulationMultiAdapter(MultiGoveeLanAdapter):
             self._capture_preview_colors()
         return sent
 
+    def accept_mirrored_frame(
+        self,
+        t: float,
+        final_snapshot: dict[str, Any],
+    ) -> bool:
+        """Display an output adapter's exact final RGB and provenance."""
+
+        node_colors = final_snapshot.get("node_colors", {})
+        if not isinstance(node_colors, dict):
+            return False
+        sent = self.send_baked_frame(t, node_colors)
+        diagnostics = final_snapshot.get("frame_diagnostics", {})
+        if isinstance(diagnostics, dict):
+            self._last_frame_diagnostics = dict(diagnostics)
+            if (
+                self._frame_trace_enabled
+                and self._frame_trace
+                and self._frame_trace[-1].get("output_t") == float(t)
+            ):
+                self._frame_trace[-1] = dict(diagnostics)
+        return sent
+
     def preview_snapshot(self) -> dict[str, Any]:
         self._capture_preview_colors()
         return {
             "node_colors": dict(self._preview_colors),
             "frames_sent": self._frames_sent,
+            "frame_diagnostics": dict(self._last_frame_diagnostics),
+            "frame_trace": self.frame_trace_snapshot(),
         }
 
     def _capture_preview_colors(self) -> None:
-        preview_colors: dict[str, str] = {}
+        # Retain the last valid color for keys omitted by a transient adapter
+        # update. Missing keys must not flicker back to canvas defaults.
+        preview_colors: dict[str, str] = dict(self._preview_colors)
         for adapter, _renderer, _role, _bs, _placement in self.devices:
             colors = list(getattr(adapter, "last_colors", []) or [])
             keys = self._node_keys.get(adapter.address, [adapter.address])

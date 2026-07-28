@@ -76,6 +76,34 @@ def test_beat_detector_heading_reflects_overridden_cycle_bpm():
     )
 
 
+def test_preview_exposes_frame_freeze_and_output_provenance_readout():
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    app = _application()
+    window = create_main_window(
+        require_qt(),
+        GuiSettings(),
+        config_path=Path("dev/devices-dummy.yaml"),
+    )
+
+    freeze = window.findChild(
+        QtWidgets.QCheckBox,
+        "simulationFreezeFrameCheck",
+    )
+    diagnostics = window.findChild(
+        QtWidgets.QLabel,
+        "simulationFrameDiagnosticsLabel",
+    )
+
+    assert freeze is not None
+    assert "last valid per-device RGB" in freeze.toolTip()
+    assert diagnostics is not None
+    assert diagnostics.text() == "Frame: waiting for output"
+    freeze.setChecked(True)
+    assert freeze.isChecked()
+    window.close()
+    app.processEvents()
+
+
 def test_waveform_widget_renders_centered_upcoming_beats_and_effects():
     app = _application()
     view = build_reactive_waveform_view(require_qt())

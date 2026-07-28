@@ -1964,10 +1964,45 @@ def create_main_window(
     def _render_preview_simulation(preview_snapshot: dict[str, object] | None = None) -> None:
         if preview_snapshot is not None:
             node_colors = preview_snapshot.get("node_colors", {})
-            if isinstance(node_colors, dict):
+            frozen = bool(queue_panel.simulation_freeze_check.isChecked())
+            if isinstance(node_colors, dict) and not frozen:
                 simulation_frame_state["node_colors"] = {
                     str(key): str(value) for key, value in node_colors.items()
                 }
+            frame = preview_snapshot.get("frame_diagnostics", {})
+            frame = frame if isinstance(frame, dict) else {}
+            actions = frame.get("structural_actions", ())
+            last_action = actions[-1] if isinstance(actions, (list, tuple)) and actions else {}
+            last_action = last_action if isinstance(last_action, dict) else {}
+            flags = []
+            if frame.get("unexpected_achromatic"):
+                flags.append("UNEXPECTED ACHROMATIC")
+            if frame.get("all_black"):
+                flags.append("ALL BLACK")
+            parity = preview_snapshot.get("hardware_mirror_parity", {})
+            parity = parity if isinstance(parity, dict) else {}
+            if parity.get("available"):
+                flags.append(
+                    "MIRROR MATCH"
+                    if parity.get("matches")
+                    else "MIRROR MISMATCH"
+                )
+            queue_panel.simulation_frame_diagnostics_label.setText(
+                "Frame{}: mode={} color={} intensity={:.3f} "
+                "accent={:.2f}{} action={} spatial={} RGB={}..{}{}".format(
+                    " (frozen)" if frozen else "",
+                    frame.get("effective_render_mode") or "unknown",
+                    frame.get("base_color") or "none",
+                    float(frame.get("base_intensity", 0.0) or 0.0),
+                    float(frame.get("beat_accent", 0.0) or 0.0),
+                    " downbeat" if frame.get("downbeat") else "",
+                    last_action.get("outcome", "none"),
+                    "changed" if frame.get("spatial_changed") else "same",
+                    int(frame.get("min_rgb_level", 0) or 0),
+                    int(frame.get("max_rgb_level", 0) or 0),
+                    f" · {' · '.join(flags)}" if flags else "",
+                )
+            )
         for canvas in _simulation_canvases():
             _apply_preview_canvas_state(canvas)
 

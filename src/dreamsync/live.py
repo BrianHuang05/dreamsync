@@ -3301,6 +3301,17 @@ def resolve_live_render_mode(
     return "solid"
 
 
+def refresh_frame_intent_palette(
+    intent: LightingIntent,
+    director: Director,
+) -> LightingIntent:
+    """Align a captured intent with a palette committed later in the frame."""
+
+    if intent.color == director.current_color:
+        return intent
+    return dataclasses.replace(intent, color=director.current_color)
+
+
 def _predictive_enabled_effects(
     effect_cycler: EffectCycler | None,
     *,
@@ -3636,6 +3647,14 @@ def run_live_to_govee(
             runtime_params["_render_mode"] = resolved_render_mode
         else:
             runtime_params.setdefault("_render_mode", resolved_render_mode)
+        runtime_params["_palette_colors"] = director.colors
+        runtime_params["_palette_name"] = (
+            effect_cycler.current_palette
+            if effect_cycler is not None
+            else ""
+        )
+        if resolved_render_mode == RenderMode.GRADIENT.value and len(director.colors) >= 2:
+            runtime_params.setdefault("gradient_colors", director.colors)
 
         if intent.mode == EffectMode.RIPPLE:
             runtime_params.setdefault("spatial_preset", "ripple_from_center")
@@ -3983,6 +4002,16 @@ def run_live_to_govee(
         )
 
     # Activate all devices (activate() includes its own delays)
+    configure_frame_trace = getattr(multi_adapter, "configure_frame_trace", None)
+    if callable(configure_frame_trace):
+        configure_frame_trace(
+            enabled=bool(
+                live_structure.structure_similarity_diagnostics
+                or telemetry_dir is not None
+            ),
+            max_frames=240,
+            sample_every=1,
+        )
     multi_adapter.activate(brightness=100)
 
     with sd.InputStream(
@@ -4913,6 +4942,13 @@ def run_live_to_govee(
                         director.set_colors(
                             effect_cycler.show_palette_colors
                         )
+                # A structural effect/palette commit happens after the
+                # analysis intent is captured. Refresh its color authority so
+                # this exact frame cannot combine stale intent with new params.
+                frame_intent = refresh_frame_intent_palette(
+                    frame_intent,
+                    director,
+                )
                 runtime_params, active_live_eq_routes, active_live_instrument_routes = _runtime_params_for_frame(frame_intent)
                 if structural_action_results:
                     runtime_params = dict(runtime_params or {})
@@ -5028,6 +5064,56 @@ def run_live_to_govee(
                         }
                         for cue in committed_predictive_cues
                     )
+                runtime_params = dict(runtime_params or {})
+                runtime_params["_frame_provenance"] = {
+                    "stream_t": round(float(stream_t), 6),
+                    "detected_bpm": round(float(bpm_estimator.last_bpm), 3),
+                    "selected_pulse_bpm": round(
+                        float(bpm_estimator._cyclic_grid.manual_bpm),
+                        3,
+                    ),
+                    "downbeat": bool(render_downbeat),
+                    "beat_in_bar": render_beat_in_bar,
+                    "beat_accent": round(float(render_beat_strength), 4),
+                    "effect": (
+                        effect_cycler.current_effect
+                        if effect_cycler is not None
+                        else ""
+                    ),
+                    "palette_name": (
+                        effect_cycler.current_palette
+                        if effect_cycler is not None
+                        else ""
+                    ),
+                    "palette_colors": director.colors,
+                    "harmonic_intensity_addition": round(
+                        float(harmonic_accent),
+                        4,
+                    ),
+                    "predictive_intensity_addition": round(
+                        float(predictive_cue_intensity),
+                        4,
+                    ),
+                    "structural_actions": tuple(
+                        {
+                            key: value
+                            for key, value in dataclasses.asdict(result).items()
+                            if key != "preset"
+                        }
+                        for result in structural_action_results
+                    ),
+                    "active_eq_routes": tuple(
+                        dict(route) for route in active_live_eq_routes
+                    ),
+                    "active_instrument_routes": tuple(
+                        dict(route) for route in active_live_instrument_routes
+                    ),
+                    "runtime_control": (
+                        dict(runtime_params.get("runtime_control", {}))
+                        if isinstance(runtime_params.get("runtime_control"), dict)
+                        else {}
+                    ),
+                }
                 sent = multi_adapter.send_frame(
                     elapsed,
                     frame_intent,

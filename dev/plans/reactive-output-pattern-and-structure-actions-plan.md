@@ -13,6 +13,36 @@ output defect, then complete simulation acceptance steps 11–16.
 Do not begin hardware acceptance until every simulation gate in this plan
 passes.
 
+## Implementation record (2026-07-27)
+
+Implementation and deterministic simulation coverage are complete. The
+remaining work is the operator-observed simulation acceptance in steps 11-16,
+followed by the hardware gate. The updated manual procedure and observed
+automated results are recorded in
+`reactive-structure-first-similarity-lighting-human-test.md`.
+
+Demonstrated defect sources:
+
+1. pulse decay had no optical floor, so white palettes visibly alternated
+   between a white beat target and a near-black inter-beat envelope;
+2. mapped devices inferred a second moving spatial mask from ordinary
+   scroll/wave renderer modes even when no spatial action was configured,
+   suppressing the renderer frame across parts of the room;
+3. continuous breathe, wave, and single-color gradient envelopes could reach
+   unintended device-wide black;
+4. structural palette/effect changes could combine a stale captured intent
+   color with newly committed parameters for one frame;
+5. preview mirror mode independently rendered instead of displaying the
+   hardware adapter's exact post-role/post-spatial RGB;
+6. missing preview keys exposed canvas defaults instead of retaining the last
+   valid frame.
+
+The implementation adds bounded opt-in provenance, final-RGB snapshots,
+numeric mirror parity, preview freeze/readout controls, explicit continuous
+effect floors, palette propagation for gradients, stale-intent correction,
+expanded structural-action result provenance, and deterministic contract/action
+matrix tests.
+
 ## Current status
 
 ### Accepted baseline

@@ -5,9 +5,10 @@ import json
 import logging
 import socket
 import time
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable
+from typing import Any, Callable
 
 from dreamsync.director import EffectMode, LightingIntent
 from dreamsync.output.roles import DeviceRole, DeviceType, adapt_render_mode, transform_intent
@@ -416,6 +417,120 @@ class MultiGoveeLanAdapter:
         self._spatial_mapper = spatial_mapper
         self._prepared_spatial_cues: dict[object, tuple[object, tuple]] = {}
         self._placement_section_cache: dict[tuple[int, int], tuple[DevicePlacement, ...]] = {}
+        self._last_output_colors: dict[str, tuple[tuple[int, int, int], ...]] = {}
+        self._last_frame_diagnostics: dict[str, Any] = {}
+        self._frame_trace_enabled = False
+        self._frame_trace_sample_every = 1
+        self._frame_trace_counter = 0
+        self._frame_trace: deque[dict[str, Any]] = deque(maxlen=120)
+
+    def configure_frame_trace(
+        self,
+        *,
+        enabled: bool,
+        max_frames: int = 120,
+        sample_every: int = 1,
+    ) -> None:
+        """Enable a bounded output-frame trace outside the audio callback."""
+
+        bounded_max = max(1, min(3600, int(max_frames)))
+        existing = tuple(self._frame_trace)[-bounded_max:]
+        self._frame_trace = deque(existing, maxlen=bounded_max)
+        self._frame_trace_enabled = bool(enabled)
+        self._frame_trace_sample_every = max(1, int(sample_every))
+        self._frame_trace_counter = 0
+
+    def frame_trace_snapshot(self) -> tuple[dict[str, Any], ...]:
+        return tuple(dict(row) for row in self._frame_trace)
+
+    def final_frame_snapshot(self) -> dict[str, Any]:
+        """Return the exact final per-device RGB values submitted to adapters."""
+
+        node_colors: dict[str, str] = {}
+        device_rgb: dict[str, tuple[tuple[int, int, int], ...]] = {}
+        for address, colors in self._last_output_colors.items():
+            device_rgb[address] = tuple(colors)
+            if len(colors) == 1:
+                node_colors[address] = self._rgb_hex(colors[0])
+            else:
+                for index, color in enumerate(colors):
+                    node_colors[f"{address}#section:{index}"] = self._rgb_hex(color)
+        return {
+            "node_colors": node_colors,
+            "device_rgb": device_rgb,
+            "frame_diagnostics": dict(self._last_frame_diagnostics),
+        }
+
+    @staticmethod
+    def _rgb_hex(color: tuple[int, int, int]) -> str:
+        return "#{:02x}{:02x}{:02x}".format(*color)
+
+    @staticmethod
+    def _renderer_mode_name(renderer: Any) -> str:
+        mode = getattr(renderer, "mode", "")
+        return str(getattr(mode, "value", mode) or "")
+
+    def _finish_frame_diagnostics(
+        self,
+        *,
+        t: float,
+        intent: LightingIntent,
+        beat: bool,
+        params: dict | None,
+        devices: list[dict[str, Any]],
+    ) -> None:
+        pixels = [
+            color
+            for device in devices
+            for color in device.get("post_spatial_rgb", ())
+        ]
+        levels = [max(color) for color in pixels]
+        all_black = bool(pixels) and all(max(color) == 0 for color in pixels)
+        achromatic = bool(pixels) and all(
+            max(color) - min(color) <= 1 for color in pixels
+        )
+        base_rgb = (
+            _parse_hex_color(intent.color)
+            if intent.color
+            else (255, 180, 100)
+        )
+        expected_chromatic = max(base_rgb) - min(base_rgb) > 1
+        provenance = (
+            dict(params.get("_frame_provenance", {}))
+            if params and isinstance(params.get("_frame_provenance"), dict)
+            else {}
+        )
+        row: dict[str, Any] = {
+            **provenance,
+            "output_t": float(t),
+            "beat": bool(beat),
+            "base_color": intent.color,
+            "base_intensity": float(intent.intensity),
+            "base_speed": float(intent.speed),
+            "base_bpm": float(intent.bpm),
+            "effective_render_mode": (
+                str(params.get("_render_mode", ""))
+                if params
+                else ""
+            ),
+            "min_rgb_level": min(levels) if levels else 0,
+            "max_rgb_level": max(levels) if levels else 0,
+            "all_black": all_black,
+            "unexpected_achromatic": bool(achromatic and expected_chromatic),
+            "spatial_changed": any(
+                tuple(device.get("pre_spatial_rgb", ()))
+                != tuple(device.get("post_spatial_rgb", ()))
+                for device in devices
+            ),
+            "devices": tuple(devices),
+        }
+        self._last_frame_diagnostics = row
+        self._frame_trace_counter += 1
+        if (
+            self._frame_trace_enabled
+            and self._frame_trace_counter % self._frame_trace_sample_every == 0
+        ):
+            self._frame_trace.append(row)
 
     def activate(self, brightness: int = 100) -> None:
         """Turn on all devices and set brightness.
@@ -468,16 +583,34 @@ class MultiGoveeLanAdapter:
 
         any_sent = False
         render_params = self._public_render_params(params)
+        diagnostic_devices: list[dict[str, Any]] = []
         for adapter, renderer, role, bs, _placement in self.devices:
             device_intent = transform_intent(intent, role, brightness_scale=bs)
             self._apply_render_mode_override(renderer, params)
             colors = renderer.render(t, device_intent, beat=beat, params=render_params)
+            address = str(adapter.config.device_ip)
+            self._last_output_colors[address] = tuple(colors)
+            diagnostic_devices.append({
+                "address": address,
+                "role": getattr(role, "value", str(role)),
+                "brightness_scale": float(bs),
+                "render_mode": self._renderer_mode_name(renderer),
+                "pre_spatial_rgb": tuple(colors),
+                "post_spatial_rgb": tuple(colors),
+            })
             if adapter.send_frame(colors):
                 any_sent = True
         # Push to BLE followers (fire-and-forget, they rate-limit internally)
         for follower in self._ble_followers:
             self._ble_adapter_for(follower).emit(t, intent)
             any_sent = True
+        self._finish_frame_diagnostics(
+            t=t,
+            intent=intent,
+            beat=beat,
+            params=params,
+            devices=diagnostic_devices,
+        )
         return any_sent
 
     def send_spatial_scene(
@@ -490,6 +623,7 @@ class MultiGoveeLanAdapter:
     ) -> bool:
         """Render and send a spatial scene to all devices."""
         any_sent = False
+        diagnostic_devices: list[dict[str, Any]] = []
         fallback_state = scene.get(GridCell.CENTER)
         if fallback_state is None:
             raise ValueError("Spatial scene must include GridCell.CENTER.")
@@ -511,6 +645,16 @@ class MultiGoveeLanAdapter:
                 params=cell_state.params,
                 placement=placement,
             )
+            address = str(adapter.config.device_ip)
+            self._last_output_colors[address] = tuple(colors)
+            diagnostic_devices.append({
+                "address": address,
+                "role": getattr(role, "value", str(role)),
+                "brightness_scale": float(bs),
+                "render_mode": self._renderer_mode_name(renderer),
+                "pre_spatial_rgb": tuple(colors),
+                "post_spatial_rgb": tuple(colors),
+            })
             if adapter.send_frame(colors):
                 any_sent = True
 
@@ -519,6 +663,13 @@ class MultiGoveeLanAdapter:
             self._ble_adapter_for(follower).emit(t, follower_intent)
             any_sent = True
 
+        self._finish_frame_diagnostics(
+            t=t,
+            intent=base_intent if base_intent is not None else fallback_state.intent,
+            beat=beat,
+            params=fallback_state.params,
+            devices=diagnostic_devices,
+        )
         return any_sent
 
     def send_continuous_spatial_frame(
@@ -536,11 +687,12 @@ class MultiGoveeLanAdapter:
         spatial_t = self._spatial_time(t, params)
         render_params = self._public_render_params(params)
         any_sent = False
+        diagnostic_devices: list[dict[str, Any]] = []
 
         for adapter, renderer, role, bs, placement in self.devices:
             device_intent = transform_intent(intent, role, brightness_scale=bs)
             self._apply_render_mode_override(renderer, params)
-            colors = self._render_with_orientation(
+            pre_spatial_colors = self._render_with_orientation(
                 renderer,
                 t,
                 device_intent,
@@ -549,13 +701,23 @@ class MultiGoveeLanAdapter:
                 placement=placement,
             )
             colors = self._spatialize_colors(
-                colors,
+                pre_spatial_colors,
                 placement=placement,
                 t=spatial_t,
                 intent=device_intent,
                 spec=spec,
                 layers=layers,
             )
+            address = str(adapter.config.device_ip)
+            self._last_output_colors[address] = tuple(colors)
+            diagnostic_devices.append({
+                "address": address,
+                "role": getattr(role, "value", str(role)),
+                "brightness_scale": float(bs),
+                "render_mode": self._renderer_mode_name(renderer),
+                "pre_spatial_rgb": tuple(pre_spatial_colors),
+                "post_spatial_rgb": tuple(colors),
+            })
             if adapter.send_frame(colors):
                 any_sent = True
 
@@ -606,6 +768,13 @@ class MultiGoveeLanAdapter:
             follower_adapter.emit(t, follower_intent)
             any_sent = True
 
+        self._finish_frame_diagnostics(
+            t=t,
+            intent=intent,
+            beat=beat,
+            params=params,
+            devices=diagnostic_devices,
+        )
         return any_sent
 
     def send_baked_frame(
@@ -622,6 +791,7 @@ class MultiGoveeLanAdapter:
         absent. Missing devices receive *fallback_color*.
         """
         any_sent = False
+        diagnostic_devices: list[dict[str, Any]] = []
         for adapter, renderer, _role, _bs, _placement in self.devices:
             address = str(adapter.config.device_ip)
             colors = self._baked_device_colors(
@@ -630,6 +800,15 @@ class MultiGoveeLanAdapter:
                 node_colors,
                 fallback_color=fallback_color,
             )
+            self._last_output_colors[address] = tuple(colors)
+            diagnostic_devices.append({
+                "address": address,
+                "role": "baked",
+                "brightness_scale": 1.0,
+                "render_mode": "baked",
+                "pre_spatial_rgb": tuple(colors),
+                "post_spatial_rgb": tuple(colors),
+            })
             if adapter.send_frame(colors):
                 any_sent = True
 
@@ -644,6 +823,13 @@ class MultiGoveeLanAdapter:
             self._ble_adapter_for(follower).emit(t, fallback_intent)
             any_sent = True
 
+        self._finish_frame_diagnostics(
+            t=t,
+            intent=fallback_intent,
+            beat=False,
+            params={"_render_mode": "baked"},
+            devices=diagnostic_devices,
+        )
         return any_sent
 
     def prepare_spatial_cue(self, key: object, intent: LightingIntent, params: dict | None = None) -> bool:

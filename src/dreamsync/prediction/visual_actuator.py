@@ -70,12 +70,34 @@ class StructuralVisualActuator:
         enabled_effects: tuple[str, ...],
     ) -> StructuralActionResult:
         target_bar = cue.target.target_bar_index if cue.target else None
+        before_effect = (
+            effect_cycler.current_effect
+            if effect_cycler is not None
+            else None
+        )
+        before_palette = (
+            effect_cycler.current_palette
+            if effect_cycler is not None
+            else None
+        )
         common = {
             "cue_id": cue.cue_id,
+            "cue_class": cue.cue_class,
             "requested_effect": cue.requested_effect,
             "requested_palette_action": cue.color_action,
             "target_bar": target_bar,
+            "target_beat": (
+                cue.target.target_beat_index
+                if cue.target is not None
+                else None
+            ),
             "committed_beat": beat_index,
+            "commit_t": float(now_t),
+            "commit_bar": bar_index,
+            "downbeat": bool(downbeat),
+            "meter_confident": bool(meter_confident),
+            "before_effect": before_effect,
+            "before_palette": before_palette,
         }
         if cue.state != "committed":
             return StructuralActionResult(
@@ -178,6 +200,8 @@ class StructuralVisualActuator:
             outcome=outcome,
             applied_effect=applied_effect,
             applied_palette=applied_palette,
+            after_effect=applied_effect,
+            after_palette=applied_palette,
             reason=(
                 "structural action applied on target downbeat"
                 if outcome == "applied"

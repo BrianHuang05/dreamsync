@@ -282,3 +282,13 @@ class StructuralActionResult:
     committed_beat: int | None
     reason: str
     preset: object | None = None
+    cue_class: str = ""
+    target_beat: int | None = None
+    commit_t: float | None = None
+    commit_bar: int | None = None
+    downbeat: bool = False
+    meter_confident: bool = False
+    before_effect: str | None = None
+    before_palette: str | None = None
+    after_effect: str | None = None
+    after_palette: str | None = None

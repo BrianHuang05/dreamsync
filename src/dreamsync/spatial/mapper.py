@@ -298,7 +298,12 @@ class SpatialMapper:
         """Resolve legacy spatial metadata into the first-class effecting layer."""
 
         normalized = self._normalize_spatial_params(intent, params=params)
-        explicit_layer = self._explicit_effect_layer(normalized.get("effect_layer"))
+        implicit_layer = bool(normalized.get("_implicit_spatial_layer"))
+        explicit_layer = (
+            None
+            if implicit_layer
+            else self._explicit_effect_layer(normalized.get("effect_layer"))
+        )
         if explicit_layer is not None:
             return self._layer_with_param_overrides(explicit_layer, normalized)
         render_mode = str(normalized.get("_render_mode") or "")
@@ -324,7 +329,6 @@ class SpatialMapper:
         resolved_blend = blend or str(
             normalized.get("spatial_blend", "radial" if resolved_mode == "emanation" else "linear")
         )
-        implicit_layer = bool(normalized.get("_implicit_spatial_layer"))
         resolved_extent = (
             None
             if implicit_layer
@@ -869,12 +873,15 @@ class SpatialMapper:
         elif isinstance(preset_name, str):
             self._apply_spatial_preset(normalized, preset_name)
         elif not self._has_explicit_spatial_metadata(normalized):
+            # Renderer modes describe segment animation, not an additional
+            # room mask. Without explicit spatial metadata, spatialization
+            # must preserve the ordinary renderer frame.
+            normalized["_implicit_spatial_layer"] = True
             implicit = self._default_preset_for_intent(intent, render_mode=effective_render_mode)
             if implicit is not None:
                 # Implicit presets describe the room projection for an ordinary
                 # rendered cue.  They must not apply a second moving mask to the
                 # renderer output; explicit presets/layers remain effecting.
-                normalized["_implicit_spatial_layer"] = True
                 self._apply_spatial_preset(normalized, implicit)
 
         self._apply_legacy_spatial_compatibility(normalized)

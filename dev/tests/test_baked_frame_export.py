@@ -66,7 +66,9 @@ def test_bake_show_frames_captures_section_node_colors(tmp_path: Path):
         "10.0.0.2#section:1",
         "10.0.0.2#section:2",
     ]
-    assert artifact.frames[0].colors == ("#ff0000", "#ff0000", "#ff0000")
+    # The default strip role applies its 40% brightness scale before both
+    # preview capture and hardware payload generation.
+    assert artifact.frames[0].colors == ("#660000", "#660000", "#660000")
     assert artifact.frames[-1].t == 1.0
 
 

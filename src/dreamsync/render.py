@@ -22,6 +22,9 @@ def _parse_hex(color: str) -> tuple[int, int, int]:
 
 
 _DEFAULT_COLOR = (255, 180, 100)  # warm white
+PULSE_MIN_BRIGHTNESS_FLOOR = 0.08
+PULSE_DEFAULT_BRIGHTNESS_FLOOR = 0.12
+CONTINUOUS_MIN_BRIGHTNESS_FLOOR = 0.06
 
 
 @dataclass
@@ -100,6 +103,14 @@ class SegmentRenderer:
     ) -> list[tuple[int, int, int]]:
         decay = params.get("pulse_decay", self._pulse_decay) if params else self._pulse_decay
         self._pulse_brightness *= math.exp(-decay * dt)
+        requested_floor = (
+            float(params.get("pulse_floor", PULSE_DEFAULT_BRIGHTNESS_FLOOR))
+            if params
+            else PULSE_DEFAULT_BRIGHTNESS_FLOOR
+        )
+        allow_blackout = bool(params.get("allow_blackout", False)) if params else False
+        minimum_floor = 0.0 if allow_blackout else PULSE_MIN_BRIGHTNESS_FLOOR
+        floor = max(minimum_floor, min(1.0, requested_floor))
         if beat:
             accent = float(params.get("beat_accent", 1.0)) if params else 1.0
             accent = max(0.0, min(1.0, accent))
@@ -109,7 +120,9 @@ class SegmentRenderer:
             self._pulse_brightness = max(self._pulse_brightness, accent)
 
         r, g, b = _parse_hex(intent.color) if intent.color else _DEFAULT_COLOR
-        level = self._pulse_brightness * max(0.0, min(1.0, intent.intensity))
+        level = max(floor, self._pulse_brightness) * max(
+            0.0, min(1.0, intent.intensity)
+        )
         pixel = (int(r * level), int(g * level), int(b * level))
         return [pixel] * self.segments
 
@@ -123,7 +136,17 @@ class SegmentRenderer:
         freq = (bpm / 60.0) * (params.get("breathe_rate_mult", 1.0) if params else 1.0)
         self._breathe_phase += freq * dt
         # Sine wave 0→1→0
-        wave = (math.sin(2.0 * math.pi * self._breathe_phase) + 1.0) / 2.0
+        floor = (
+            float(params.get("breathe_floor", CONTINUOUS_MIN_BRIGHTNESS_FLOOR))
+            if params
+            else CONTINUOUS_MIN_BRIGHTNESS_FLOOR
+        )
+        floor = max(0.0, min(1.0, floor))
+        wave = floor + (
+            (1.0 - floor)
+            * (math.sin(2.0 * math.pi * self._breathe_phase) + 1.0)
+            / 2.0
+        )
 
         r, g, b = _parse_hex(intent.color) if intent.color else _DEFAULT_COLOR
         level = wave * max(0.0, min(1.0, intent.intensity))
@@ -223,6 +246,12 @@ class SegmentRenderer:
         bpm = max(1.0, intent.bpm)
         rate_mult = params.get("wave_rate_mult", 1.0) if params else 1.0
         wavelength = params.get("wave_wavelength", 1.0) if params else 1.0
+        floor = (
+            float(params.get("wave_floor", CONTINUOUS_MIN_BRIGHTNESS_FLOOR))
+            if params
+            else CONTINUOUS_MIN_BRIGHTNESS_FLOOR
+        )
+        floor = max(0.0, min(1.0, floor))
         freq = (bpm / 60.0) * rate_mult
 
         self._wave_phase += freq * dt
@@ -234,7 +263,11 @@ class SegmentRenderer:
         for i in range(self.segments):
             seg_pos = i / max(1, self.segments - 1) if self.segments > 1 else 0.0
             seg_phase = self._wave_phase - seg_pos * wavelength
-            wave = (math.sin(2.0 * math.pi * seg_phase) + 1.0) / 2.0
+            wave = floor + (
+                (1.0 - floor)
+                * (math.sin(2.0 * math.pi * seg_phase) + 1.0)
+                / 2.0
+            )
             level = wave * intensity
             result.append((int(r * level), int(g * level), int(b * level)))
         return result
@@ -254,9 +287,21 @@ class SegmentRenderer:
             colors = [_parse_hex(c) for c in colors_hex]
         elif intent.color:
             c = _parse_hex(intent.color)
-            colors = [c, (0, 0, 0)]
+            colors = [
+                c,
+                tuple(
+                    int(channel * CONTINUOUS_MIN_BRIGHTNESS_FLOOR)
+                    for channel in c
+                ),
+            ]
         else:
-            colors = [_DEFAULT_COLOR, (0, 0, 0)]
+            colors = [
+                _DEFAULT_COLOR,
+                tuple(
+                    int(channel * CONTINUOUS_MIN_BRIGHTNESS_FLOOR)
+                    for channel in _DEFAULT_COLOR
+                ),
+            ]
 
         intensity = max(0.0, min(1.0, intent.intensity))
         n_colors = len(colors)
