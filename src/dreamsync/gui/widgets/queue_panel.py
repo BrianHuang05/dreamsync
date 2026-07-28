@@ -1172,22 +1172,109 @@ def build_queue_panel(qt_modules):
     reactive_live_group = QtWidgets.QGroupBox("Reactive Live")
     reactive_live_group.setObjectName("reactiveLiveGroup")
     reactive_live_layout = QtWidgets.QVBoxLayout(reactive_live_group)
+    reactive_live_scroll = QtWidgets.QScrollArea()
+    reactive_live_scroll.setObjectName("reactiveLiveScrollArea")
+    reactive_live_scroll.setWidgetResizable(True)
+    reactive_live_scroll.setHorizontalScrollBarPolicy(
+        QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    )
+    reactive_live_scroll.setVerticalScrollBarPolicy(
+        QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+    )
+    reactive_live_scroll.setFrameShape(
+        QtWidgets.QFrame.Shape.NoFrame
+    )
+    reactive_live_content = QtWidgets.QWidget()
+    reactive_live_content.setObjectName("reactiveLiveScrollContent")
+    reactive_live_content_layout = QtWidgets.QVBoxLayout(
+        reactive_live_content
+    )
+    reactive_live_content_layout.setContentsMargins(0, 0, 0, 0)
+    reactive_live_content_layout.setSpacing(8)
+    reactive_live_content_layout.setAlignment(
+        QtCore.Qt.AlignmentFlag.AlignTop
+    )
+    reactive_live_scroll.setWidget(reactive_live_content)
+    reactive_live_layout.addWidget(reactive_live_scroll, 1)
+
+    def _reactive_collapsible_panel(
+        group,
+        *,
+        title: str,
+        object_name: str,
+        expanded: bool,
+    ):
+        """Wrap a live section in the Palettes-style collapsible panel."""
+
+        panel = QtWidgets.QWidget()
+        panel.setObjectName(object_name)
+        panel.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Maximum,
+        )
+        panel_layout = QtWidgets.QVBoxLayout(panel)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
+        panel_layout.setSpacing(2)
+        header = QtWidgets.QToolButton()
+        header.setObjectName(f"{object_name}Header")
+        header.setText(title)
+        header.setCheckable(True)
+        header.setChecked(bool(expanded))
+        header.setToolButtonStyle(
+            QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        header.setArrowType(
+            QtCore.Qt.ArrowType.DownArrow
+            if expanded
+            else QtCore.Qt.ArrowType.RightArrow
+        )
+        header.setStyleSheet(
+            "QToolButton { font-weight: 600; text-align: left; "
+            "padding: 4px; }"
+        )
+        group.setTitle("")
+        group.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Maximum,
+        )
+        group.setVisible(bool(expanded))
+
+        def _toggle(checked: bool) -> None:
+            group.setVisible(bool(checked))
+            header.setArrowType(
+                QtCore.Qt.ArrowType.DownArrow
+                if checked
+                else QtCore.Qt.ArrowType.RightArrow
+            )
+
+        header.toggled.connect(_toggle)
+        panel_layout.addWidget(header)
+        panel_layout.addWidget(group)
+        return panel
+
+    reactive_status_group = QtWidgets.QGroupBox(
+        "Session + Palette Status"
+    )
+    reactive_status_group.setObjectName("reactiveStatusGroup")
+    reactive_status_layout = QtWidgets.QVBoxLayout(
+        reactive_status_group
+    )
     reactive_mode_status_label = QtWidgets.QLabel(
         "Reactive mode is cued. Start Reactive or press Space to begin listening."
     )
     reactive_mode_status_label.setObjectName("reactiveModeStatusLabel")
     reactive_mode_status_label.setWordWrap(True)
-    reactive_live_layout.addWidget(reactive_mode_status_label)
+    reactive_status_layout.addWidget(reactive_mode_status_label)
     reactive_profile_label = QtWidgets.QLabel("Active profile: awaiting Reactive session")
     reactive_profile_label.setObjectName("reactiveProfileLabel")
     reactive_profile_label.setStyleSheet("color: #94a3b8;")
     reactive_profile_label.setWordWrap(True)
-    reactive_live_layout.addWidget(reactive_profile_label)
+    reactive_status_layout.addWidget(reactive_profile_label)
     reactive_active_palette_label = QtWidgets.QLabel("Active palette: awaiting Reactive session")
     reactive_active_palette_label.setObjectName("reactiveActivePaletteLabel")
     reactive_active_palette_label.setStyleSheet("color: #94a3b8;")
     reactive_active_palette_label.setWordWrap(True)
-    reactive_live_layout.addWidget(reactive_active_palette_label)
+    reactive_status_layout.addWidget(reactive_active_palette_label)
     reactive_active_palette_preview_label = QtWidgets.QLabel("No active colors")
     reactive_active_palette_preview_label.setObjectName(
         "reactiveActivePalettePreviewLabel"
@@ -1196,16 +1283,26 @@ def build_queue_panel(qt_modules):
     reactive_active_palette_preview_label.setToolTip(
         "Colors currently applied to Reactive output"
     )
-    reactive_live_layout.addWidget(reactive_active_palette_preview_label)
+    reactive_status_layout.addWidget(
+        reactive_active_palette_preview_label
+    )
     reactive_palette_next_label = QtWidgets.QLabel("Time to next palette: —")
     reactive_palette_next_label.setObjectName("reactivePaletteNextLabel")
     reactive_palette_next_label.setStyleSheet("color: #94a3b8;")
-    reactive_live_layout.addWidget(reactive_palette_next_label)
+    reactive_status_layout.addWidget(reactive_palette_next_label)
     reactive_palette_queue_label = QtWidgets.QLabel("Palette queue: —")
     reactive_palette_queue_label.setObjectName("reactivePaletteQueueLabel")
     reactive_palette_queue_label.setStyleSheet("color: #94a3b8;")
     reactive_palette_queue_label.setWordWrap(True)
-    reactive_live_layout.addWidget(reactive_palette_queue_label)
+    reactive_status_layout.addWidget(reactive_palette_queue_label)
+    reactive_live_content_layout.addWidget(
+        _reactive_collapsible_panel(
+            reactive_status_group,
+            title="Session + Palette Status",
+            object_name="reactiveStatusPanel",
+            expanded=True,
+        )
+    )
 
     reactive_live_look_group = QtWidgets.QGroupBox("Live Color + Effect Bank")
     reactive_live_look_group.setObjectName("reactiveLiveLookGroup")
@@ -1289,9 +1386,13 @@ def build_queue_panel(qt_modules):
         1,
         0,
     )
-    reactive_live_effect_row = QtWidgets.QHBoxLayout()
+    reactive_live_effect_row = QtWidgets.QGridLayout()
+    reactive_live_effect_row.setHorizontalSpacing(6)
+    reactive_live_effect_row.setVerticalSpacing(4)
     reactive_live_effect_buttons = []
-    for effect_label, effect_mode in effect_options:
+    for effect_index, (effect_label, effect_mode) in enumerate(
+        effect_options
+    ):
         effect_button = QtWidgets.QToolButton()
         effect_button.setText(effect_label)
         effect_button.setCheckable(True)
@@ -1303,9 +1404,12 @@ def build_queue_panel(qt_modules):
         effect_button.setToolTip(
             f"Allow {effect_label} when the active effect is automatic."
         )
-        reactive_live_effect_row.addWidget(effect_button)
+        reactive_live_effect_row.addWidget(
+            effect_button,
+            effect_index // 4,
+            effect_index % 4,
+        )
         reactive_live_effect_buttons.append(effect_button)
-    reactive_live_effect_row.addStretch(1)
     reactive_live_look_layout.addLayout(
         reactive_live_effect_row,
         1,
@@ -1328,7 +1432,14 @@ def build_queue_panel(qt_modules):
         1,
         4,
     )
-    reactive_live_layout.addWidget(reactive_live_look_group)
+    reactive_live_content_layout.addWidget(
+        _reactive_collapsible_panel(
+            reactive_live_look_group,
+            title="Live Color + Effect Bank",
+            object_name="reactiveLookPanel",
+            expanded=True,
+        )
+    )
 
     reactive_live_settings_group = QtWidgets.QGroupBox(
         "Reactive Live Settings"
@@ -1522,8 +1633,22 @@ def build_queue_panel(qt_modules):
     reactive_live_settings_layout.addWidget(
         reactive_live_structure_group
     )
-    reactive_live_layout.addWidget(reactive_live_settings_group)
+    reactive_live_content_layout.addWidget(
+        _reactive_collapsible_panel(
+            reactive_live_settings_group,
+            title="Reactive Live Settings",
+            object_name="reactiveSettingsPanel",
+            expanded=False,
+        )
+    )
 
+    reactive_transport_group = QtWidgets.QGroupBox(
+        "Beat + Tempo Controls"
+    )
+    reactive_transport_group.setObjectName("reactiveTransportGroup")
+    reactive_transport_layout = QtWidgets.QVBoxLayout(
+        reactive_transport_group
+    )
     reactive_input_row = QtWidgets.QHBoxLayout()
     reactive_listening_label = QtWidgets.QLabel("○ Input not listening")
     reactive_listening_label.setObjectName("reactiveListeningLabel")
@@ -1538,7 +1663,7 @@ def build_queue_panel(qt_modules):
     reactive_input_row.addStretch(1)
     reactive_input_row.addWidget(reactive_beat_indicator_label)
     reactive_input_row.addWidget(reactive_bpm_label)
-    reactive_live_layout.addLayout(reactive_input_row)
+    reactive_transport_layout.addLayout(reactive_input_row)
     reactive_cycle_tempo_row = QtWidgets.QHBoxLayout()
     reactive_cycle_tempo_label = QtWidgets.QLabel(
         "Cycle tempo: 1× detector  {  }"
@@ -1588,7 +1713,7 @@ def build_queue_panel(qt_modules):
     reactive_cycle_tempo_row.addWidget(
         reactive_cycle_tempo_double_button
     )
-    reactive_live_layout.addLayout(reactive_cycle_tempo_row)
+    reactive_transport_layout.addLayout(reactive_cycle_tempo_row)
     reactive_effect_tempo_row = QtWidgets.QHBoxLayout()
     reactive_effect_tempo_label = QtWidgets.QLabel(
         "Effect tempo: 1× cycle BPM"
@@ -1657,7 +1782,25 @@ def build_queue_panel(qt_modules):
     reactive_effect_tempo_row.addWidget(
         reactive_downbeat_nudge_button
     )
-    reactive_live_layout.addLayout(reactive_effect_tempo_row)
+    reactive_transport_layout.addLayout(reactive_effect_tempo_row)
+    reactive_live_content_layout.addWidget(
+        _reactive_collapsible_panel(
+            reactive_transport_group,
+            title="Beat + Tempo Controls",
+            object_name="reactiveTransportPanel",
+            expanded=True,
+        )
+    )
+
+    reactive_diagnostics_group = QtWidgets.QGroupBox(
+        "Live Diagnostics"
+    )
+    reactive_diagnostics_group.setObjectName(
+        "reactiveLiveDiagnosticsGroup"
+    )
+    reactive_diagnostics_layout = QtWidgets.QVBoxLayout(
+        reactive_diagnostics_group
+    )
     reactive_panel_row = QtWidgets.QHBoxLayout()
     reactive_panel_row.addWidget(QtWidgets.QLabel("Visible panels"))
     reactive_chord_panel_check = QtWidgets.QCheckBox("Chords")
@@ -1679,7 +1822,7 @@ def build_queue_panel(qt_modules):
     reactive_harmonic_panel_check.setChecked(True)
     reactive_panel_row.addWidget(reactive_harmonic_panel_check)
     reactive_panel_row.addStretch(1)
-    reactive_live_layout.addLayout(reactive_panel_row)
+    reactive_diagnostics_layout.addLayout(reactive_panel_row)
     reactive_diagnostics_splitter = QtWidgets.QSplitter(
         QtCore.Qt.Orientation.Vertical
     )
@@ -1689,6 +1832,7 @@ def build_queue_panel(qt_modules):
     reactive_diagnostics_splitter.setChildrenCollapsible(False)
     reactive_diagnostics_splitter.setHandleWidth(7)
     reactive_diagnostics_splitter.setOpaqueResize(True)
+    reactive_diagnostics_splitter.setMinimumHeight(520)
 
     reactive_chord_history_group = QtWidgets.QGroupBox(
         "Chord History + Structural Prediction"
@@ -1817,7 +1961,19 @@ def build_queue_panel(qt_modules):
     reactive_diagnostics_splitter.setStretchFactor(1, 2)
     reactive_diagnostics_splitter.setStretchFactor(2, 3)
     reactive_diagnostics_splitter.setSizes((150, 260, 330))
-    reactive_live_layout.addWidget(reactive_diagnostics_splitter, 1)
+    reactive_diagnostics_layout.addWidget(
+        reactive_diagnostics_splitter,
+        1,
+    )
+    reactive_live_content_layout.addWidget(
+        _reactive_collapsible_panel(
+            reactive_diagnostics_group,
+            title="Live Diagnostics",
+            object_name="reactiveDiagnosticsPanel",
+            expanded=True,
+        )
+    )
+    reactive_live_content_layout.addStretch(1)
     reactive_actions = QtWidgets.QHBoxLayout()
     start_reactive_button.setText("Start Reactive")
     reactive_actions.addWidget(start_reactive_button)

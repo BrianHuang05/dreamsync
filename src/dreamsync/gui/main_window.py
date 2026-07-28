@@ -1616,6 +1616,24 @@ def create_main_window(
         )
         queue_panel.reactive_profile_override_label.setToolTip(selected_path)
 
+    def _reveal_reactive_configuration_warning() -> None:
+        header = queue_panel.widget.findChild(
+            QtWidgets.QToolButton,
+            "reactiveSettingsPanelHeader",
+        )
+        if header is not None:
+            header.setChecked(True)
+        scroll = queue_panel.widget.findChild(
+            QtWidgets.QScrollArea,
+            "reactiveLiveScrollArea",
+        )
+        if scroll is not None:
+            scroll.ensureWidgetVisible(
+                queue_panel.reactive_configuration_warning_label,
+                24,
+                24,
+            )
+
     def _reactive_settings_from_form() -> ReactiveSettings:
         profiles = tuple(
             value.strip()
@@ -1707,6 +1725,8 @@ def create_main_window(
             if errors
             else ""
         )
+        if errors:
+            _reveal_reactive_configuration_warning()
         invalid_override = (
             reactive_settings.profile_strategy == "override_profile"
             and not reactive_settings.profile_override_path
@@ -9392,6 +9412,7 @@ def create_main_window(
                 + "\n".join(f"• {error}" for error in validation_errors)
             )
             queue_panel.reactive_configuration_warning_label.setVisible(True)
+            _reveal_reactive_configuration_warning()
             QtWidgets.QMessageBox.warning(
                 window,
                 "Invalid Configuration",

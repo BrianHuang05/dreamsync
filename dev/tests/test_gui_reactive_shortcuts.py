@@ -93,6 +93,66 @@ class ReactiveShortcutTests(unittest.TestCase):
         warning_dialog.assert_called_once()
         self.assertFalse(self.settings_path.exists())
 
+    def test_reactive_sections_scroll_and_collapse_without_hiding_actions(
+        self,
+    ) -> None:
+        self._tab("Live")
+        self.window.findChild(
+            QtWidgets.QPushButton,
+            "reactiveLiveModeButton",
+        ).click()
+        self.window.resize(900, 600)
+        self.app.processEvents()
+
+        scroll = self.window.findChild(
+            QtWidgets.QScrollArea,
+            "reactiveLiveScrollArea",
+        )
+        settings_header = self.window.findChild(
+            QtWidgets.QToolButton,
+            "reactiveSettingsPanelHeader",
+        )
+        settings_group = self.window.findChild(
+            QtWidgets.QGroupBox,
+            "reactiveLiveSettingsGroup",
+        )
+        diagnostics_header = self.window.findChild(
+            QtWidgets.QToolButton,
+            "reactiveDiagnosticsPanelHeader",
+        )
+        start_button = self.window.findChild(
+            QtWidgets.QPushButton,
+            "startReactiveButton",
+        )
+
+        self.assertIsNotNone(scroll)
+        self.assertTrue(scroll.widgetResizable())
+        self.assertEqual(
+            scroll.horizontalScrollBarPolicy(),
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
+        )
+        self.assertFalse(settings_header.isChecked())
+        self.assertFalse(settings_group.isVisible())
+        settings_header.click()
+        self.app.processEvents()
+        self.assertTrue(settings_group.isVisible())
+        self.assertGreater(scroll.verticalScrollBar().maximum(), 0)
+
+        diagnostics_header.click()
+        self.app.processEvents()
+        self.assertFalse(
+            self.window.findChild(
+                QtWidgets.QGroupBox,
+                "reactiveLiveDiagnosticsGroup",
+            ).isVisible()
+        )
+
+        parent = start_button.parentWidget()
+        while parent is not None and parent is not scroll:
+            parent = parent.parentWidget()
+        self.assertIsNone(parent)
+        self.assertTrue(start_button.isVisible())
+
     def test_override_profile_uses_file_picker_from_profile_directory(self) -> None:
         self._tab("Live")
         self.window.findChild(
