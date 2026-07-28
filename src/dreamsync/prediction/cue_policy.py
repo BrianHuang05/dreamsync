@@ -30,8 +30,15 @@ EVENT_POLICY: dict[str, tuple[str, tuple[str, ...], str | None, bool]] = {
     ),
     "phrase_boundary": (
         "phrase_reset",
-        ("wave_drift", "color_scroll", "wave", "scroll"),
-        None,
+        (
+            "wave_drift",
+            "color_scroll",
+            "gradient_flow",
+            "slow_breathe",
+            "color_breathe",
+            "beat_pulse",
+        ),
+        "advance_approved_palette",
         False,
     ),
     "section_repeat": (
@@ -131,6 +138,7 @@ class PredictiveCuePolicy:
         meter_confident: bool,
         enabled_effects: tuple[str, ...],
         brightness_limit: float,
+        current_effect: str | None = None,
     ) -> tuple[CueProposal, ...]:
         current_keys: set[str] = set()
         for event in events:
@@ -142,6 +150,27 @@ class PredictiveCuePolicy:
             current_keys.add(key)
             eligible = tuple(
                 effect for effect in candidates if effect in set(enabled_effects)
+            )
+            if (
+                cue_class in {"bar_marker", "phrase_reset"}
+                and current_effect in set(enabled_effects)
+                and current_effect not in eligible
+            ):
+                # Small/medium structural actions can always modulate or reset
+                # the active preset, even when its family is not one of the
+                # preferred replacement candidates.
+                eligible = (*eligible, current_effect)
+            requested_effect = (
+                None
+                if cue_class == "bar_marker"
+                else next(
+                    (
+                        effect
+                        for effect in eligible
+                        if effect != current_effect
+                    ),
+                    eligible[0] if eligible else None,
+                )
             )
             explanation = ""
             state = "proposed"
@@ -206,7 +235,7 @@ class PredictiveCuePolicy:
                 state=state,
                 explanation=explanation,
                 target=event.target,
-                requested_effect=eligible[0] if eligible else None,
+                requested_effect=requested_effect,
                 section_id=event.target_section,
             )
             self._active[key] = proposal

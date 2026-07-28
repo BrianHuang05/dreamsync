@@ -156,6 +156,7 @@ class LivePredictiveRuntime:
         bpm: float,
         enabled_effects: tuple[str, ...] = (),
         brightness_limit: float = 1.0,
+        current_effect: str | None = None,
         magnitude: np.ndarray | None = None,
         band_ratios: tuple[float, ...] = (),
         band_fluxes: tuple[float, ...] = (),
@@ -314,6 +315,7 @@ class LivePredictiveRuntime:
                     meter_confident=meter_state.meter_confident,
                     enabled_effects=enabled_effects,
                     brightness_limit=brightness_limit,
+                    current_effect=current_effect,
                 )
                 if self.config.diagnostics_enabled:
                     self.log.append("structure_bar", t=t, payload=completed)
@@ -345,6 +347,7 @@ class LivePredictiveRuntime:
                 meter_confident=meter_state.meter_confident,
                 enabled_effects=enabled_effects,
                 brightness_limit=brightness_limit,
+                current_effect=current_effect,
             )
         if self.config.diagnostics_enabled:
             self.log.append("observation", t=t, payload=observation)
@@ -451,11 +454,7 @@ class LivePredictiveRuntime:
             )
             if target_t < now_t - 1e-6:
                 continue
-            effect = item.requested_effect or (
-                item.effect_candidates[0]
-                if item.effect_candidates
-                else ""
-            )
+            effect = item.requested_effect or item.color_action or ""
             upcoming_effect_cues.append(
                 {
                     "t": target_t,

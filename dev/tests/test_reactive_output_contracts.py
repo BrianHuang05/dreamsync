@@ -6,7 +6,7 @@ import pytest
 
 from dreamsync.director import Director, EffectMode, LightingIntent
 from dreamsync.effects import EffectCycler
-from dreamsync.live import refresh_frame_intent_palette
+from dreamsync.live import _predictive_enabled_effects, refresh_frame_intent_palette
 from dreamsync.output.govee_lan import MultiGoveeLanAdapter
 from dreamsync.output.null_adapter import (
     PreviewMirrorAdapter,
@@ -37,6 +37,26 @@ def _intent(*, color: str = "#ef240c", intensity: float = 0.8) -> LightingIntent
         bpm=120.0,
         color=color,
     )
+
+
+def test_predictive_effect_bank_includes_fallback_pools_for_partial_profiles() -> None:
+    partial_profile = SimpleNamespace(
+        moods={
+            "chill": SimpleNamespace(
+                effects=(SimpleNamespace(name="wave_drift"),)
+            )
+        }
+    )
+    cycler = EffectCycler(profile=partial_profile)
+
+    enabled = _predictive_enabled_effects(
+        cycler,
+        configured_render_mode="wave",
+    )
+
+    assert "wave_drift" in enabled
+    assert "color_scroll" in enabled
+    assert "fast_scroll" in enabled
 
 
 @pytest.mark.parametrize("mode", tuple(RenderMode))

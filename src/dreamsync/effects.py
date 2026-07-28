@@ -390,7 +390,10 @@ class EffectCycler:
         elif self._palette_name is None and self.current_show_palette is None:
             self._palette_name = self._pick_palette(mood)
 
-        if cue_class not in {"bar_marker", "phrase_reset"} or self._current_effect is None:
+        # Ordinary bars only modulate the continuous renderer.  Phrase and
+        # section boundaries may deliberately select another enabled preset,
+        # but only through this downbeat-locked structural seam.
+        if cue_class != "bar_marker" or self._current_effect is None:
             if effect_name is not None:
                 if effect_name not in EFFECTS:
                     raise ValueError(f"unknown structural effect: {effect_name}")

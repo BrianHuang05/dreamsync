@@ -110,6 +110,45 @@ def test_requested_enabled_effect_is_actually_applied() -> None:
     assert cycler.current_effect == "gradient_flow"
 
 
+def test_bar_preserves_effect_and_phrase_changes_effect_and_palette() -> None:
+    cycler = EffectCycler(
+        seed=7,
+        show_palette_cycle=("cool", "sunset"),
+    )
+    initial = cycler.apply_structural_action(
+        cue_class="section_transition",
+        effect_name="wave_drift",
+        color_action=None,
+        target_bar=0,
+        now_t=0.0,
+    )
+    assert initial.name == "wave_drift"
+    assert cycler.current_palette == "cool"
+
+    bar = cycler.apply_structural_action(
+        cue_class="bar_marker",
+        effect_name="color_scroll",
+        color_action="small_color_move",
+        target_bar=1,
+        now_t=2.0,
+    )
+    assert bar.name == "wave_drift"
+    assert cycler.current_effect == "wave_drift"
+    assert cycler.current_palette == "cool"
+
+    phrase = cycler.apply_structural_action(
+        cue_class="phrase_reset",
+        effect_name="slow_breathe",
+        color_action="advance_approved_palette",
+        target_bar=4,
+        now_t=8.0,
+    )
+    assert phrase.name == "slow_breathe"
+    assert cycler.current_effect == "slow_breathe"
+    assert cycler.current_palette == "sunset"
+    assert phrase.params["structure_phase_reset"] is True
+
+
 def test_disabled_effect_and_wrong_identity_are_rejected() -> None:
     cue = _scheduled_policy().commit_on_downbeat(
         now_t=8.0,

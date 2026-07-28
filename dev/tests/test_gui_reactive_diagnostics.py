@@ -79,11 +79,11 @@ def test_beat_detector_heading_reflects_overridden_cycle_bpm():
 
 def test_upcoming_effect_label_distinguishes_bar_and_phrase_cues():
     assert _format_effect_cue_label(
-        "wave_drift",
+        "small_color_move",
         "bar_marker",
         "armed",
         0.64,
-    ) == "BAR · wave_drift · armed 64%"
+    ) == "BAR · small_color_move · armed 64%"
     assert _format_effect_cue_label(
         "wave_drift",
         "phrase_reset",

@@ -34,7 +34,12 @@ from dreamsync.prediction.runtime import (
     LivePredictiveRuntime,
     PredictiveRuntimeConfig,
 )
-from dreamsync.effects import EFFECTS, EffectCycler, EffectCyclerConfig
+from dreamsync.effects import (
+    EFFECTS,
+    MOOD_EFFECTS,
+    EffectCycler,
+    EffectCyclerConfig,
+)
 from dreamsync.mood import MoodClassifier
 from dreamsync.output.govee_lan import GoveeLanAdapter, MultiGoveeLanAdapter
 from dreamsync.render import RenderMode, SegmentRenderer
@@ -3326,11 +3331,17 @@ def _predictive_enabled_effects(
     if profile is None:
         enabled.update(EFFECTS)
     else:
-        for mood_config in getattr(profile, "moods", {}).values():
-            enabled.update(
+        profile_moods = getattr(profile, "moods", {})
+        for mood, fallback_pool in MOOD_EFFECTS.items():
+            mood_config = profile_moods.get(mood.value)
+            configured = tuple(
                 str(getattr(effect, "name", ""))
                 for effect in getattr(mood_config, "effects", ())
                 if str(getattr(effect, "name", ""))
+            )
+            enabled.update(
+                configured
+                or tuple(effect for effect, _weight in fallback_pool)
             )
     if effect_cycler.current_effect:
         enabled.add(effect_cycler.current_effect)
@@ -4620,6 +4631,11 @@ def run_live_to_govee(
                                 configured_render_mode=configured_render_mode,
                             ),
                             brightness_limit=master_brightness,
+                            current_effect=(
+                                effect_cycler.current_effect
+                                if effect_cycler is not None
+                                else None
+                            ),
                             magnitude=sf.mag,
                             band_ratios=sf.band_ratios,
                             band_fluxes=sf.band_fluxes,
@@ -5083,9 +5099,9 @@ def run_live_to_govee(
                             "cue_id": cue.cue_id,
                             "cue_class": cue.cue_class,
                             "effect": (
-                                cue.effect_candidates[0]
-                                if cue.effect_candidates
-                                else ""
+                                cue.requested_effect
+                                or cue.color_action
+                                or ""
                             ),
                             "intensity": cue.intensity,
                             "state": cue.state,

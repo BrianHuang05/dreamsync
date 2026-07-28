@@ -72,6 +72,31 @@ def test_only_enabled_effects_are_selected_and_no_spatial_action_exists() -> Non
     assert suppressed[0].state == "proposed"
 
 
+def test_bar_preserves_effect_while_phrase_selects_a_different_enabled_effect() -> None:
+    policy = _policy(allowed_cue_classes=("bar_marker", "phrase_reset"))
+    bar = policy.update(
+        (_event(event_type="bar_marker"),),
+        now_t=0.0,
+        meter_confident=True,
+        enabled_effects=("wave_drift", "slow_breathe"),
+        brightness_limit=1.0,
+        current_effect="wave_drift",
+    )[0]
+    assert bar.requested_effect is None
+    assert bar.color_action == "small_color_move"
+
+    phrase = policy.update(
+        (_event(event_type="phrase_boundary", target_t=2.0),),
+        now_t=0.1,
+        meter_confident=True,
+        enabled_effects=("wave_drift", "slow_breathe"),
+        brightness_limit=1.0,
+        current_effect="wave_drift",
+    )[0]
+    assert phrase.requested_effect == "slow_breathe"
+    assert phrase.color_action == "advance_approved_palette"
+
+
 def test_cue_schedules_commits_and_respects_brightness() -> None:
     policy = _policy(maximum_intensity=0.4)
     cues = policy.update(
