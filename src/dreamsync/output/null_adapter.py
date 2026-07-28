@@ -32,13 +32,18 @@ def _normalize_preview_color(color: tuple[int, int, int]) -> tuple[int, int, int
 
 
 def _normalize_display_color(color: tuple[int, int, int]) -> tuple[int, int, int]:
-    """Lift very dim RGB for a legible canvas without changing output parity."""
+    """Show rendered hue at full value without changing output brightness."""
 
     normalized = _normalize_preview_color(color)
     peak = max(normalized)
-    if peak == 0 or peak >= 72:
+    if peak == 0:
         return normalized
-    scale = 72.0 / peak
+    # Physical RGB has intensity/master brightness multiplied into it. Using
+    # those values directly as a fill color looks exactly like a translucent
+    # black mask over the palette. The canvas is a color preview, so restore
+    # value while preserving the rendered channel ratios. Exact output remains
+    # available in ``node_colors`` and the frame diagnostics.
+    scale = 255.0 / peak
     return tuple(min(255, int(round(channel * scale))) for channel in normalized)
 
 

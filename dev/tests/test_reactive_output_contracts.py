@@ -278,7 +278,10 @@ def test_partial_hardware_mirror_keeps_full_room_palette_preview() -> None:
     assert max(
         int(snapshot["display_node_colors"]["follower"][index : index + 2], 16)
         for index in (1, 3, 5)
-    ) >= 72
+    ) == 255
+    assert snapshot["node_colors"]["follower"] != (
+        snapshot["display_node_colors"]["follower"]
+    )
 
 
 def test_ble_followers_are_included_in_live_and_baked_frame_snapshots() -> None:
