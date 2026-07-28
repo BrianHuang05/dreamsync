@@ -91,3 +91,24 @@ def test_duration_prior_is_not_presented_as_learned_recurrence() -> None:
     assert all(
         item.source == "duration_prior" for item in snapshot.phrase_hypotheses
     )
+
+
+def test_first_phrase_target_does_not_drift_when_start_bar_is_zero() -> None:
+    tracker = OnlineStructureTracker(
+        phrase_threshold=1.1,
+        section_threshold=1.1,
+    )
+    memory = MultiFeatureSimilarityMemory()
+
+    first = _observe(tracker, memory, _bar(0))
+    second = _observe(tracker, memory, _bar(1))
+    third = _observe(tracker, memory, _bar(2))
+
+    assert first.phrase_hypotheses[0].phrase_start_bar == 0
+    assert second.phrase_hypotheses[0].phrase_start_bar == 0
+    assert third.phrase_hypotheses[0].phrase_start_bar == 0
+    assert second.phrase_hypotheses[0].current_position == 2
+    assert third.phrase_hypotheses[0].current_position == 3
+    assert first.upcoming[0].target_bar == 4
+    assert second.upcoming[0].target_bar == 4
+    assert third.upcoming[0].target_bar == 4

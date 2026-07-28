@@ -23,6 +23,7 @@ from dreamsync.gui.widgets.reactive_harmonic_debug_view import (
     build_reactive_harmonic_debug_view,
 )
 from dreamsync.gui.widgets.reactive_waveform_view import (
+    _format_effect_cue_label,
     build_reactive_waveform_view,
 )
 
@@ -74,6 +75,21 @@ def test_beat_detector_heading_reflects_overridden_cycle_bpm():
     assert _format_reactive_bpm_heading(240.0) == (
         "Beat detector: 240.0 BPM"
     )
+
+
+def test_upcoming_effect_label_distinguishes_bar_and_phrase_cues():
+    assert _format_effect_cue_label(
+        "wave_drift",
+        "bar_marker",
+        "armed",
+        0.64,
+    ) == "BAR · wave_drift · armed 64%"
+    assert _format_effect_cue_label(
+        "wave_drift",
+        "phrase_reset",
+        "scheduled",
+        0.72,
+    ) == "PHRASE · wave_drift · scheduled 72%"
 
 
 def test_preview_exposes_frame_freeze_and_output_provenance_readout():

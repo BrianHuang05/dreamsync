@@ -115,6 +115,7 @@ class LivePredictiveRuntime:
         self.log.clear()
         self._beat_index = -1
         self._bar_index = -1
+        self._last_meter_phase: int | None = None
         self._last_energy = 0.0
         self._last_onset = 0.0
         self._last_centroid = 0.0
@@ -166,11 +167,33 @@ class LivePredictiveRuntime:
             or self.config.structure_similarity_enabled
         ):
             return ()
-        self._beat_index += 1
-        if meter_state.downbeat:
-            self._bar_index += 1
-        elif self._bar_index < 0 and meter_state.meter_confident:
+        meter_steps = max(
+            1,
+            1 + int(meter_state.inferred_missing_beats),
+        )
+        self._beat_index += meter_steps
+        meter_phase = (
+            int(meter_state.bar_phase)
+            if meter_state.bar_phase is not None
+            else None
+        )
+        if self._last_meter_phase is not None:
+            elapsed_phase = self._last_meter_phase + meter_steps
+            crossed_bars = elapsed_phase // self.config.beats_per_bar
+            if self._bar_index >= 0:
+                self._bar_index += crossed_bars
+            expected_phase = elapsed_phase % self.config.beats_per_bar
+            self._last_meter_phase = (
+                meter_phase
+                if meter_state.meter_confident and meter_phase is not None
+                else expected_phase
+            )
+        elif meter_state.meter_confident and meter_phase is not None:
             self._bar_index = 0
+            self._last_meter_phase = meter_phase
+        elif meter_state.downbeat:
+            self._bar_index = max(0, self._bar_index)
+            self._last_meter_phase = 0
         beat_period = 60.0 / bpm if bpm > 0.0 else None
         duration = None
         if chord_change and self._last_chord_t is not None and beat_period:

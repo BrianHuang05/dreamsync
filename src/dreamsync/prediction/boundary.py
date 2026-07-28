@@ -297,7 +297,12 @@ class OnlineStructureTracker:
         recurrence_score: float,
         recurrence_length: int | None,
     ) -> tuple[StructurePhraseLengthHypothesis, ...]:
-        elapsed = current_bar - int(self._phrase_start or current_bar) + 1
+        phrase_start = (
+            int(self._phrase_start)
+            if self._phrase_start is not None
+            else current_bar
+        )
+        elapsed = current_bar - phrase_start + 1
         weights: dict[int | None, float] = {
             2: 0.10,
             4: 0.34,
@@ -316,7 +321,7 @@ class OnlineStructureTracker:
             StructurePhraseLengthHypothesis(
                 bars=length,
                 probability=value / total,
-                phrase_start_bar=int(self._phrase_start or current_bar),
+                phrase_start_bar=phrase_start,
                 current_position=elapsed,
                 source=(
                     "song_local_recurrence"

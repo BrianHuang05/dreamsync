@@ -64,6 +64,60 @@ def _feed_beat(
     )
 
 
+def test_predictive_bar_clock_accounts_for_inferred_missing_beats() -> None:
+    runtime = LivePredictiveRuntime(
+        PredictiveRuntimeConfig(
+            structure_similarity_enabled=True,
+        )
+    )
+    harmonic = LiveHarmonicState(
+        chroma=(1.0,) + (0.0,) * 11,
+        tonal_confidence=0.9,
+    )
+
+    def observe(
+        t: float,
+        *,
+        phase: int,
+        downbeat: bool,
+        missing: int,
+    ) -> None:
+        runtime.observe_committed(
+            t=t,
+            meter_state=LiveMeterState(
+                t=t,
+                beat=True,
+                downbeat=downbeat,
+                bar_phase=phase,
+                phase_confidence=0.95,
+                meter_confident=True,
+                inferred_missing_beats=missing,
+            ),
+            harmonic_state=harmonic,
+            absolute_chord=None,
+            chord_change=False,
+            energy=0.4,
+            onset_density=0.2,
+            spectral_centroid=900.0,
+            bpm=120.0,
+        )
+
+    observe(0.0, phase=0, downbeat=True, missing=0)
+    assert runtime.structure_observation is not None
+    assert runtime.structure_observation.beat_index == 0
+    assert runtime.structure_observation.bar_index == 0
+
+    observe(1.5, phase=3, downbeat=False, missing=2)
+    assert runtime.structure_observation.beat_index == 3
+    assert runtime.structure_observation.bar_index == 0
+
+    # Two elapsed beat positions cross the next bar even though its downbeat
+    # was one of the inferred/missed events.
+    observe(2.5, phase=1, downbeat=False, missing=1)
+    assert runtime.structure_observation.beat_index == 5
+    assert runtime.structure_observation.bar_index == 1
+
+
 def test_real_similarity_prediction_applies_effect_only_on_target_downbeat() -> None:
     runtime = LivePredictiveRuntime(
         PredictiveRuntimeConfig(

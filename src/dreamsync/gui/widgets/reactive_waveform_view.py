@@ -3,6 +3,32 @@
 from __future__ import annotations
 
 
+_CUE_CLASS_LABELS = {
+    "bar_marker": "BAR",
+    "chord_accent": "CHORD",
+    "phrase_reset": "PHRASE",
+    "resolution_bloom": "RESOLUTION",
+    "section_recall": "SECTION",
+    "section_transition": "SECTION",
+    "chorus_lift": "SECTION",
+}
+
+
+def _format_effect_cue_label(
+    effect: str,
+    cue_class: str,
+    state: str,
+    confidence: float,
+) -> str:
+    kind = _CUE_CLASS_LABELS.get(
+        cue_class,
+        cue_class.replace("_", " ").upper(),
+    )
+    subject = effect or "effect"
+    prefix = f"{kind} · " if kind else ""
+    return f"{prefix}{subject} · {state} {confidence:.0%}"
+
+
 def build_reactive_waveform_view(qt_modules):
     """Build a centered timeline with past input and upcoming cue predictions."""
 
@@ -382,10 +408,14 @@ def build_reactive_waveform_view(qt_modules):
                     QtCore.QPointF(x, plot.top()),
                     QtCore.QPointF(x, plot.bottom()),
                 )
-                label = effect or cue_class or "effect"
-                label += f" · {state} {confidence:.0%}"
+                label = _format_effect_cue_label(
+                    effect,
+                    cue_class,
+                    state,
+                    confidence,
+                )
                 label_width = min(
-                    190.0,
+                    240.0,
                     max(84.0, 7.0 * len(label) + 12.0),
                 )
                 label_x = min(
