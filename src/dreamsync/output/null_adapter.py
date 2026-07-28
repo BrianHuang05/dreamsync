@@ -31,6 +31,17 @@ def _normalize_preview_color(color: tuple[int, int, int]) -> tuple[int, int, int
     )
 
 
+def _normalize_display_color(color: tuple[int, int, int]) -> tuple[int, int, int]:
+    """Lift very dim RGB for a legible canvas without changing output parity."""
+
+    normalized = _normalize_preview_color(color)
+    peak = max(normalized)
+    if peak == 0 or peak >= 72:
+        return normalized
+    scale = 72.0 / peak
+    return tuple(min(255, int(round(channel * scale))) for channel in normalized)
+
+
 def _average_color(colors: list[tuple[int, int, int]]) -> tuple[int, int, int]:
     if not colors:
         return (79, 127, 218)
@@ -210,22 +221,60 @@ class PreviewMirrorAdapter:
         if not isinstance(node_colors, dict) or not node_colors:
             self._last_mirror_parity = {"available": False, "matches": None}
             return bool(fallback())
-        sent = self._preview_adapter.accept_mirrored_frame(t, hardware)
+
+        # A hardware adapter only knows about devices it could reach. Render the
+        # logical frame for the full configured room first, then overlay exact
+        # hardware RGB for the subset that was actually submitted. Otherwise a
+        # partial LAN snapshot turns every BLE/unreachable fixture black.
+        preview_before = self._preview_adapter.preview_snapshot()
+        configured_colors = preview_before.get("node_colors", {})
+        configured_keys = (
+            {str(key) for key in configured_colors}
+            if isinstance(configured_colors, dict)
+            else set()
+        )
+        hardware_keys = {str(key) for key in node_colors}
+        fallback_sent = False
+        if configured_keys - hardware_keys:
+            fallback_sent = bool(fallback())
+
+        logical_colors = self._preview_adapter.preview_snapshot().get(
+            "node_colors",
+            {},
+        )
+        merged_colors = (
+            {
+                str(key): str(value)
+                for key, value in logical_colors.items()
+            }
+            if isinstance(logical_colors, dict)
+            else {}
+        )
+        merged_colors.update(
+            {str(key): str(value) for key, value in node_colors.items()}
+        )
+        mirrored_snapshot = dict(hardware)
+        mirrored_snapshot["node_colors"] = merged_colors
+        sent = self._preview_adapter.accept_mirrored_frame(
+            t,
+            mirrored_snapshot,
+        )
         preview_colors = self._preview_adapter.preview_snapshot().get("node_colors", {})
         normalized_hardware = {
             str(key): str(value).lower() for key, value in node_colors.items()
         }
         normalized_preview = {
-            str(key): str(value).lower()
-            for key, value in dict(preview_colors).items()
+            key: str(dict(preview_colors).get(key, "")).lower()
+            for key in normalized_hardware
         }
         self._last_mirror_parity = {
             "available": True,
             "matches": normalized_preview == normalized_hardware,
             "hardware_node_colors": normalized_hardware,
             "preview_node_colors": normalized_preview,
+            "simulated_node_count": len(configured_keys - hardware_keys),
         }
-        return bool(sent)
+        return bool(sent or fallback_sent)
 
     def __getattr__(self, name: str):
         return getattr(self._output_adapter, name)
@@ -359,6 +408,18 @@ class SimulationMultiAdapter(MultiGoveeLanAdapter):
         self._capture_preview_colors()
         return {
             "node_colors": dict(self._preview_colors),
+            "display_node_colors": {
+                key: _rgb_to_hex(
+                    _normalize_display_color(
+                        (
+                            int(color[1:3], 16),
+                            int(color[3:5], 16),
+                            int(color[5:7], 16),
+                        )
+                    )
+                )
+                for key, color in self._preview_colors.items()
+            },
             "frames_sent": self._frames_sent,
             "frame_diagnostics": dict(self._last_frame_diagnostics),
             "frame_trace": self.frame_trace_snapshot(),

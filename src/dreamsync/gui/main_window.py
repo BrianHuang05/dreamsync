@@ -1963,12 +1963,20 @@ def create_main_window(
 
     def _render_preview_simulation(preview_snapshot: dict[str, object] | None = None) -> None:
         if preview_snapshot is not None:
-            node_colors = preview_snapshot.get("node_colors", {})
+            node_colors = preview_snapshot.get(
+                "display_node_colors",
+                preview_snapshot.get("node_colors", {}),
+            )
             frozen = bool(queue_panel.simulation_freeze_check.isChecked())
             if isinstance(node_colors, dict) and not frozen:
-                simulation_frame_state["node_colors"] = {
-                    str(key): str(value) for key, value in node_colors.items()
-                }
+                merged_colors = dict(simulation_frame_state["node_colors"])
+                merged_colors.update(
+                    {
+                        str(key): str(value)
+                        for key, value in node_colors.items()
+                    }
+                )
+                simulation_frame_state["node_colors"] = merged_colors
             frame = preview_snapshot.get("frame_diagnostics", {})
             frame = frame if isinstance(frame, dict) else {}
             actions = frame.get("structural_actions", ())
@@ -5118,12 +5126,16 @@ def create_main_window(
         queue_panel.patch_rules_edit.setPlainText(state.patch_rules_text)
         queue_panel.patch_summary_label.setText(state.patch_summary)
 
-    def _render_live_palette_preview(colors: tuple[str, ...]) -> None:
+    def _render_palette_swatches(
+        label: object,
+        colors: tuple[str, ...],
+        *,
+        empty_text: str,
+        tooltip_prefix: str,
+    ) -> None:
         if not colors:
-            queue_panel.live_palette_preview_label.setText("No palette selected")
-            queue_panel.live_palette_preview_label.setToolTip(
-                "Read-only palette preview. Edit palette definitions in the Palettes tab."
-            )
+            label.setText(empty_text)
+            label.setToolTip(tooltip_prefix)
             return
         swatches: list[str] = []
         for index, color in enumerate(colors):
@@ -5134,13 +5146,24 @@ def create_main_window(
             swatches.append(
                 f'<span style="color:{escape(valid_color)};">●</span>'
             )
-        queue_panel.live_palette_preview_label.setText(
+        label.setText(
             '<span style="font-size:18px; letter-spacing:2px;">'
             f"{''.join(swatches)}"
             "</span>"
         )
-        queue_panel.live_palette_preview_label.setToolTip(
-            "Read-only palette preview: " + ", ".join(str(color) for color in colors)
+        label.setToolTip(
+            tooltip_prefix + ": " + ", ".join(str(color) for color in colors)
+        )
+
+    def _render_live_palette_preview(colors: tuple[str, ...]) -> None:
+        _render_palette_swatches(
+            queue_panel.live_palette_preview_label,
+            colors,
+            empty_text="No palette selected",
+            tooltip_prefix=(
+                "Read-only palette preview. Edit palette definitions in the "
+                "Palettes tab"
+            ),
         )
 
     def _render_reactive_live_state(
@@ -5194,8 +5217,30 @@ def create_main_window(
                 status="Waiting for live input",
             )
             queue_panel.reactive_profile_label.setText("Active profile: awaiting Reactive session")
+            queued_palette_name = str(
+                queue_panel.reactive_live_color_profile_combo.currentData()
+                or ""
+            )
+            queued_palette_colors = tuple(
+                PALETTES.get(queued_palette_name, ())
+            )
             queue_panel.reactive_active_palette_label.setText(
-                "Active palette: awaiting Reactive session"
+                (
+                    "Queued live colors: "
+                    + queued_palette_name.replace("_", " ").title()
+                )
+                if queued_palette_name
+                else "Active palette: awaiting Reactive session"
+            )
+            _render_palette_swatches(
+                queue_panel.reactive_active_palette_preview_label,
+                queued_palette_colors,
+                empty_text="No active colors",
+                tooltip_prefix=(
+                    "Colors queued for Reactive output"
+                    if queued_palette_name
+                    else "Colors currently applied to Reactive output"
+                ),
             )
             queue_panel.reactive_palette_next_label.setText("Time to next palette: —")
             queue_panel.reactive_palette_queue_label.setText("Palette queue: —")
@@ -5387,6 +5432,11 @@ def create_main_window(
         runtime_control = dict(
             snapshot.get("runtime_control", {}) or {}
         )
+        runtime_palette_override = tuple(
+            str(color)
+            for color in runtime_control.get("palette_override", ())
+            if str(color).strip()
+        )
         effect_tempo_multiplier = float(
             runtime_control.get(
                 "speed_multiplier",
@@ -5520,28 +5570,37 @@ def create_main_window(
             or ""
         )
         if live_color_profile:
-            live_colors = tuple(PALETTES.get(live_color_profile, ()))
+            selected_live_colors = tuple(PALETTES.get(live_color_profile, ()))
+            live_colors = (
+                runtime_palette_override
+                if active_reactive and runtime_palette_override
+                else selected_live_colors
+            )
             queue_panel.reactive_active_palette_label.setText(
-                "Live color override: "
-                f"{live_color_profile.replace('_', ' ').title()}"
-                + (
-                    f" Â· {', '.join(live_colors)}"
-                    if live_colors
-                    else ""
+                (
+                    "Active live colors: "
+                    if active_reactive and runtime_palette_override
+                    else "Queued live colors: "
                 )
+                + f"{live_color_profile.replace('_', ' ').title()}"
             )
         elif active_palette_name:
-            colors_text = ", ".join(str(color) for color in active_palette_colors)
+            live_colors = runtime_palette_override or active_palette_colors
             queue_panel.reactive_active_palette_label.setText(
                 f"Active palette: {active_palette_name}"
-                + (f" · {colors_text}" if colors_text else "")
             )
         elif active_palette_colors:
-            queue_panel.reactive_active_palette_label.setText(
-                f"Active palette: {', '.join(str(color) for color in active_palette_colors)}"
-            )
+            live_colors = runtime_palette_override or active_palette_colors
+            queue_panel.reactive_active_palette_label.setText("Active palette")
         else:
+            live_colors = runtime_palette_override
             queue_panel.reactive_active_palette_label.setText("Active palette: awaiting selection")
+        _render_palette_swatches(
+            queue_panel.reactive_active_palette_preview_label,
+            live_colors,
+            empty_text="No active colors",
+            tooltip_prefix="Colors currently applied to Reactive output",
+        )
 
         if palette_cycle_mode == "song_detection":
             queue_panel.reactive_palette_next_label.setText(
@@ -7261,6 +7320,7 @@ def create_main_window(
             queue_panel.reactive_live_look_status_label.setText(
                 "Live look queued; it will apply when Reactive starts."
             )
+            _render_reactive_live_state(runtime_state)
             return
 
         result = runtime_supervisor.update_runtime_control(
@@ -7287,6 +7347,7 @@ def create_main_window(
             queue_panel.reactive_live_look_status_label.setText(
                 "Reactive is starting; the live look will be retried."
             )
+        _render_reactive_live_state(runtime_supervisor.snapshot())
 
     def _set_reactive_effect_tempo(
         multiplier: float,

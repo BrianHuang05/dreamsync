@@ -448,6 +448,13 @@ class ReactiveShortcutTests(unittest.TestCase):
         ).findChildren(QtWidgets.QToolButton):
             button.setChecked(button is ripple)
         self.app.processEvents()
+        palette_preview = self.window.findChild(
+            QtWidgets.QLabel,
+            "reactiveActivePalettePreviewLabel",
+        )
+        self.assertIsNotNone(palette_preview)
+        self.assertIn("#ff00ff", palette_preview.toolTip().lower())
+        self.assertIn("●", palette_preview.text())
         self.window.close()
         self.app.processEvents()
 

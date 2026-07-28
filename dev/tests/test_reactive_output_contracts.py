@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from dreamsync.director import Director, EffectMode, LightingIntent
@@ -208,6 +210,114 @@ def test_hardware_mirror_uses_exact_final_rgb_instead_of_rerendering() -> None:
     snapshot = mirror.preview_snapshot()
     assert snapshot["node_colors"]["same"] == hardware_color
     assert snapshot["hardware_mirror_parity"]["matches"] is True
+
+
+def test_partial_hardware_mirror_keeps_full_room_palette_preview() -> None:
+    hardware_device = _PreviewDeviceAdapter(
+        "reachable",
+        name="Reachable",
+        segments=1,
+    )
+    hardware = MultiGoveeLanAdapter([
+        (
+            hardware_device,
+            SegmentRenderer(1, RenderMode.SOLID),
+            DeviceRole.PRIMARY,
+            1.0,
+            None,
+        )
+    ])
+    reachable_preview = _PreviewDeviceAdapter(
+        "reachable",
+        name="Reachable preview",
+        segments=1,
+    )
+    follower_preview = _PreviewDeviceAdapter(
+        "follower",
+        name="Follower preview",
+        segments=1,
+    )
+    preview = SimulationMultiAdapter(
+        [
+            (
+                reachable_preview,
+                SegmentRenderer(1, RenderMode.SOLID),
+                DeviceRole.PRIMARY,
+                1.0,
+                None,
+            ),
+            (
+                follower_preview,
+                SegmentRenderer(1, RenderMode.SOLID),
+                DeviceRole.ACCENT,
+                1.0,
+                None,
+            ),
+        ],
+        node_keys={
+            "reachable": ["reachable"],
+            "follower": ["follower"],
+        },
+    )
+    mirror = PreviewMirrorAdapter(hardware, preview)
+
+    assert mirror.send_frame(
+        1.0,
+        _intent(color="#ffaacc", intensity=0.03),
+        params={"_render_mode": "solid"},
+    )
+    snapshot = mirror.preview_snapshot()
+
+    assert set(snapshot["node_colors"]) == {"reachable", "follower"}
+    assert snapshot["node_colors"]["reachable"] == (
+        hardware.final_frame_snapshot()["node_colors"]["reachable"]
+    )
+    assert snapshot["node_colors"]["follower"] != "#000000"
+    assert snapshot["hardware_mirror_parity"]["matches"] is True
+    assert snapshot["hardware_mirror_parity"]["simulated_node_count"] == 1
+    assert max(
+        int(snapshot["display_node_colors"]["follower"][index : index + 2], 16)
+        for index in (1, 3, 5)
+    ) >= 72
+
+
+def test_ble_followers_are_included_in_live_and_baked_frame_snapshots() -> None:
+    class BleFollower:
+        def __init__(self) -> None:
+            self.config = SimpleNamespace(address="ble-follower")
+            self.last_intent = None
+
+        def emit(self, _t: float, intent: LightingIntent) -> None:
+            self.last_intent = intent
+
+    follower = BleFollower()
+    adapter = MultiGoveeLanAdapter(
+        [],
+        ble_followers=[
+            (follower, DeviceRole.ACCENT, 1.0, None, None)
+        ],
+    )
+
+    assert adapter.send_frame(
+        0.0,
+        _intent(color="#804020", intensity=0.5),
+    )
+
+    assert follower.last_intent is not None
+    assert adapter.final_frame_snapshot()["node_colors"] == {
+        "ble-follower": "#261309"
+    }
+    diagnostics = adapter.final_frame_snapshot()["frame_diagnostics"]
+    assert diagnostics["devices"][0]["address"] == "ble-follower"
+
+    assert adapter.send_baked_frame(
+        1.0,
+        {"ble-follower": "#123456"},
+    )
+    assert follower.last_intent.color == "#123456"
+    assert adapter.final_frame_snapshot()["node_colors"] == {
+        "ble-follower": "#123456"
+    }
 
 
 def test_structural_palette_commit_refreshes_stale_frame_intent() -> None:

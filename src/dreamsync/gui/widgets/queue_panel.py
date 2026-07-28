@@ -146,6 +146,7 @@ class QueuePanelWidgets:
     reactive_mode_status_label: object
     reactive_profile_label: object
     reactive_active_palette_label: object
+    reactive_active_palette_preview_label: object
     reactive_palette_next_label: object
     reactive_palette_queue_label: object
     reactive_live_look_group: object
@@ -1177,6 +1178,15 @@ def build_queue_panel(qt_modules):
     reactive_active_palette_label.setStyleSheet("color: #94a3b8;")
     reactive_active_palette_label.setWordWrap(True)
     reactive_live_layout.addWidget(reactive_active_palette_label)
+    reactive_active_palette_preview_label = QtWidgets.QLabel("No active colors")
+    reactive_active_palette_preview_label.setObjectName(
+        "reactiveActivePalettePreviewLabel"
+    )
+    reactive_active_palette_preview_label.setMinimumHeight(26)
+    reactive_active_palette_preview_label.setToolTip(
+        "Colors currently applied to Reactive output"
+    )
+    reactive_live_layout.addWidget(reactive_active_palette_preview_label)
     reactive_palette_next_label = QtWidgets.QLabel("Time to next palette: —")
     reactive_palette_next_label.setObjectName("reactivePaletteNextLabel")
     reactive_palette_next_label.setStyleSheet("color: #94a3b8;")
@@ -2214,6 +2224,7 @@ def build_queue_panel(qt_modules):
         reactive_mode_status_label=reactive_mode_status_label,
         reactive_profile_label=reactive_profile_label,
         reactive_active_palette_label=reactive_active_palette_label,
+        reactive_active_palette_preview_label=reactive_active_palette_preview_label,
         reactive_palette_next_label=reactive_palette_next_label,
         reactive_palette_queue_label=reactive_palette_queue_label,
         reactive_live_look_group=reactive_live_look_group,

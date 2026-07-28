@@ -600,9 +600,53 @@ class MultiGoveeLanAdapter:
             })
             if adapter.send_frame(colors):
                 any_sent = True
-        # Push to BLE followers (fire-and-forget, they rate-limit internally)
+        # Render BLE followers through the same role/effect path as the LAN
+        # fixtures. This also makes their submitted RGB available to the GUI
+        # mirror instead of leaving the room snapshot LAN-only.
         for follower in self._ble_followers:
-            self._ble_adapter_for(follower).emit(t, intent)
+            (
+                follower_adapter,
+                follower_role,
+                follower_bs,
+                follower_placement,
+                follower_renderer,
+            ) = self._normalize_ble_follower(follower)
+            follower_intent = transform_intent(
+                intent,
+                follower_role,
+                brightness_scale=follower_bs,
+            )
+            address = self._ble_address(follower_adapter)
+            if follower_renderer is not None:
+                self._apply_render_mode_override(follower_renderer, params)
+                follower_colors = self._render_with_orientation(
+                    follower_renderer,
+                    t,
+                    follower_intent,
+                    beat=beat,
+                    params=render_params,
+                    placement=follower_placement,
+                )
+                follower_adapter.send_segment_colors(
+                    follower_colors,
+                    brightness=self._intent_brightness(follower_intent),
+                )
+            else:
+                follower_colors = [self._intent_rgb(follower_intent)]
+                follower_adapter.emit(t, follower_intent)
+            self._last_output_colors[address] = tuple(follower_colors)
+            diagnostic_devices.append({
+                "address": address,
+                "role": getattr(follower_role, "value", str(follower_role)),
+                "brightness_scale": float(follower_bs),
+                "render_mode": (
+                    self._renderer_mode_name(follower_renderer)
+                    if follower_renderer is not None
+                    else "solid"
+                ),
+                "pre_spatial_rgb": tuple(follower_colors),
+                "post_spatial_rgb": tuple(follower_colors),
+            })
             any_sent = True
         self._finish_frame_diagnostics(
             t=t,
@@ -658,9 +702,64 @@ class MultiGoveeLanAdapter:
             if adapter.send_frame(colors):
                 any_sent = True
 
-        follower_intent = base_intent if base_intent is not None else fallback_state.intent
         for follower in self._ble_followers:
-            self._ble_adapter_for(follower).emit(t, follower_intent)
+            (
+                follower_adapter,
+                follower_role,
+                follower_bs,
+                follower_placement,
+                follower_renderer,
+            ) = self._normalize_ble_follower(follower)
+            cell = resolve_grid_cell(follower_placement)
+            cell_state = (
+                scene.get(cell, fallback_state)
+                if cell is not None
+                else fallback_state
+            )
+            source_intent = (
+                base_intent
+                if follower_placement is None and base_intent is not None
+                else cell_state.intent
+            )
+            follower_intent = transform_intent(
+                source_intent,
+                follower_role,
+                brightness_scale=follower_bs,
+            )
+            address = self._ble_address(follower_adapter)
+            if follower_renderer is not None:
+                self._apply_render_mode_override(
+                    follower_renderer,
+                    cell_state.params,
+                )
+                follower_colors = self._render_with_orientation(
+                    follower_renderer,
+                    t,
+                    follower_intent,
+                    beat=beat,
+                    params=cell_state.params,
+                    placement=follower_placement,
+                )
+                follower_adapter.send_segment_colors(
+                    follower_colors,
+                    brightness=self._intent_brightness(follower_intent),
+                )
+            else:
+                follower_colors = [self._intent_rgb(follower_intent)]
+                follower_adapter.emit(t, follower_intent)
+            self._last_output_colors[address] = tuple(follower_colors)
+            diagnostic_devices.append({
+                "address": address,
+                "role": getattr(follower_role, "value", str(follower_role)),
+                "brightness_scale": float(follower_bs),
+                "render_mode": (
+                    self._renderer_mode_name(follower_renderer)
+                    if follower_renderer is not None
+                    else "solid"
+                ),
+                "pre_spatial_rgb": tuple(follower_colors),
+                "post_spatial_rgb": tuple(follower_colors),
+            })
             any_sent = True
 
         self._finish_frame_diagnostics(
@@ -726,7 +825,7 @@ class MultiGoveeLanAdapter:
             follower_intent = transform_intent(intent, follower_role, brightness_scale=follower_bs)
             if follower_renderer is not None:
                 self._apply_render_mode_override(follower_renderer, params)
-                follower_colors = self._render_with_orientation(
+                pre_spatial_follower_colors = self._render_with_orientation(
                     follower_renderer,
                     t,
                     follower_intent,
@@ -735,15 +834,17 @@ class MultiGoveeLanAdapter:
                     placement=follower_placement,
                 )
                 follower_colors = self._spatialize_colors(
-                    follower_colors,
+                    pre_spatial_follower_colors,
                     placement=follower_placement,
                     t=spatial_t,
                     intent=follower_intent,
                     spec=spec,
                     layers=layers,
                 )
-                brightness = max(30, min(100, int(max(0.0, min(1.0, follower_intent.intensity)) * 100)))
-                follower_adapter.send_segment_colors(follower_colors, brightness=brightness)
+                follower_adapter.send_segment_colors(
+                    follower_colors,
+                    brightness=self._intent_brightness(follower_intent),
+                )
             elif follower_placement is not None:
                 sample = self._spatial_mapper.sample_point(spatial_t, follower_placement, follower_intent, spec)
                 layer_samples = self._layer_samples(
@@ -765,7 +866,35 @@ class MultiGoveeLanAdapter:
                     bpm=follower_intent.bpm,
                     color=color,
                 )
-            follower_adapter.emit(t, follower_intent)
+                pre_spatial_follower_colors = [
+                    self._intent_rgb(
+                        transform_intent(
+                            intent,
+                            follower_role,
+                            brightness_scale=follower_bs,
+                        )
+                    )
+                ]
+                follower_colors = [self._intent_rgb(follower_intent)]
+                follower_adapter.emit(t, follower_intent)
+            else:
+                pre_spatial_follower_colors = [self._intent_rgb(follower_intent)]
+                follower_colors = list(pre_spatial_follower_colors)
+                follower_adapter.emit(t, follower_intent)
+            address = self._ble_address(follower_adapter)
+            self._last_output_colors[address] = tuple(follower_colors)
+            diagnostic_devices.append({
+                "address": address,
+                "role": getattr(follower_role, "value", str(follower_role)),
+                "brightness_scale": float(follower_bs),
+                "render_mode": (
+                    self._renderer_mode_name(follower_renderer)
+                    if follower_renderer is not None
+                    else "solid"
+                ),
+                "pre_spatial_rgb": tuple(pre_spatial_follower_colors),
+                "post_spatial_rgb": tuple(follower_colors),
+            })
             any_sent = True
 
         self._finish_frame_diagnostics(
@@ -812,6 +941,53 @@ class MultiGoveeLanAdapter:
             if adapter.send_frame(colors):
                 any_sent = True
 
+        for follower in self._ble_followers:
+            (
+                follower_adapter,
+                _follower_role,
+                _follower_bs,
+                _follower_placement,
+                follower_renderer,
+            ) = self._normalize_ble_follower(follower)
+            address = self._ble_address(follower_adapter)
+            segments = (
+                max(1, int(getattr(follower_renderer, "segments", 1)))
+                if follower_renderer is not None
+                else 1
+            )
+            follower_colors = self._baked_device_colors(
+                address,
+                segments,
+                node_colors,
+                fallback_color=fallback_color,
+            )
+            if follower_renderer is not None:
+                follower_adapter.send_segment_colors(
+                    follower_colors,
+                    brightness=100,
+                )
+            else:
+                follower_adapter.emit(
+                    t,
+                    LightingIntent(
+                        mode=EffectMode.AMBIENT,
+                        intensity=1.0,
+                        speed=0.0,
+                        bpm=120.0,
+                        color=self._rgb_hex(follower_colors[0]),
+                    ),
+                )
+            self._last_output_colors[address] = tuple(follower_colors)
+            diagnostic_devices.append({
+                "address": address,
+                "role": "baked",
+                "brightness_scale": 1.0,
+                "render_mode": "baked",
+                "pre_spatial_rgb": tuple(follower_colors),
+                "post_spatial_rgb": tuple(follower_colors),
+            })
+            any_sent = True
+
         fallback_intent = LightingIntent(
             mode=EffectMode.AMBIENT,
             intensity=1.0,
@@ -819,10 +995,6 @@ class MultiGoveeLanAdapter:
             bpm=120.0,
             color=fallback_color,
         )
-        for follower in self._ble_followers:
-            self._ble_adapter_for(follower).emit(t, fallback_intent)
-            any_sent = True
-
         self._finish_frame_diagnostics(
             t=t,
             intent=fallback_intent,
@@ -882,6 +1054,25 @@ class MultiGoveeLanAdapter:
                 return follower
             raise ValueError(f"BLE follower tuple must have length 4 or 5; got {len(follower)}")
         return follower, DeviceRole.PRIMARY, 1.0, None, None
+
+    @staticmethod
+    def _ble_address(adapter: Any) -> str:
+        return str(getattr(getattr(adapter, "config", None), "address", ""))
+
+    @staticmethod
+    def _intent_rgb(intent: LightingIntent) -> tuple[int, int, int]:
+        color = (
+            _parse_hex_color(intent.color)
+            if intent.color
+            else (255, 180, 100)
+        )
+        factor = max(0.0, min(1.0, float(intent.intensity)))
+        return tuple(int(channel * factor) for channel in color)
+
+    @staticmethod
+    def _intent_brightness(intent: LightingIntent) -> int:
+        factor = max(0.0, min(1.0, float(intent.intensity)))
+        return max(30, min(100, int(factor * 100)))
 
     def _resolve_runtime_spatial_layers(
         self,

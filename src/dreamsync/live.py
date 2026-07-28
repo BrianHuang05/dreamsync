@@ -5421,11 +5421,19 @@ def run_live_to_govee(
                     active_palette_name = (
                         effect_cycler.current_palette if effect_cycler is not None else None
                     )
-                    active_palette_colors = (
-                        effect_cycler.show_palette_colors
-                        if effect_cycler is not None and effect_cycler.current_show_palette
-                        else tuple(preset.color_palette) if preset is not None else ()
-                    )
+                    if runtime_palette_override:
+                        active_palette_colors = runtime_palette_override
+                    elif (
+                        effect_cycler is not None
+                        and effect_cycler.current_show_palette
+                    ):
+                        active_palette_colors = effect_cycler.show_palette_colors
+                    else:
+                        active_palette_colors = (
+                            tuple(preset.color_palette)
+                            if preset is not None
+                            else ()
+                        )
                     palette_queue = (
                         effect_cycler.show_palette_queue
                         if effect_cycler is not None else ()
