@@ -3326,6 +3326,7 @@ def _predictive_enabled_effects(
     effect_cycler: EffectCycler | None,
     *,
     configured_render_mode: str,
+    allowed_render_modes: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
     """Return only effects the active reactive bank may select."""
 
@@ -3350,6 +3351,23 @@ def _predictive_enabled_effects(
             )
     if effect_cycler.current_effect:
         enabled.add(effect_cycler.current_effect)
+    allowed_modes = {
+        str(mode).strip().lower()
+        for mode in allowed_render_modes
+        if str(mode).strip()
+    }
+    # Ripple is a spatial presentation of the wave family rather than an
+    # EffectPreset render mode. Keeping it in the live bank therefore permits
+    # wave presets while an explicit Ripple selection still forces ripple.
+    if "ripple" in allowed_modes:
+        allowed_modes.add("wave")
+    if allowed_modes:
+        enabled = {
+            effect_name
+            for effect_name in enabled
+            if effect_name in EFFECTS
+            and EFFECTS[effect_name].render_mode.value in allowed_modes
+        }
     return tuple(sorted(enabled))
 
 
@@ -3888,15 +3906,6 @@ def run_live_to_govee(
         target: str,
     ) -> None:
         nonlocal meter_state
-        nonlocal last_structure_event
-        nonlocal pending_render_macro_candidate
-        nonlocal pending_render_macro_change
-        nonlocal pending_state_macro_candidate
-        nonlocal pending_state_macro_change
-        nonlocal pending_macro_transition
-        nonlocal pending_effect_macro_transition
-        nonlocal pending_structure_harmonic_state
-        nonlocal pending_predictive_chord_change
         nonlocal pending_render_beat
         nonlocal pending_render_downbeat
         nonlocal pending_render_beat_strength
@@ -3914,26 +3923,20 @@ def run_live_to_govee(
         meter_state = meter_tracker.nudge_downbeat(t=applied_t)
         if beat_sequencer is not None:
             beat_sequencer.reset()
-        predictive_runtime.reset()
-        bar_chord_history.reset()
-        if structure_tracker is not None:
-            structure_tracker.reset()
-        last_structure_event = None
-        pending_render_macro_candidate = False
-        pending_render_macro_change = False
-        pending_state_macro_candidate = False
-        pending_state_macro_change = False
-        pending_macro_transition = False
-        pending_effect_macro_transition = False
-        pending_structure_harmonic_state = None
-        pending_predictive_chord_change = False
-        pending_render_beat = False
-        pending_render_downbeat = False
-        pending_render_beat_strength = 0.0
-        pending_render_beat_in_bar = None
-        pending_state_beat = False
-        pending_state_downbeat = False
-        pending_state_beat_in_bar = None
+        # A manual D marker is evidence about the existing beat grid, not a
+        # new detector session. Preserve learned structure and scheduled cues,
+        # and publish the snapped beat as a confirmed downbeat even when the
+        # nearest target was the previous detected beat.
+        pending_render_beat = True
+        pending_render_downbeat = True
+        pending_render_beat_strength = max(
+            pending_render_beat_strength,
+            1.0,
+        )
+        pending_render_beat_in_bar = 0
+        pending_state_beat = True
+        pending_state_downbeat = True
+        pending_state_beat_in_bar = 0
         applied_downbeat_nudge_revision = revision
         manual_downbeat_nudge_count += 1
         manual_downbeat_nudge_last_t = applied_t
@@ -3978,6 +3981,11 @@ def run_live_to_govee(
         target: str,
         kind: str,
     ) -> None:
+        nonlocal pending_render_beat
+        nonlocal pending_render_beat_strength
+        nonlocal pending_render_beat_in_bar
+        nonlocal pending_state_beat
+        nonlocal pending_state_beat_in_bar
         nonlocal applied_downbeat_nudge_revision
         nonlocal manual_beat_latch_count
         nonlocal manual_downbeat_nudge_last_t
@@ -4007,6 +4015,16 @@ def run_live_to_govee(
                 target=target,
             )
         else:
+            # S confirms the snapped detector beat for both rendering and the
+            # live waveform. Previously it only added a diagnostic marker.
+            pending_render_beat = True
+            pending_render_beat_strength = max(
+                pending_render_beat_strength,
+                1.0,
+            )
+            pending_render_beat_in_bar = meter_state.bar_phase
+            pending_state_beat = True
+            pending_state_beat_in_bar = meter_state.bar_phase
             applied_downbeat_nudge_revision = revision
             manual_downbeat_nudge_last_t = applied_t
             manual_downbeat_nudge_target = target
@@ -4622,6 +4640,11 @@ def run_live_to_govee(
                         live_structure.predictive_analysis_enabled
                         or live_structure.structure_similarity_enabled
                     ):
+                        prediction_runtime_control_state = (
+                            runtime_control_getter()
+                            if runtime_control_getter is not None
+                            else None
+                        )
                         predictive_started_at = time.perf_counter()
                         predictive_runtime.observe_committed(
                             t=stream_t,
@@ -4639,6 +4662,13 @@ def run_live_to_govee(
                             enabled_effects=_predictive_enabled_effects(
                                 effect_cycler,
                                 configured_render_mode=configured_render_mode,
+                                allowed_render_modes=tuple(
+                                    getattr(
+                                        prediction_runtime_control_state,
+                                        "effect_bank",
+                                        (),
+                                    )
+                                ),
                             ),
                             brightness_limit=master_brightness,
                             current_effect=(
@@ -4882,6 +4912,11 @@ def run_live_to_govee(
                 render_harmonic_change = pending_render_harmonic_change
                 render_macro_candidate = pending_render_macro_candidate
                 render_macro_change = pending_render_macro_change
+                runtime_control_state = (
+                    runtime_control_getter()
+                    if runtime_control_getter is not None
+                    else None
+                )
                 harmonic_accent = _harmonic_accent_strength(
                     now,
                     harmonic_accent_started_at,
@@ -4926,6 +4961,13 @@ def run_live_to_govee(
                     enabled_structural_effects = _predictive_enabled_effects(
                         effect_cycler,
                         configured_render_mode=configured_render_mode,
+                        allowed_render_modes=tuple(
+                            getattr(
+                                runtime_control_state,
+                                "effect_bank",
+                                (),
+                            )
+                        ),
                     )
                     for cue in newly_committed_predictive_cues:
                         result = predictive_runtime.structural_actuator.apply(
@@ -4977,11 +5019,6 @@ def run_live_to_govee(
                         director.set_colors(
                             effect_cycler.show_palette_colors
                         )
-                runtime_control_state = (
-                    runtime_control_getter()
-                    if runtime_control_getter is not None
-                    else None
-                )
                 runtime_palette_override = tuple(
                     str(color)
                     for color in getattr(

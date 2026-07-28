@@ -48,7 +48,11 @@ class ReactiveShortcutTests(unittest.TestCase):
         self.fail(f"Missing tab: {name}")
 
     def test_invalid_override_warns_inline_and_on_config_save_shortcut(self) -> None:
-        config_widget = self._tab("Config")
+        self._tab("Live")
+        self.window.findChild(
+            QtWidgets.QPushButton,
+            "reactiveLiveModeButton",
+        ).click()
         strategy = self.window.findChild(
             QtWidgets.QComboBox,
             "reactiveProfileStrategyCombo",
@@ -68,14 +72,16 @@ class ReactiveShortcutTests(unittest.TestCase):
 
         strategy.setCurrentIndex(strategy.findData("override_profile"))
         self.assertEqual(profile_label.property("profilePath"), "")
-        config_widget.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
-        config_widget.setFocus()
         self.app.processEvents()
 
         self.assertTrue(warning.isVisible())
         self.assertIn("Choose a reactive profile override", warning.text())
         self.assertEqual(save_button.text(), "Save Configuration")
 
+        config_widget = self._tab("Config")
+        config_widget.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+        config_widget.setFocus()
+        self.app.processEvents()
         with patch.object(QtWidgets.QMessageBox, "warning") as warning_dialog:
             QtTest.QTest.keyClick(
                 config_widget,
@@ -88,7 +94,11 @@ class ReactiveShortcutTests(unittest.TestCase):
         self.assertFalse(self.settings_path.exists())
 
     def test_override_profile_uses_file_picker_from_profile_directory(self) -> None:
-        self._tab("Config")
+        self._tab("Live")
+        self.window.findChild(
+            QtWidgets.QPushButton,
+            "reactiveLiveModeButton",
+        ).click()
         strategy = self.window.findChild(
             QtWidgets.QComboBox,
             "reactiveProfileStrategyCombo",
@@ -124,7 +134,11 @@ class ReactiveShortcutTests(unittest.TestCase):
         self.assertEqual(profile_label.text(), str(selected_profile))
 
     def test_override_profile_picker_falls_back_to_builtin_directory(self) -> None:
-        self._tab("Config")
+        self._tab("Live")
+        self.window.findChild(
+            QtWidgets.QPushButton,
+            "reactiveLiveModeButton",
+        ).click()
         strategy = self.window.findChild(
             QtWidgets.QComboBox,
             "reactiveProfileStrategyCombo",
@@ -151,7 +165,7 @@ class ReactiveShortcutTests(unittest.TestCase):
         self.assertEqual(file_dialog.call_args.args[2], str(BUILTIN_PROFILES_DIR))
 
     def test_space_reaches_reactive_page_without_button_focus(self) -> None:
-        config_widget = self._tab("Config")
+        live_widget = self._tab("Live")
         strategy = self.window.findChild(
             QtWidgets.QComboBox,
             "reactiveProfileStrategyCombo",
@@ -159,7 +173,6 @@ class ReactiveShortcutTests(unittest.TestCase):
         strategy.setCurrentIndex(strategy.findData("override_profile"))
         self.app.processEvents()
 
-        live_widget = self._tab("Live")
         reactive_mode_button = self.window.findChild(
             QtWidgets.QPushButton,
             "reactiveLiveModeButton",

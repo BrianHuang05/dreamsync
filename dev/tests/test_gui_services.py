@@ -1108,7 +1108,7 @@ def test_session_service_starts_reactive_live_session():
     assert seen_kwargs["cycle_interval"] == 22.0
     assert seen_kwargs["crossfade_detect"] is True
     assert seen_kwargs["telemetry_dir"] == Path("telemetry")
-    assert seen_kwargs["render_mode_policy"] == "fixed"
+    assert seen_kwargs["render_mode_policy"] == "adaptive"
     assert seen_kwargs["render_mode"] == "pulse"
     assert callable(seen_kwargs["downbeat_nudge_request_getter"])
     assert callable(seen_kwargs["cycle_tempo_multiplier_getter"])

@@ -250,6 +250,60 @@ def test_manual_secondary_beat_can_snap_to_nearest_previous_detection() -> None:
     assert summary["manual_beat_latches"] == 1
     marker = states[-1]["manual_beat_markers"][0]
     assert marker["t"] in states[-1]["detected_beat_times"]
+    assert any(state["beat"] for state in states)
+
+
+def test_manual_downbeat_can_confirm_nearest_previous_detection() -> None:
+    fake_sd = _CaptureOnlySoundDevice()
+    request_calls = 0
+    states: list[dict] = []
+
+    def forced_beat(estimator, *_args, **_kwargs):
+        estimator.last_onset = 1.0
+        return 120.0, True
+
+    def request_after_first_processing_pass():
+        nonlocal request_calls
+        request_calls += 1
+        if request_calls == 1:
+            return 0, 0.0
+        return 1, time.monotonic(), "downbeat"
+
+    with (
+        patch("dreamsync.live._require_sounddevice", return_value=fake_sd),
+        patch(
+            "dreamsync.live.LiveBpmEstimator.update",
+            autospec=True,
+            side_effect=forced_beat,
+        ),
+    ):
+        logs, summary = run_live_to_govee(
+            NullMultiAdapter(),
+            duration_seconds=0.08,
+            sample_rate=44_100,
+            channels=1,
+            frame_size=64,
+            hop_size=16,
+            blocksize=64,
+            auto_cycle=False,
+            state_callback=states.append,
+            downbeat_nudge_request_getter=request_after_first_processing_pass,
+        )
+
+    nudge_events = [
+        row for row in logs
+        if row.get("kind") == "manual_downbeat_nudge"
+    ]
+    assert len(nudge_events) == 1
+    assert nudge_events[0]["target"] == "previous"
+    assert summary["manual_downbeat_nudges"] == 1
+    marker = states[-1]["manual_beat_markers"][0]
+    assert marker["kind"] == "downbeat"
+    assert marker["t"] in states[-1]["detected_downbeat_times"]
+    assert any(
+        state["beat"] and state["downbeat"] and state["beat_in_bar"] == 0
+        for state in states
+    )
 
 
 def test_manual_new_session_request_restarts_live_detection_state() -> None:

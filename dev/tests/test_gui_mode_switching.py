@@ -77,6 +77,38 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
     runtime_override_group = window.findChild(QtWidgets.QGroupBox, "runtimeOverrideGroup")
     capture_group = window.findChild(QtWidgets.QGroupBox, "captureSettingsGroup")
     reactive_group = window.findChild(QtWidgets.QGroupBox, "reactiveSettingsGroup")
+    reactive_live_settings_group = window.findChild(
+        QtWidgets.QGroupBox,
+        "reactiveLiveSettingsGroup",
+    )
+    reactive_render_mode = window.findChild(
+        QtWidgets.QComboBox,
+        "reactiveRenderModeCombo",
+    )
+    reactive_half_time = window.findChild(
+        QtWidgets.QCheckBox,
+        "reactiveHalfTimeCheck",
+    )
+    reactive_sample_rate = window.findChild(
+        QtWidgets.QSpinBox,
+        "reactiveSampleRateSpin",
+    )
+    reactive_auto_cycle = window.findChild(
+        QtWidgets.QCheckBox,
+        "reactiveAutoCycleCheck",
+    )
+    reactive_bar_actions = window.findChild(
+        QtWidgets.QCheckBox,
+        "reactivePredictiveCuesCheck",
+    )
+    reactive_phrase_actions = window.findChild(
+        QtWidgets.QCheckBox,
+        "reactiveStructurePhraseActionsCheck",
+    )
+    reactive_section_actions = window.findChild(
+        QtWidgets.QCheckBox,
+        "reactivePredictiveHighImpactCheck",
+    )
     show_patch_group = window.findChild(QtWidgets.QGroupBox, "showPatchGroup")
     profile_name = window.findChild(QtWidgets.QLabel, "profileNameLabel")
     profile_palette_combo = window.findChild(QtWidgets.QComboBox, "profilePaletteCombo")
@@ -207,6 +239,43 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
     assert runtime_override_group is not None
     assert capture_group is not None
     assert reactive_group is not None
+    assert reactive_group.title() == "Reactive Technical Settings"
+    assert reactive_live_settings_group is not None
+    assert reactive_render_mode is not None
+    assert reactive_render_mode.isHidden()
+    assert reactive_half_time is not None
+    assert reactive_half_time.isHidden()
+    assert reactive_sample_rate is not None
+    assert reactive_auto_cycle is not None
+    assert reactive_bar_actions is not None
+    assert reactive_phrase_actions is not None
+    assert reactive_section_actions is not None
+
+    def is_descendant(widget, ancestor):
+        parent = widget.parentWidget()
+        while parent is not None:
+            if parent is ancestor:
+                return True
+            parent = parent.parentWidget()
+        return False
+
+    assert is_descendant(reactive_sample_rate, reactive_group)
+    for live_control in (
+        reactive_auto_cycle,
+        reactive_bar_actions,
+        reactive_phrase_actions,
+        reactive_section_actions,
+    ):
+        assert is_descendant(live_control, reactive_live_settings_group)
+    reactive_render_mode.setCurrentIndex(
+        reactive_render_mode.findData("breathe")
+    )
+    reactive_half_time.setChecked(True)
+    reactive_snapshot = (
+        window._dreamsync_settings_snapshot().reactive_settings
+    )
+    assert reactive_snapshot.render_mode == "scroll"
+    assert reactive_snapshot.half_time is False
     assert show_patch_group is not None
     assert profile_name is not None
     assert profile_palette_combo is not None

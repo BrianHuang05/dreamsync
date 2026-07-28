@@ -58,6 +58,42 @@ def test_predictive_effect_bank_includes_fallback_pools_for_partial_profiles() -
     assert "color_scroll" in enabled
     assert "fast_scroll" in enabled
 
+    constrained = _predictive_enabled_effects(
+        cycler,
+        configured_render_mode="wave",
+        allowed_render_modes=("breathe", "gradient"),
+    )
+    assert constrained == ("color_breathe",)
+
+    profile_with_matching_effects = SimpleNamespace(
+        moods={
+            "chill": SimpleNamespace(
+                effects=(
+                    SimpleNamespace(name="wave_drift"),
+                    SimpleNamespace(name="slow_breathe"),
+                    SimpleNamespace(name="gradient_flow"),
+                )
+            )
+        }
+    )
+    constrained = _predictive_enabled_effects(
+        EffectCycler(profile=profile_with_matching_effects),
+        configured_render_mode="wave",
+        allowed_render_modes=("breathe", "gradient"),
+    )
+    assert constrained == (
+        "color_breathe",
+        "gradient_flow",
+        "slow_breathe",
+    )
+
+    ripple_bank = _predictive_enabled_effects(
+        EffectCycler(profile=profile_with_matching_effects),
+        configured_render_mode="wave",
+        allowed_render_modes=("ripple",),
+    )
+    assert ripple_bank == ("wave_drift",)
+
 
 @pytest.mark.parametrize("mode", tuple(RenderMode))
 def test_base_render_modes_hold_palette_contract_for_sixty_seconds(

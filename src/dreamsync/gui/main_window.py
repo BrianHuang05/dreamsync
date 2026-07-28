@@ -1623,13 +1623,16 @@ def create_main_window(
             if value.strip()
         )
         return ReactiveSettings(
-            render_mode=str(queue_panel.reactive_render_mode_combo.currentData() or "scroll"),
+            # Renderer selection belongs to the Live effect controls. These
+            # legacy fields remain in the settings schema for compatibility,
+            # but the GUI no longer lets them compete with the live bank.
+            render_mode="scroll",
             sample_rate=int(queue_panel.reactive_sample_rate_spin.value()),
             channels=int(queue_panel.reactive_channels_spin.value()),
             frame_size=int(queue_panel.reactive_frame_size_spin.value()),
             hop_size=int(queue_panel.reactive_hop_size_spin.value()),
             blocksize=int(queue_panel.reactive_blocksize_spin.value()),
-            half_time=bool(queue_panel.reactive_half_time_check.isChecked()),
+            half_time=False,
             max_brightness=bool(queue_panel.reactive_max_brightness_check.isChecked()),
             mirror=bool(queue_panel.reactive_mirror_combo.currentData()),
             master_brightness=float(queue_panel.reactive_master_brightness_spin.value()),

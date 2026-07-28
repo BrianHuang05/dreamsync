@@ -99,7 +99,7 @@ def test_effect_speed_multiplier_is_relative_to_current_cycle_intent():
     assert updated.speed == pytest.approx(0.4)
 
 
-def test_reactive_effect_bank_tracks_intent_and_explicit_effect_wins():
+def test_reactive_effect_bank_does_not_override_committed_effect_and_explicit_wins():
     motion = LightingIntent(
         mode=EffectMode.MOTION,
         intensity=0.5,
@@ -116,7 +116,7 @@ def test_reactive_effect_bank_tracks_intent_and_explicit_effect_wins():
         {},
         state,
     )
-    assert params["_render_mode"] == "wave"
+    assert "_render_mode" not in params
     assert params["runtime_control"]["effect_bank"] == (
         "pulse",
         "wave",

@@ -195,10 +195,9 @@ def apply_runtime_control_to_intent_params(
 
     next_params = _apply_runtime_control_to_params(params or {}, state)
     next_params.setdefault("runtime_control", runtime_control_to_dict(state))
-    selected_render_mode = state.render_mode or _select_effect_bank_render_mode(
-        intent.mode,
-        state.effect_bank,
-    )
+    # The effect bank constrains which presets the reactive structural policy
+    # may choose; it must not replace the committed preset on every frame.
+    selected_render_mode = state.render_mode
     if selected_render_mode:
         next_params["_render_mode"] = selected_render_mode
         if selected_render_mode == "ripple":
@@ -229,43 +228,6 @@ def apply_runtime_control_to_intent_params(
         ),
         next_params,
     )
-
-
-def _select_effect_bank_render_mode(
-    intent_mode: object,
-    effect_bank: tuple[str, ...],
-) -> str:
-    """Choose the closest enabled renderer for a live director intent."""
-    enabled = tuple(
-        value
-        for value in (
-            str(candidate).strip().lower()
-            for candidate in effect_bank
-        )
-        if value in {
-            "pulse",
-            "wave",
-            "ripple",
-            "scroll",
-            "breathe",
-            "gradient",
-            "solid",
-        }
-    )
-    if not enabled:
-        return ""
-
-    intent_value = str(getattr(intent_mode, "value", intent_mode)).strip().lower()
-    preferences = {
-        "pulse": ("pulse", "ripple", "wave", "scroll", "breathe", "gradient", "solid"),
-        "ripple": ("ripple", "pulse", "wave", "scroll", "breathe", "gradient", "solid"),
-        "motion": ("wave", "scroll", "ripple", "pulse", "gradient", "breathe", "solid"),
-        "ambient": ("breathe", "gradient", "solid", "scroll", "wave", "pulse", "ripple"),
-    }
-    for candidate in preferences.get(intent_value, enabled):
-        if candidate in enabled:
-            return candidate
-    return enabled[0]
 
 
 def _map_color_to_palette(

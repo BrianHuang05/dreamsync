@@ -734,7 +734,7 @@ def build_queue_panel(qt_modules):
     capture_layout.addWidget(debug_pipeline_check, 10, 0, 1, 2)
     controls_column.addWidget(capture_group)
 
-    reactive_group = QtWidgets.QGroupBox("Reactive Settings")
+    reactive_group = QtWidgets.QGroupBox("Reactive Technical Settings")
     reactive_group.setObjectName("reactiveSettingsGroup")
     reactive_layout = QtWidgets.QGridLayout(reactive_group)
     reactive_layout.addWidget(QtWidgets.QLabel("Render mode"), 0, 0)
@@ -1059,6 +1059,16 @@ def build_queue_panel(qt_modules):
         1,
         2,
     )
+    # Operator-facing look, profile, and structural action controls live on
+    # the Reactive Live screen. Keep only capture/analysis infrastructure in
+    # Config, while retaining these widget instances so existing persistence
+    # keys and signal bindings remain compatible.
+    for row in (0, 6, 7, 9, 13, 14, 15, 16, 18, 21):
+        item = reactive_layout.itemAtPosition(row, 0)
+        if item is not None and item.widget() is not None:
+            item.widget().setVisible(False)
+    reactive_render_mode_combo.setVisible(False)
+    reactive_half_time_check.setVisible(False)
     controls_column.addWidget(reactive_group)
 
     runtime_override_group = QtWidgets.QGroupBox("Live Override")
@@ -1320,6 +1330,200 @@ def build_queue_panel(qt_modules):
     )
     reactive_live_layout.addWidget(reactive_live_look_group)
 
+    reactive_live_settings_group = QtWidgets.QGroupBox(
+        "Reactive Live Settings"
+    )
+    reactive_live_settings_group.setObjectName(
+        "reactiveLiveSettingsGroup"
+    )
+    reactive_live_settings_layout = QtWidgets.QVBoxLayout(
+        reactive_live_settings_group
+    )
+
+    reactive_live_output_group = QtWidgets.QGroupBox(
+        "Output + Effect Cycling"
+    )
+    reactive_live_output_layout = QtWidgets.QGridLayout(
+        reactive_live_output_group
+    )
+    reactive_live_output_layout.addWidget(
+        reactive_auto_cycle_check,
+        0,
+        0,
+    )
+    reactive_live_output_layout.addWidget(
+        QtWidgets.QLabel("Cycle interval"),
+        0,
+        1,
+    )
+    reactive_live_output_layout.addWidget(
+        reactive_cycle_interval_spin,
+        0,
+        2,
+    )
+    reactive_live_output_layout.addWidget(
+        reactive_max_brightness_check,
+        1,
+        0,
+    )
+    reactive_live_output_layout.addWidget(
+        QtWidgets.QLabel("Master brightness"),
+        1,
+        1,
+    )
+    reactive_live_output_layout.addWidget(
+        reactive_master_brightness_spin,
+        1,
+        2,
+    )
+    reactive_live_output_layout.addWidget(
+        QtWidgets.QLabel("Direction"),
+        2,
+        1,
+    )
+    reactive_live_output_layout.addWidget(
+        reactive_mirror_combo,
+        2,
+        2,
+    )
+    reactive_live_settings_layout.addWidget(
+        reactive_live_output_group
+    )
+
+    reactive_live_profile_group = QtWidgets.QGroupBox(
+        "Profile + Palette Source"
+    )
+    reactive_live_profile_layout = QtWidgets.QGridLayout(
+        reactive_live_profile_group
+    )
+    reactive_live_profile_layout.addWidget(
+        QtWidgets.QLabel("Profile behavior"),
+        0,
+        0,
+    )
+    reactive_live_profile_layout.addWidget(
+        reactive_profile_strategy_combo,
+        0,
+        1,
+    )
+    reactive_live_profile_layout.addWidget(
+        QtWidgets.QLabel("Selected profile"),
+        1,
+        0,
+    )
+    reactive_live_profile_layout.addWidget(
+        reactive_profile_picker,
+        1,
+        1,
+    )
+    reactive_live_profile_layout.addWidget(
+        QtWidgets.QLabel("Show Palette set"),
+        2,
+        0,
+    )
+    reactive_live_profile_layout.addWidget(
+        reactive_show_palette_set_combo,
+        2,
+        1,
+    )
+    reactive_live_profile_layout.addWidget(
+        QtWidgets.QLabel("Profile cycle list"),
+        3,
+        0,
+    )
+    reactive_live_profile_layout.addWidget(
+        reactive_rotation_profiles_edit,
+        3,
+        1,
+    )
+    reactive_live_profile_layout.addWidget(
+        QtWidgets.QLabel("Rotation interval"),
+        4,
+        0,
+    )
+    reactive_live_profile_layout.addWidget(
+        reactive_rotation_interval_spin,
+        4,
+        1,
+    )
+    reactive_live_profile_layout.addWidget(
+        reactive_auto_palette_check,
+        5,
+        0,
+    )
+    reactive_live_profile_layout.addWidget(
+        reactive_smart_rotation_check,
+        5,
+        1,
+    )
+    reactive_live_profile_layout.addWidget(
+        QtWidgets.QLabel("Chain blend"),
+        6,
+        0,
+    )
+    reactive_live_profile_layout.addWidget(
+        reactive_chain_blend_spin,
+        6,
+        1,
+    )
+    reactive_live_profile_layout.addWidget(
+        seed_widget,
+        7,
+        0,
+        1,
+        2,
+    )
+    reactive_live_profile_layout.addWidget(
+        reactive_chain_dwell_range_check,
+        8,
+        0,
+    )
+    reactive_live_profile_layout.addWidget(
+        dwell_widget,
+        8,
+        1,
+    )
+    reactive_live_profile_layout.addWidget(
+        preview_profile_chain_button,
+        9,
+        0,
+        1,
+        2,
+    )
+    reactive_live_profile_layout.addWidget(
+        reactive_configuration_warning_label,
+        10,
+        0,
+        1,
+        2,
+    )
+    reactive_live_settings_layout.addWidget(
+        reactive_live_profile_group
+    )
+
+    reactive_live_structure_group = QtWidgets.QGroupBox(
+        "Structure Detection + Actions"
+    )
+    reactive_live_structure_group.setObjectName(
+        "reactiveLiveStructureSettingsGroup"
+    )
+    reactive_live_structure_layout = QtWidgets.QVBoxLayout(
+        reactive_live_structure_group
+    )
+    for control in (
+        reactive_harmonic_structure_check,
+        reactive_predictive_analysis_check,
+        reactive_predictive_shadow_check,
+        reactive_predictive_cues_check,
+        reactive_structure_phrase_actions_check,
+        reactive_predictive_high_impact_check,
+    ):
+        reactive_live_structure_layout.addWidget(control)
+    reactive_live_settings_layout.addWidget(
+        reactive_live_structure_group
+    )
+    reactive_live_layout.addWidget(reactive_live_settings_group)
+
     reactive_input_row = QtWidgets.QHBoxLayout()
     reactive_listening_label = QtWidgets.QLabel("○ Input not listening")
     reactive_listening_label.setObjectName("reactiveListeningLabel")
@@ -1444,8 +1648,8 @@ def build_queue_panel(qt_modules):
     reactive_downbeat_nudge_button.setToolTip(
         "Make the beat nearest the keypress bar phase 0 without changing BPM "
         "or meter. The previous beat is used during the first half of an "
-        "interval; otherwise the next beat is used. This clears partial "
-        "structural state and pending cues. Use D for downbeats and S for "
+        "interval; otherwise the next beat is used. Learned structure and "
+        "pending cues are preserved. Use D for downbeats and S for "
         "other beats; two D markers infer the meter (for example D S S S D "
         "sets 4/4). Press N to clear beat history and restart BPM/meter "
         "detection for a new song. Hotkeys: D, S, and N"

@@ -461,7 +461,7 @@ class ReactiveLiveSession:
             downbeat_nudge_request_getter=self.downbeat_nudge_request,
             cycle_tempo_multiplier_getter=self.cycle_tempo_multiplier,
             state_callback=self._update_runtime_state,
-            render_mode_policy="fixed",
+            render_mode_policy="adaptive",
             render_mode=self._render_mode,
             structure_config=self._structure_config,
         )
