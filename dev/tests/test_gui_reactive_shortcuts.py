@@ -131,7 +131,10 @@ class ReactiveShortcutTests(unittest.TestCase):
             scroll.horizontalScrollBarPolicy(),
             QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
         )
-        self.assertFalse(settings_header.isChecked())
+        self.assertTrue(settings_header.isChecked())
+        self.assertTrue(settings_group.isVisible())
+        settings_header.click()
+        self.app.processEvents()
         self.assertFalse(settings_group.isVisible())
         settings_header.click()
         self.app.processEvents()
@@ -275,7 +278,7 @@ class ReactiveShortcutTests(unittest.TestCase):
                 effect_speed.itemData(index)
                 for index in range(effect_speed.count())
             ],
-            ["1", "2", "4", "8", "random"],
+            ["auto", "1", "2", "4", "8", "random"],
         )
         self.assertEqual(
             {
@@ -283,6 +286,7 @@ class ReactiveShortcutTests(unittest.TestCase):
                 for index in range(effect_origin.count())
             },
             {
+                "auto",
                 "center",
                 "left",
                 "outer",
@@ -294,7 +298,27 @@ class ReactiveShortcutTests(unittest.TestCase):
                 "random",
             },
         )
+        self.assertEqual(effect_speed.currentData(), "auto")
+        self.assertEqual(effect_origin.currentData(), "auto")
         self.assertFalse(legacy_tempo.isVisible())
+        self.assertFalse(
+            self.window.findChild(
+                QtWidgets.QCheckBox,
+                "reactiveAutoCycleCheck",
+            ).isVisible()
+        )
+        self.assertFalse(
+            self.window.findChild(
+                QtWidgets.QDoubleSpinBox,
+                "reactiveCycleIntervalSpin",
+            ).isVisible()
+        )
+        self.assertFalse(
+            self.window.findChild(
+                QtWidgets.QComboBox,
+                "reactiveMirrorCombo",
+            ).isVisible()
+        )
 
         cycle_label = self.window.findChild(
             QtWidgets.QLabel,

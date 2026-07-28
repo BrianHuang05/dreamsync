@@ -1307,7 +1307,7 @@ def build_queue_panel(qt_modules):
         )
     )
 
-    reactive_live_look_group = QtWidgets.QGroupBox("Live Color + Effect Bank")
+    reactive_live_look_group = QtWidgets.QGroupBox("Color + Effects")
     reactive_live_look_group.setObjectName("reactiveLiveLookGroup")
     reactive_live_look_layout = QtWidgets.QGridLayout(
         reactive_live_look_group
@@ -1358,7 +1358,7 @@ def build_queue_panel(qt_modules):
         "reactiveLiveActiveEffectCombo"
     )
     reactive_live_active_effect_combo.addItem(
-        "Auto from enabled bank",
+        "Auto: mood + section boundaries",
         "",
     )
     effect_options = (
@@ -1376,8 +1376,8 @@ def build_queue_panel(qt_modules):
             effect_mode,
         )
     reactive_live_active_effect_combo.setToolTip(
-        "Force one live effect, or let the detector choose among the "
-        "enabled effects below."
+        "Force one live effect, or let the mood and structure detectors choose "
+        "from the enabled bank at natural section boundaries."
     )
     reactive_live_look_layout.addWidget(
         reactive_live_active_effect_combo,
@@ -1430,6 +1430,7 @@ def build_queue_panel(qt_modules):
         "reactiveLiveEffectSpeedCombo"
     )
     for speed_label, speed_value in (
+        ("Auto: detected energy", "auto"),
         ("1 beat", "1"),
         ("2 beats", "2"),
         ("4 beats", "4"),
@@ -1442,6 +1443,7 @@ def build_queue_panel(qt_modules):
         )
     reactive_live_effect_speed_combo.setToolTip(
         "Set one complete effect cycle or pulse decay in detected beats. "
+        "Auto maps detected energy and beat stability to a musical duration. "
         "Random chooses 1, 2, 4, or 8 beats when an effect activates."
     )
     reactive_live_look_layout.addWidget(
@@ -1459,6 +1461,7 @@ def build_queue_panel(qt_modules):
         "reactiveLiveEffectOriginCombo"
     )
     for origin_label, origin_value in (
+        ("Auto: effect + section", "auto"),
         ("Center", "center"),
         ("Left", "left"),
         ("Outer", "outer"),
@@ -1475,6 +1478,8 @@ def build_queue_panel(qt_modules):
         )
     reactive_live_effect_origin_combo.setToolTip(
         "Project every effect as a radial pattern from this room origin. "
+        "Auto chooses a direction suited to the active effect and changes it "
+        "only with detected sections. "
         "Outer begins at the room boundary and moves inward. Random chooses "
         "a stable origin whenever an effect activates."
     )
@@ -1498,15 +1503,6 @@ def build_queue_panel(qt_modules):
         1,
         4,
     )
-    reactive_live_content_layout.addWidget(
-        _reactive_collapsible_panel(
-            reactive_live_look_group,
-            title="Live Color + Effect Bank",
-            object_name="reactiveLookPanel",
-            expanded=True,
-        )
-    )
-
     reactive_live_settings_group = QtWidgets.QGroupBox(
         "Reactive Live Settings"
     )
@@ -1516,53 +1512,36 @@ def build_queue_panel(qt_modules):
     reactive_live_settings_layout = QtWidgets.QVBoxLayout(
         reactive_live_settings_group
     )
+    reactive_live_settings_layout.addWidget(reactive_live_look_group)
 
     reactive_live_output_group = QtWidgets.QGroupBox(
-        "Output + Effect Cycling"
+        "Output"
     )
     reactive_live_output_layout = QtWidgets.QGridLayout(
         reactive_live_output_group
     )
     reactive_live_output_layout.addWidget(
-        reactive_auto_cycle_check,
-        0,
-        0,
-    )
-    reactive_live_output_layout.addWidget(
-        QtWidgets.QLabel("Cycle interval"),
-        0,
-        1,
-    )
-    reactive_live_output_layout.addWidget(
-        reactive_cycle_interval_spin,
-        0,
-        2,
-    )
-    reactive_live_output_layout.addWidget(
         reactive_max_brightness_check,
-        1,
+        0,
         0,
     )
     reactive_live_output_layout.addWidget(
         QtWidgets.QLabel("Master brightness"),
-        1,
+        0,
         1,
     )
     reactive_live_output_layout.addWidget(
         reactive_master_brightness_spin,
-        1,
+        0,
         2,
     )
-    reactive_live_output_layout.addWidget(
-        QtWidgets.QLabel("Direction"),
-        2,
-        1,
-    )
-    reactive_live_output_layout.addWidget(
-        reactive_mirror_combo,
-        2,
-        2,
-    )
+    # These legacy widgets remain available to settings migration/tests, but
+    # no longer appear as competing live policies. Automatic effect changes
+    # are selected by the Active effect control and occur at structure
+    # boundaries; Global origin owns spatial direction.
+    reactive_auto_cycle_check.setVisible(False)
+    reactive_cycle_interval_spin.setVisible(False)
+    reactive_mirror_combo.setVisible(False)
     reactive_live_settings_layout.addWidget(
         reactive_live_output_group
     )
@@ -1704,7 +1683,7 @@ def build_queue_panel(qt_modules):
             reactive_live_settings_group,
             title="Reactive Live Settings",
             object_name="reactiveSettingsPanel",
-            expanded=False,
+            expanded=True,
         )
     )
 

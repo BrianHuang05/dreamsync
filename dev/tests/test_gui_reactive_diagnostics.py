@@ -105,7 +105,9 @@ def test_active_effect_readout_includes_renderer_and_decay() -> None:
                 "decay_seconds": 0.5,
                 "remaining_seconds": 0.25,
                 "effect_speed_beats": 1,
+                "effect_speed_choice": "auto",
                 "effect_origin": "center",
+                "effect_origin_choice": "auto",
             },
             {
                 "effect": "wave_drift",
@@ -121,8 +123,8 @@ def test_active_effect_readout_includes_renderer_and_decay() -> None:
     assert "active renderer=pulse (flash)" in text
     assert "overridden by bass enter route" in text
     assert "0.25s remaining / 0.50s decay" in text
-    assert "speed=1 beat" in text
-    assert "origin=center" in text
+    assert "speed=1 beat (auto)" in text
+    assert "origin=center (auto)" in text
     assert "Preset wave_drift → active renderer=wave (wave)" in text
 
 

@@ -298,20 +298,48 @@ class EffectCycler:
             return p.cycle_interval
         return self.config.cycle_interval
 
-    def _pick_effect(self, mood: Mood, exclude: str | None = None) -> str:
-        """Weighted random selection from the mood's effect pool."""
+    def _pick_effect(
+        self,
+        mood: Mood,
+        exclude: str | None = None,
+        *,
+        allowed_render_modes: tuple[str, ...] = (),
+    ) -> str:
+        """Weighted selection from the mood pool, constrained by the live bank."""
         p = self._profile
         if p is not None:
             mood_cfg = p.moods.get(mood.value)
             if mood_cfg and mood_cfg.effects:
                 pool = [(e.name, e.weight) for e in mood_cfg.effects]
-                if exclude is not None and len(pool) > 1:
-                    pool = [(n, w) for n, w in pool if n != exclude]
-                names = [n for n, _ in pool]
-                weights = [w for _, w in pool]
-                return self._rng.choices(names, weights=weights, k=1)[0]
+            else:
+                pool = list(MOOD_EFFECTS[mood])
+        else:
+            pool = list(MOOD_EFFECTS[mood])
 
-        pool = MOOD_EFFECTS[mood]
+        allowed_modes = {
+            str(mode).strip().lower()
+            for mode in allowed_render_modes
+            if str(mode).strip()
+        }
+        # Ripple is the spatial presentation of the wave renderer in the
+        # preset bank, so enabling Ripple also permits wave-family presets.
+        if "ripple" in allowed_modes:
+            allowed_modes.add(RenderMode.WAVE.value)
+        if allowed_modes:
+            pool = [
+                (name, weight)
+                for name, weight in pool
+                if name in EFFECTS
+                and EFFECTS[name].render_mode.value in allowed_modes
+            ]
+            if not pool:
+                pool = [
+                    (name, 1.0)
+                    for name, preset in EFFECTS.items()
+                    if preset.render_mode.value in allowed_modes
+                ]
+        if not pool:
+            pool = list(MOOD_EFFECTS[mood])
         if exclude is not None and len(pool) > 1:
             pool = [(name, w) for name, w in pool if name != exclude]
         names = [name for name, _ in pool]
@@ -484,7 +512,27 @@ class EffectCycler:
         *,
         structure_event: str | None = None,
         structure_controlled: bool = False,
+        allowed_render_modes: tuple[str, ...] = (),
     ) -> EffectPreset:
+        allowed_modes = {
+            str(mode).strip().lower()
+            for mode in allowed_render_modes
+            if str(mode).strip()
+        }
+        if "ripple" in allowed_modes:
+            allowed_modes.add(RenderMode.WAVE.value)
+        if (
+            allowed_modes
+            and self._current_effect is not None
+            and (
+                self._current_effect not in EFFECTS
+                or EFFECTS[self._current_effect].render_mode.value
+                not in allowed_modes
+            )
+        ):
+            # A hot-swapped bank applies immediately; later automatic changes
+            # remain locked to detected section boundaries.
+            self._current_effect = None
         if (
             structure_controlled
             and structure_event != "macro_change"
@@ -502,20 +550,30 @@ class EffectCycler:
             )
         # --- DROP handling ---
         if mood == Mood.DROP:
-            if not self._in_drop:
+            if not self._in_drop or self._current_effect is None:
                 self._in_drop = True
                 self._drop_start_t = t
-                self._current_effect = "drop_blast"
+                self._current_effect = self._pick_effect(
+                    Mood.DROP,
+                    allowed_render_modes=allowed_render_modes,
+                )
                 self._palette_name = self._pick_palette(Mood.DROP)
                 self._effect_start_t = t
                 self._prev_mood = self._current_mood
                 self._current_mood = Mood.DROP
-            return self._apply_palette("drop_blast", self._palette_name, Mood.DROP)
+            return self._apply_palette(
+                self._current_effect,
+                self._palette_name,
+                Mood.DROP,
+            )
 
         # --- Leaving DROP ---
         if self._in_drop:
             self._in_drop = False
-            self._current_effect = self._pick_effect(mood)
+            self._current_effect = self._pick_effect(
+                mood,
+                allowed_render_modes=allowed_render_modes,
+            )
             # Check transition rule from DROP to new mood
             tr_pal = self._check_transition_palette(Mood.DROP, mood)
             self._palette_name = tr_pal if tr_pal else self._pick_palette(mood)
@@ -526,7 +584,10 @@ class EffectCycler:
 
         # --- First call or mood change ---
         if self._current_mood is None or mood != self._current_mood:
-            self._current_effect = self._pick_effect(mood)
+            self._current_effect = self._pick_effect(
+                mood,
+                allowed_render_modes=allowed_render_modes,
+            )
             # Check transition rule
             tr_pal = None
             if self._current_mood is not None:
@@ -544,6 +605,7 @@ class EffectCycler:
             self._current_effect = self._pick_effect(
                 mood,
                 exclude=self._current_effect,
+                allowed_render_modes=allowed_render_modes,
             )
             self._palette_name = self._pick_palette(
                 mood,
@@ -561,7 +623,11 @@ class EffectCycler:
             not structure_controlled
             and (t - self._effect_start_t) >= self._cycle_interval
         ):
-            self._current_effect = self._pick_effect(mood, exclude=self._current_effect)
+            self._current_effect = self._pick_effect(
+                mood,
+                exclude=self._current_effect,
+                allowed_render_modes=allowed_render_modes,
+            )
             self._palette_name = self._pick_palette(mood)
             self._effect_start_t = t
             return self._apply_palette(self._current_effect, self._palette_name, mood)

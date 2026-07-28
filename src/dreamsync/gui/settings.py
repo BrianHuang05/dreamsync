@@ -49,8 +49,8 @@ class GuiSettings:
     reactive_harmonic_panel_visible: bool = True
     reactive_live_color_profile: str = ""
     reactive_live_active_effect: str = ""
-    reactive_live_effect_speed: str = "1"
-    reactive_live_effect_origin: str = "center"
+    reactive_live_effect_speed: str = "auto"
+    reactive_live_effect_origin: str = "auto"
     reactive_live_effect_bank: tuple[str, ...] = (
         "pulse",
         "wave",
@@ -152,10 +152,10 @@ class GuiSettingsStore:
                 raw.get("reactive_live_active_effect", "")
             ),
             reactive_live_effect_speed=str(
-                raw.get("reactive_live_effect_speed", "1")
+                raw.get("reactive_live_effect_speed", "auto")
             ),
             reactive_live_effect_origin=str(
-                raw.get("reactive_live_effect_origin", "center")
+                raw.get("reactive_live_effect_origin", "auto")
             ),
             reactive_live_effect_bank=tuple(
                 str(v)

@@ -91,6 +91,67 @@ class EffectCyclerTimingTests(unittest.TestCase):
             self.assertEqual(p.name, p1.name)
 
 
+class EffectCyclerStructurePolicyTests(unittest.TestCase):
+    def test_structure_controlled_effect_changes_only_at_macro_boundary(self) -> None:
+        cycler = EffectCycler(
+            config=EffectCyclerConfig(cycle_interval=1.0),
+            seed=42,
+        )
+        first = cycler.update(
+            Mood.GROOVE,
+            t=0.0,
+            beat=True,
+            bpm=120.0,
+            energy=0.4,
+            structure_controlled=True,
+        )
+        steady = cycler.update(
+            Mood.HYPE,
+            t=60.0,
+            beat=True,
+            bpm=140.0,
+            energy=0.9,
+            structure_controlled=True,
+        )
+        boundary = cycler.update(
+            Mood.HYPE,
+            t=64.0,
+            beat=True,
+            bpm=140.0,
+            energy=0.9,
+            structure_controlled=True,
+            structure_event="macro_change",
+        )
+
+        self.assertEqual(steady.name, first.name)
+        self.assertNotEqual(boundary.name, first.name)
+
+    def test_enabled_render_bank_constrains_automatic_preset(self) -> None:
+        cycler = EffectCycler(seed=7)
+        wave = cycler.update(
+            Mood.GROOVE,
+            t=0.0,
+            beat=True,
+            bpm=120.0,
+            energy=0.5,
+            structure_controlled=True,
+            allowed_render_modes=("wave",),
+        )
+        pulse = cycler.update(
+            Mood.GROOVE,
+            t=4.0,
+            beat=True,
+            bpm=120.0,
+            energy=0.8,
+            structure_controlled=True,
+            structure_event="macro_change",
+            allowed_render_modes=("pulse",),
+        )
+
+        self.assertEqual(wave.render_mode, RenderMode.WAVE)
+        self.assertEqual(pulse.render_mode, RenderMode.PULSE)
+
+
 class EffectCyclerMoodChangeTests(unittest.TestCase):
     """Test that mood changes trigger immediate effect switches."""
 

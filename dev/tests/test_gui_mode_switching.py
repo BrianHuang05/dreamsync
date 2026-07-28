@@ -260,8 +260,9 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
         return False
 
     assert is_descendant(reactive_sample_rate, reactive_group)
+    assert reactive_auto_cycle.isHidden()
+    assert not is_descendant(reactive_auto_cycle, reactive_live_settings_group)
     for live_control in (
-        reactive_auto_cycle,
         reactive_bar_actions,
         reactive_phrase_actions,
         reactive_section_actions,

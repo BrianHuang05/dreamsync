@@ -166,7 +166,13 @@ def _format_active_live_effects(
             item.get("override_source", "") or ""
         )
         speed_beats = item.get("effect_speed_beats")
+        speed_choice = str(
+            item.get("effect_speed_choice", "") or ""
+        )
         effect_origin = str(item.get("effect_origin", "") or "")
+        origin_choice = str(
+            item.get("effect_origin_choice", "") or ""
+        )
         decay = item.get("decay_seconds")
         remaining = item.get("remaining_seconds")
         if decay is None:
@@ -193,10 +199,16 @@ def _format_active_live_effects(
                 (
                     f"speed={int(speed_beats)} "
                     f"{'beat' if int(speed_beats) == 1 else 'beats'}"
+                    + (" (auto)" if speed_choice == "auto" else "")
                     if speed_beats is not None
                     else ""
                 ),
-                f"origin={effect_origin}" if effect_origin else "",
+                (
+                    f"origin={effect_origin}"
+                    + (" (auto)" if origin_choice == "auto" else "")
+                    if effect_origin
+                    else ""
+                ),
             )
             if value
         )
@@ -1735,10 +1747,15 @@ def create_main_window(
             blocksize=int(queue_panel.reactive_blocksize_spin.value()),
             half_time=False,
             max_brightness=bool(queue_panel.reactive_max_brightness_check.isChecked()),
-            mirror=bool(queue_panel.reactive_mirror_combo.currentData()),
+            # Global origin is the single spatial direction authority in the
+            # Live tab. Keep the legacy mirror field neutral for compatibility.
+            mirror=True,
             master_brightness=float(queue_panel.reactive_master_brightness_spin.value()),
-            auto_cycle=bool(queue_panel.reactive_auto_cycle_check.isChecked()),
-            cycle_interval=float(queue_panel.reactive_cycle_interval_spin.value()),
+            # The automatic classifier stays warm so switching between a fixed
+            # effect and Auto is an immediate hot swap. Its visual transitions
+            # are structure-driven; the legacy interval is no longer a policy.
+            auto_cycle=True,
+            cycle_interval=16.0,
             debug_mood=bool(queue_panel.reactive_debug_mood_check.isChecked()),
             telemetry_dir=queue_panel.reactive_telemetry_dir_edit.text().strip(),
             crossfade_detect=bool(queue_panel.reactive_crossfade_check.isChecked()),
@@ -7425,11 +7442,11 @@ def create_main_window(
         )
         effect_speed = str(
             queue_panel.reactive_live_effect_speed_combo.currentData()
-            or "1"
+            or "auto"
         )
         effect_origin = str(
             queue_panel.reactive_live_effect_origin_combo.currentData()
-            or "center"
+            or "auto"
         )
         runtime_state = runtime_supervisor.snapshot()
         active_reactive = runtime_state.active_output_mode in {
@@ -9072,12 +9089,9 @@ def create_main_window(
     queue_panel.reactive_blocksize_spin.valueChanged.connect(lambda _value: _on_runtime_settings_changed())
     queue_panel.reactive_half_time_check.toggled.connect(lambda _checked: _on_runtime_settings_changed())
     queue_panel.reactive_max_brightness_check.toggled.connect(lambda _checked: _on_runtime_settings_changed())
-    queue_panel.reactive_mirror_combo.currentIndexChanged.connect(lambda _index: _on_runtime_settings_changed())
     queue_panel.reactive_master_brightness_spin.valueChanged.connect(
         lambda _value: _on_runtime_settings_changed()
     )
-    queue_panel.reactive_auto_cycle_check.toggled.connect(lambda _checked: _on_runtime_settings_changed())
-    queue_panel.reactive_cycle_interval_spin.valueChanged.connect(lambda _value: _on_runtime_settings_changed())
     queue_panel.reactive_debug_mood_check.toggled.connect(lambda _checked: _on_runtime_settings_changed())
     queue_panel.reactive_crossfade_check.toggled.connect(lambda _checked: _on_runtime_settings_changed())
     queue_panel.reactive_harmonic_structure_check.toggled.connect(
@@ -9482,11 +9496,11 @@ def create_main_window(
             ),
             reactive_live_effect_speed=str(
                 queue_panel.reactive_live_effect_speed_combo.currentData()
-                or "1"
+                or "auto"
             ),
             reactive_live_effect_origin=str(
                 queue_panel.reactive_live_effect_origin_combo.currentData()
-                or "center"
+                or "auto"
             ),
             reactive_live_effect_bank=_current_reactive_effect_bank(),
             show_compile_seed=(
@@ -9675,11 +9689,11 @@ def create_main_window(
                 ),
                 reactive_live_effect_speed=str(
                     queue_panel.reactive_live_effect_speed_combo.currentData()
-                    or "1"
+                    or "auto"
                 ),
                 reactive_live_effect_origin=str(
                     queue_panel.reactive_live_effect_origin_combo.currentData()
-                    or "center"
+                    or "auto"
                 ),
                 reactive_live_effect_bank=_current_reactive_effect_bank(),
             )

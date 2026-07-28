@@ -3335,14 +3335,107 @@ _LIVE_EFFECT_ORIGINS = {
 }
 
 
+def _live_auto_energy_band(energy: float) -> str:
+    """Reduce live energy to a stable presentation-speed decision band."""
+
+    value = max(0.0, min(1.0, float(energy)))
+    if value >= 0.72:
+        return "peak"
+    if value >= 0.46:
+        return "high"
+    if value >= 0.24:
+        return "medium"
+    return "low"
+
+
+def _live_auto_effect_speed_beats(
+    energy: float,
+    stability: float,
+) -> int:
+    """Choose a musical cycle length from energy and detector confidence."""
+
+    band = _live_auto_energy_band(energy)
+    speed_by_band = {
+        "low": 8,
+        "medium": 4,
+        "high": 2,
+        "peak": 1,
+    }
+    speed = speed_by_band[band]
+    # Unstable beat evidence should not create frantic visual changes. Slow
+    # the presentation by one supported step until the grid settles.
+    if float(stability) < 0.28 and speed < 8:
+        speed = _LIVE_EFFECT_SPEED_BEATS[
+            min(
+                len(_LIVE_EFFECT_SPEED_BEATS) - 1,
+                _LIVE_EFFECT_SPEED_BEATS.index(speed) + 1,
+            )
+        ]
+    return speed
+
+
+def _live_auto_effect_origin(
+    effect_mode: str,
+    *,
+    section_index: int,
+) -> str:
+    """Choose a spatial origin appropriate to an effect at a section boundary."""
+
+    normalized_mode = str(effect_mode).strip().lower()
+    section = max(0, int(section_index))
+    if normalized_mode in {"wave", "scroll", "gradient"}:
+        # Directional families deliberately rotate between downward, sideways,
+        # and depth motion at successive detected sections.
+        directional = ("top", "left", "right", "back", "front", "bottom")
+        return directional[section % len(directional)]
+    if normalized_mode == "ripple":
+        return "center" if section % 2 == 0 else "outer"
+    if normalized_mode == "pulse":
+        return ("center", "outer", "center", "top")[section % 4]
+    if normalized_mode == "breathe":
+        return ("center", "back", "front")[section % 3]
+    return ("center", "back", "front", "outer")[section % 4]
+
+
+def _live_auto_render_mode(
+    native_mode: str,
+    enabled_modes: tuple[str, ...],
+    *,
+    section_index: int,
+) -> str:
+    """Resolve live-only renderer variants within the enabled effect bank."""
+
+    normalized_native = str(native_mode).strip().lower() or "solid"
+    enabled = {
+        str(mode).strip().lower()
+        for mode in enabled_modes
+        if str(mode).strip()
+    }
+    if not enabled:
+        return normalized_native
+    # Ripple and wave share a preset family. Alternate their actual renderer
+    # at section boundaries when both are enabled; honor Ripple alone as an
+    # inward/outward spatial variant rather than silently rendering a wave.
+    if normalized_native == "wave" and "ripple" in enabled:
+        if "wave" not in enabled or int(section_index) % 2 == 0:
+            return "ripple"
+    return normalized_native
+
+
 def _resolve_live_effect_presentation_choices(
     speed_choice: str,
     origin_choice: str,
     *,
     rng: random.Random,
+    effect_mode: str = "",
+    energy: float = 0.0,
+    stability: float = 1.0,
+    section_index: int = 0,
 ) -> tuple[int | None, str]:
     normalized_speed = str(speed_choice).strip().lower()
-    if normalized_speed == "random":
+    if normalized_speed == "auto":
+        speed_beats = _live_auto_effect_speed_beats(energy, stability)
+    elif normalized_speed == "random":
         speed_beats: int | None = int(
             rng.choice(_LIVE_EFFECT_SPEED_BEATS)
         )
@@ -3360,7 +3453,12 @@ def _resolve_live_effect_presentation_choices(
         speed_beats = None
 
     normalized_origin = str(origin_choice).strip().lower()
-    if normalized_origin == "random":
+    if normalized_origin == "auto":
+        origin = _live_auto_effect_origin(
+            effect_mode,
+            section_index=section_index,
+        )
+    elif normalized_origin == "random":
         origin = str(rng.choice(tuple(_LIVE_EFFECT_ORIGINS)))
     elif normalized_origin in _LIVE_EFFECT_ORIGINS:
         origin = normalized_origin
@@ -3511,8 +3609,14 @@ def _live_effect_diagnostic(
             if (params or {}).get("_effect_speed_beats") is not None
             else None
         ),
+        "effect_speed_choice": str(
+            (params or {}).get("_effect_speed_choice", "") or ""
+        ),
         "effect_origin": str(
             (params or {}).get("_effect_origin", "") or ""
+        ),
+        "effect_origin_choice": str(
+            (params or {}).get("_effect_origin_choice", "") or ""
         ),
         "trigger_t": round(float(trigger_t), 6),
         "decay_seconds": (
@@ -3667,7 +3771,8 @@ def run_live_to_govee(
 
     sd = _require_sounddevice()
     harmonic_analysis_enabled = bool(
-        live_structure.harmonic_structure_enabled
+        auto_cycle
+        or live_structure.harmonic_structure_enabled
         or live_structure.debug_harmonics
         or live_structure.predictive_analysis_enabled
         or live_structure.structure_similarity_enabled
@@ -3830,8 +3935,14 @@ def run_live_to_govee(
             minimum_phase_confidence=live_structure.downbeat_min_confidence,
         )
         if (
-            live_structure.harmonic_structure_enabled
-            and not live_structure.structure_similarity_enabled
+            (
+                auto_cycle
+                and not structure_similarity_controls_output
+            )
+            or (
+                live_structure.harmonic_structure_enabled
+                and not live_structure.structure_similarity_enabled
+            )
         )
         else None
     )
@@ -5099,19 +5210,38 @@ def run_live_to_govee(
                     director.energy, director.stability,
                     director.effective_bpm, stream_t,
                 )
+                effect_cycle_control_state = (
+                    runtime_control_getter()
+                    if runtime_control_getter is not None
+                    else None
+                )
+                allowed_effect_modes = tuple(
+                    str(mode)
+                    for mode in getattr(
+                        effect_cycle_control_state,
+                        "effect_bank",
+                        (),
+                    )
+                    if str(mode).strip()
+                )
+                effect_macro_transition = pending_effect_macro_transition
                 preset = effect_cycler.update(
                     mood, stream_t, beat_this_tick,
                     current_cycle_bpm, director.energy,
                     structure_event=(
                         "macro_change"
-                        if pending_effect_macro_transition
+                        if effect_macro_transition
                         else None
                     ),
                     structure_controlled=(
-                        live_structure.harmonic_structure_enabled
+                        auto_cycle
+                        or live_structure.harmonic_structure_enabled
                         or structure_similarity_controls_output
                     ),
+                    allowed_render_modes=allowed_effect_modes,
                 )
+                if effect_macro_transition:
+                    effect_presentation_generation += 1
                 # Fixed GUI selections remain authoritative; adaptive CLI
                 # sessions preserve profile-driven renderer swaps.
                 if normalized_render_mode_policy == "adaptive":
@@ -5339,11 +5469,59 @@ def run_live_to_govee(
                     )
                     or ""
                 )
+                runtime_effect_override = str(
+                    getattr(
+                        runtime_control_state,
+                        "render_mode",
+                        "",
+                    )
+                    or ""
+                ).strip().lower()
+                native_presentation_render_mode = (
+                    preset.render_mode.value
+                    if preset is not None
+                    else presentation_effect_name
+                )
+                routed_presentation_render_mode = str(
+                    (runtime_params or {}).get("_render_mode", "") or ""
+                ).strip().lower()
+                presentation_render_mode = (
+                    runtime_effect_override
+                    or routed_presentation_render_mode
+                    or _live_auto_render_mode(
+                        native_presentation_render_mode,
+                        tuple(
+                            str(mode)
+                            for mode in getattr(
+                                runtime_control_state,
+                                "effect_bank",
+                                (),
+                            )
+                        ),
+                        section_index=effect_presentation_generation,
+                    )
+                )
+                if (
+                    not runtime_effect_override
+                    and not routed_presentation_render_mode
+                    and presentation_render_mode
+                    != native_presentation_render_mode
+                ):
+                    runtime_params["_render_mode"] = presentation_render_mode
+                    runtime_params["_auto_render_mode"] = (
+                        presentation_render_mode
+                    )
+                auto_energy_signature = (
+                    _live_auto_energy_band(director.energy),
+                    float(director.stability) < 0.28,
+                ) if speed_choice.strip().lower() == "auto" else ()
                 next_presentation_signature = (
                     presentation_effect_name,
+                    presentation_render_mode,
                     speed_choice,
                     origin_choice,
                     effect_presentation_generation,
+                    auto_energy_signature,
                 )
                 if (
                     next_presentation_signature
@@ -5356,6 +5534,10 @@ def run_live_to_govee(
                         speed_choice,
                         origin_choice,
                         rng=effect_presentation_rng,
+                        effect_mode=presentation_render_mode,
+                        energy=director.energy,
+                        stability=director.stability,
+                        section_index=effect_presentation_generation,
                     )
                     effect_presentation_signature = (
                         next_presentation_signature
@@ -5366,6 +5548,8 @@ def run_live_to_govee(
                     origin=resolved_effect_origin,
                     bpm=frame_intent.bpm,
                 )
+                runtime_params["_effect_speed_choice"] = speed_choice
+                runtime_params["_effect_origin_choice"] = origin_choice
                 if max_brightness:
                     frame_intent = dataclasses.replace(frame_intent, intensity=1.0)
                 frame_intent = dataclasses.replace(
@@ -5527,6 +5711,17 @@ def run_live_to_govee(
                         runtime_selected_mode
                         and effective_render_mode != native_render_mode
                     )
+                    else "Auto section policy"
+                    if (
+                        str(
+                            (runtime_params or {}).get(
+                                "_auto_render_mode",
+                                "",
+                            )
+                            or ""
+                        ).strip()
+                        and effective_render_mode != native_render_mode
+                    )
                     else route_override_source
                 )
                 effect_source = (
@@ -5534,6 +5729,14 @@ def run_live_to_govee(
                     if applied_structural_effect
                     else "live override"
                     if runtime_selected_mode
+                    else "auto section policy"
+                    if str(
+                        (runtime_params or {}).get(
+                            "_auto_render_mode",
+                            "",
+                        )
+                        or ""
+                    ).strip()
                     else route_override_source
                     if route_override_source
                     else "effect bank"
@@ -5609,7 +5812,9 @@ def run_live_to_govee(
                     "native_render_mode": native_render_mode,
                     "renderer_override_source": override_source,
                     "effect_speed_beats": resolved_effect_speed_beats,
+                    "effect_speed_choice": speed_choice,
                     "effect_origin": resolved_effect_origin,
+                    "effect_origin_choice": origin_choice,
                     "palette_name": (
                         effect_cycler.current_palette
                         if effect_cycler is not None
@@ -5942,8 +6147,11 @@ def run_live_to_govee(
                     )
                     palette_cycle_mode = (
                         "song_detection" if palette_queue
-                        else "timed" if auto_cycle and effect_cycler is not None
-                        else "manual"
+                        else (
+                            "section_detection"
+                            if auto_cycle and effect_cycler is not None
+                            else "manual"
+                        )
                     )
                     palette_seconds_until_next = (
                         effect_cycler.seconds_until_next_cycle(stream_t)
