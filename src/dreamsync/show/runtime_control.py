@@ -21,6 +21,8 @@ class RuntimeControlState:
     intensity_offset: float = 0.0
     speed_multiplier: float = 1.0
     speed_offset: float = 0.0
+    effect_speed_beats: str = ""
+    effect_origin: str = ""
     spatial_preset: str = ""
     spatial_origin: dict[str, float] | None = None
     spatial_width: float | None = None
@@ -38,6 +40,8 @@ class RuntimeControlState:
                 self.color_bias,
                 self.render_mode,
                 self.effect_bank,
+                self.effect_speed_beats,
+                self.effect_origin,
                 self.spatial_preset,
                 self.spatial_origin,
                 self.spatial_width is not None,
@@ -151,6 +155,8 @@ def runtime_control_to_dict(state: RuntimeControlState | None) -> dict[str, Any]
         "intensity_offset": state.intensity_offset,
         "speed_multiplier": state.speed_multiplier,
         "speed_offset": state.speed_offset,
+        "effect_speed_beats": state.effect_speed_beats,
+        "effect_origin": state.effect_origin,
         "spatial_preset": state.spatial_preset,
         "spatial_origin": dict(state.spatial_origin) if state.spatial_origin is not None else None,
         "spatial_width": state.spatial_width,

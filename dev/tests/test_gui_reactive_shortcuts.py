@@ -248,7 +248,7 @@ class ReactiveShortcutTests(unittest.TestCase):
 
         warning_dialog.assert_called_once()
 
-    def test_live_effect_tempo_buttons_and_hotkeys_select_bpm_multiple(
+    def test_live_effect_speed_and_origin_use_explicit_global_controls(
         self,
     ) -> None:
         live_widget = self._tab("Live")
@@ -256,35 +256,45 @@ class ReactiveShortcutTests(unittest.TestCase):
             QtWidgets.QPushButton,
             "reactiveLiveModeButton",
         ).click()
-        label = self.window.findChild(
+        effect_speed = self.window.findChild(
+            QtWidgets.QComboBox,
+            "reactiveLiveEffectSpeedCombo",
+        )
+        effect_origin = self.window.findChild(
+            QtWidgets.QComboBox,
+            "reactiveLiveEffectOriginCombo",
+        )
+        legacy_tempo = self.window.findChild(
             QtWidgets.QLabel,
             "reactiveEffectTempoLabel",
         )
-        half_button = self.window.findChild(
-            QtWidgets.QPushButton,
-            "reactiveEffectTempoHalfButton",
+        self.assertIsNotNone(effect_speed)
+        self.assertIsNotNone(effect_origin)
+        self.assertEqual(
+            [
+                effect_speed.itemData(index)
+                for index in range(effect_speed.count())
+            ],
+            ["1", "2", "4", "8", "random"],
         )
-        self.assertIsNotNone(label)
-        self.assertIsNotNone(half_button)
-
-        half_button.click()
-        self.assertIn("0.5× cycle BPM", label.text())
-
-        live_widget.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
-        live_widget.setFocus()
-        QtTest.QTest.keyClick(
-            live_widget,
-            QtCore.Qt.Key.Key_BracketRight,
+        self.assertEqual(
+            {
+                effect_origin.itemData(index)
+                for index in range(effect_origin.count())
+            },
+            {
+                "center",
+                "left",
+                "outer",
+                "right",
+                "top",
+                "bottom",
+                "back",
+                "front",
+                "random",
+            },
         )
-        self.app.processEvents()
-        self.assertIn("2× cycle BPM", label.text())
-
-        QtTest.QTest.keyClick(
-            live_widget,
-            QtCore.Qt.Key.Key_Backslash,
-        )
-        self.app.processEvents()
-        self.assertIn("1× cycle BPM", label.text())
+        self.assertFalse(legacy_tempo.isVisible())
 
         cycle_label = self.window.findChild(
             QtWidgets.QLabel,
@@ -491,6 +501,14 @@ class ReactiveShortcutTests(unittest.TestCase):
             QtWidgets.QComboBox,
             "reactiveLiveActiveEffectCombo",
         )
+        effect_speed = self.window.findChild(
+            QtWidgets.QComboBox,
+            "reactiveLiveEffectSpeedCombo",
+        )
+        effect_origin = self.window.findChild(
+            QtWidgets.QComboBox,
+            "reactiveLiveEffectOriginCombo",
+        )
         chord_panel = self.window.findChild(
             QtWidgets.QCheckBox,
             "reactiveChordPanelVisibleCheck",
@@ -513,6 +531,8 @@ class ReactiveShortcutTests(unittest.TestCase):
 
         color_profile.setCurrentIndex(color_profile.findData("neon"))
         active_effect.setCurrentIndex(active_effect.findData("ripple"))
+        effect_speed.setCurrentIndex(effect_speed.findData("8"))
+        effect_origin.setCurrentIndex(effect_origin.findData("outer"))
         chord_panel.setChecked(False)
         dark_mode.setChecked(True)
         for button in self.window.findChild(
@@ -534,6 +554,8 @@ class ReactiveShortcutTests(unittest.TestCase):
         saved = GuiSettingsStore(self.settings_path).load()
         self.assertEqual(saved.reactive_live_color_profile, "neon")
         self.assertEqual(saved.reactive_live_active_effect, "ripple")
+        self.assertEqual(saved.reactive_live_effect_speed, "8")
+        self.assertEqual(saved.reactive_live_effect_origin, "outer")
         self.assertEqual(saved.reactive_live_effect_bank, ("ripple",))
         self.assertFalse(saved.reactive_chord_panel_visible)
         self.assertTrue(saved.dark_mode)

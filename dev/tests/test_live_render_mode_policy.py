@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import random
+
 import pytest
 
 from dreamsync.director import EffectMode
 from dreamsync.live import (
     _live_effect_decay_seconds,
     _live_effect_diagnostic,
+    _apply_live_effect_presentation,
+    _resolve_live_effect_presentation_choices,
     resolve_live_render_mode,
 )
 from dreamsync.render import RenderMode
@@ -111,3 +115,66 @@ def test_live_continuous_effect_diagnostic_does_not_invent_decay() -> None:
     assert diagnostic["decay_seconds"] is None
     assert diagnostic["remaining_seconds"] is None
     assert diagnostic["continuous"] is True
+
+
+def test_live_effect_presentation_randomization_is_resolved_once() -> None:
+    speed, origin = _resolve_live_effect_presentation_choices(
+        "random",
+        "random",
+        rng=random.Random(7),
+    )
+
+    assert speed in {1, 2, 4, 8}
+    assert origin in {
+        "left",
+        "center",
+        "outer",
+        "right",
+        "top",
+        "bottom",
+        "back",
+        "front",
+    }
+
+
+def test_live_effect_presentation_overrides_all_spatial_layers() -> None:
+    params = _apply_live_effect_presentation(
+        {
+            "spatial_preset": "wave_front_to_back",
+            "scene_layers": [
+                {
+                    "band": "bass",
+                    "spatial_preset": "flash_floor_only",
+                    "spatial_origin": {"x": 1.0, "y": 0.0, "z": 0.0},
+                },
+            ],
+        },
+        speed_beats=4,
+        origin="center",
+        bpm=120.0,
+    )
+
+    assert params["_effect_speed_beats"] == 4
+    assert params["_effect_speed_bpm"] == 120.0
+    assert params["spatial_mode"] == "emanation"
+    assert params["spatial_origin"] == {"x": 0.0, "y": 0.0, "z": 0.0}
+    assert params["layer_category"] == "expand"
+    assert "spatial_preset" not in params
+    assert params["scene_layers"][0]["spatial_mode"] == "emanation"
+    assert params["scene_layers"][0]["spatial_origin"] == {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0,
+    }
+    assert "spatial_preset" not in params["scene_layers"][0]
+
+
+def test_live_pulse_decay_uses_selected_beat_length() -> None:
+    assert _live_effect_decay_seconds(
+        "pulse",
+        {
+            "_effect_speed_beats": 4,
+            "_effect_speed_bpm": 120.0,
+            "pulse_decay": 99.0,
+        },
+    ) == 2.0

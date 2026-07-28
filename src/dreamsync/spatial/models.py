@@ -127,6 +127,7 @@ class SpatialEffectLayer:
     effect_mode: str
     trigger_mode: SpatialTriggerMode = SpatialTriggerMode.CONTINUOUS
     origin: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    origin_mode: str = "point"
     direction: tuple[float, float, float] | None = None
     extent: tuple[tuple[float, float, float], tuple[float, float, float]] | None = None
     thickness: float = 0.35
@@ -148,6 +149,7 @@ class SpatialEffectLayer:
             "effect_mode": self.effect_mode,
             "trigger_mode": self.trigger_mode.value,
             "origin": _point_to_mapping(self.origin),
+            "origin_mode": self.origin_mode,
             "thickness": float(self.thickness),
             "radius": float(self.radius),
             "speed_units_per_second": float(self.speed_units_per_second),
@@ -184,6 +186,7 @@ class SpatialEffectLayer:
             effect_mode=str(data.get("effect_mode", "solid")),
             trigger_mode=trigger_mode,
             origin=_point_from_mapping(data.get("origin"), default=(0.0, 0.0, 0.0)),
+            origin_mode=str(data.get("origin_mode", "point") or "point"),
             direction=_point_from_mapping(direction_raw, default=(0.0, 0.0, 0.0)) if isinstance(direction_raw, Mapping) else None,
             extent=_extent_from_mapping(extent_raw),
             thickness=float(data.get("thickness", 0.35)),

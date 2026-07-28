@@ -387,6 +387,43 @@ class SpatialMapperTests(unittest.TestCase):
         self.assertEqual(sample.color_override, "#ff00ff")
         self.assertGreater(sample.intensity_scale, 0.0)
 
+    def test_outer_origin_expands_inward_at_selected_beat_speed(self) -> None:
+        mapper = SpatialMapper(enabled=True)
+        intent = _intent(mode=EffectMode.MOTION, bpm=120.0)
+        spec = mapper.resolve_spatial_spec(
+            intent,
+            params={
+                "_render_mode": "wave",
+                "_effect_speed_beats": 4,
+                "spatial_mode": "emanation",
+                "spatial_origin": {"x": 0.0, "y": 0.0, "z": 0.0},
+                "spatial_origin_mode": "outer",
+                "spatial_blend": "radial",
+                "layer_category": "expand",
+            },
+        )
+
+        assert spec.effect_layer is not None
+        self.assertEqual(spec.origin_mode, "outer")
+        self.assertEqual(spec.effect_layer.origin_mode, "outer")
+        self.assertAlmostEqual(
+            spec.effect_layer.speed_units_per_second,
+            1.0,
+        )
+        outer = mapper.sample_point(
+            0.0,
+            DevicePlacement(x=1.0, y=0.0, z=0.0),
+            intent,
+            spec,
+        )
+        center = mapper.sample_point(
+            0.0,
+            DevicePlacement(x=0.0, y=0.0, z=0.0),
+            intent,
+            spec,
+        )
+        self.assertGreater(outer.intensity_scale, center.intensity_scale)
+
     def test_explicit_effect_layer_accepts_top_level_timing_overrides(self) -> None:
         mapper = SpatialMapper(enabled=True)
         layer = SpatialEffectLayer(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import random
 import statistics
 import threading
 import time
@@ -3321,6 +3322,126 @@ _LIVE_EFFECT_DISPLAY_NAMES = {
     "ripple": "ripple",
 }
 _LIVE_BEAT_TRIGGERED_RENDER_MODES = frozenset({"pulse", "scroll", "ripple"})
+_LIVE_EFFECT_SPEED_BEATS = (1, 2, 4, 8)
+_LIVE_EFFECT_ORIGINS = {
+    "left": {"x": -1.0, "y": 0.0, "z": 0.0},
+    "center": {"x": 0.0, "y": 0.0, "z": 0.0},
+    "right": {"x": 1.0, "y": 0.0, "z": 0.0},
+    "top": {"x": 0.0, "y": 1.0, "z": 0.0},
+    "bottom": {"x": 0.0, "y": -1.0, "z": 0.0},
+    "back": {"x": 0.0, "y": 0.0, "z": 1.0},
+    "front": {"x": 0.0, "y": 0.0, "z": -1.0},
+    "outer": {"x": 0.0, "y": 0.0, "z": 0.0},
+}
+
+
+def _resolve_live_effect_presentation_choices(
+    speed_choice: str,
+    origin_choice: str,
+    *,
+    rng: random.Random,
+) -> tuple[int | None, str]:
+    normalized_speed = str(speed_choice).strip().lower()
+    if normalized_speed == "random":
+        speed_beats: int | None = int(
+            rng.choice(_LIVE_EFFECT_SPEED_BEATS)
+        )
+    elif normalized_speed:
+        try:
+            requested_speed = int(normalized_speed)
+        except ValueError:
+            requested_speed = 1
+        speed_beats = (
+            requested_speed
+            if requested_speed in _LIVE_EFFECT_SPEED_BEATS
+            else 1
+        )
+    else:
+        speed_beats = None
+
+    normalized_origin = str(origin_choice).strip().lower()
+    if normalized_origin == "random":
+        origin = str(rng.choice(tuple(_LIVE_EFFECT_ORIGINS)))
+    elif normalized_origin in _LIVE_EFFECT_ORIGINS:
+        origin = normalized_origin
+    else:
+        origin = ""
+    return speed_beats, origin
+
+
+def _apply_live_effect_presentation(
+    params: dict[str, Any] | None,
+    *,
+    speed_beats: int | None,
+    origin: str,
+    bpm: float,
+) -> dict[str, Any]:
+    resolved = dict(params or {})
+    if speed_beats is not None:
+        resolved["_effect_speed_beats"] = int(speed_beats)
+        resolved["_effect_speed_bpm"] = max(1.0, float(bpm))
+    normalized_origin = str(origin).strip().lower()
+    if normalized_origin not in _LIVE_EFFECT_ORIGINS:
+        return resolved
+
+    origin_point = dict(_LIVE_EFFECT_ORIGINS[normalized_origin])
+    resolved.update(
+        {
+            "_global_effect_origin": True,
+            "_effect_origin": normalized_origin,
+            "spatial_mode": "emanation",
+            "spatial_origin": origin_point,
+            "spatial_origin_mode": (
+                "outer" if normalized_origin == "outer" else "point"
+            ),
+            "spatial_blend": "radial",
+            "layer_category": "expand",
+        }
+    )
+    for key in (
+        "effect_layer",
+        "spatial_preset",
+        "spatial_direction",
+        "spatial_extent",
+        "spatial_axis",
+        "spatial_focus",
+    ):
+        resolved.pop(key, None)
+    for layer_key in ("scene_layers", "eq_layers"):
+        layers = resolved.get(layer_key)
+        if not isinstance(layers, list):
+            continue
+        rewritten_layers = []
+        for raw_layer in layers:
+            if not isinstance(raw_layer, dict):
+                continue
+            layer = dict(raw_layer)
+            layer.update(
+                {
+                    "_effect_speed_beats": speed_beats,
+                    "spatial_mode": "emanation",
+                    "spatial_origin": dict(origin_point),
+                    "spatial_origin_mode": (
+                        "outer"
+                        if normalized_origin == "outer"
+                        else "point"
+                    ),
+                    "spatial_blend": "radial",
+                    "layer_category": "expand",
+                }
+            )
+            for key in (
+                "effect_layer",
+                "spatial_preset",
+                "spatial_direction",
+                "spatial_extent",
+                "spatial_axis",
+                "spatial_focus",
+            ):
+                layer.pop(key, None)
+            rewritten_layers.append(layer)
+        resolved[layer_key] = rewritten_layers
+    return resolved
 
 
 def _live_effect_decay_seconds(
@@ -3337,6 +3458,10 @@ def _live_effect_decay_seconds(
 
     normalized = str(render_mode).strip().lower()
     values = params or {}
+    speed_beats = float(values.get("_effect_speed_beats", 0.0) or 0.0)
+    speed_bpm = float(values.get("_effect_speed_bpm", 0.0) or 0.0)
+    if normalized == "pulse" and speed_beats > 0.0 and speed_bpm > 0.0:
+        return speed_beats * (60.0 / speed_bpm)
     explicit_duration = float(values.get("duration_s", 0.0) or 0.0)
     if explicit_duration > 0.0:
         return explicit_duration
@@ -3356,10 +3481,15 @@ def _live_effect_diagnostic(
     trigger_t: float,
     now_t: float,
     params: dict[str, Any] | None,
+    native_render_mode: str = "",
+    override_source: str = "",
 ) -> dict[str, object]:
     """Build the GUI contract for the renderer state sent on a live frame."""
 
     normalized_mode = str(render_mode).strip().lower() or "solid"
+    normalized_native_mode = (
+        str(native_render_mode).strip().lower() or normalized_mode
+    )
     decay_seconds = _live_effect_decay_seconds(normalized_mode, params)
     remaining_seconds = (
         max(0.0, decay_seconds - max(0.0, float(now_t) - float(trigger_t)))
@@ -3372,7 +3502,18 @@ def _live_effect_diagnostic(
             or _LIVE_EFFECT_DISPLAY_NAMES.get(normalized_mode, normalized_mode)
         ),
         "render_mode": normalized_mode,
+        "native_render_mode": normalized_native_mode,
+        "renderer_override": normalized_mode != normalized_native_mode,
+        "override_source": str(override_source).strip(),
         "source": str(source).strip() or "reactive",
+        "effect_speed_beats": (
+            int((params or {}).get("_effect_speed_beats"))
+            if (params or {}).get("_effect_speed_beats") is not None
+            else None
+        ),
+        "effect_origin": str(
+            (params or {}).get("_effect_origin", "") or ""
+        ),
         "trigger_t": round(float(trigger_t), 6),
         "decay_seconds": (
             round(float(decay_seconds), 4)
@@ -3957,6 +4098,13 @@ def run_live_to_govee(
     active_effect_signature: tuple[str, str] | None = None
     active_effect_started_t = 0.0
     active_effect_source = "reactive"
+    active_effect_native_mode = ""
+    active_effect_override_source = ""
+    effect_presentation_generation = 0
+    effect_presentation_signature: tuple[object, ...] | None = None
+    resolved_effect_speed_beats: int | None = None
+    resolved_effect_origin = ""
+    effect_presentation_rng = random.Random()
     last_active_live_eq_routes: list[dict[str, object]] = []
     last_active_live_instrument_routes: list[dict[str, object]] = []
     window, bass_mask, kick_mask, freqs = _prepare_bass_window(frame_size, sample_rate)
@@ -5071,6 +5219,7 @@ def run_live_to_govee(
                         )
                         structural_action_results.append(result)
                         if result.outcome == "applied" and result.preset is not None:
+                            effect_presentation_generation += 1
                             preset = result.preset
                             if cue.cue_class != "bar_marker":
                                 structural_render_mode = preset.render_mode
@@ -5157,6 +5306,65 @@ def run_live_to_govee(
                     frame_intent,
                     runtime_params,
                     runtime_control_state,
+                )
+                presentation_effect_name = (
+                    str(
+                        getattr(
+                            runtime_control_state,
+                            "render_mode",
+                            "",
+                        )
+                        or ""
+                    ).strip().lower()
+                    or (
+                        effect_cycler.current_effect
+                        if effect_cycler is not None
+                        else ""
+                    )
+                    or str(getattr(preset, "name", "") or "")
+                )
+                speed_choice = str(
+                    getattr(
+                        runtime_control_state,
+                        "effect_speed_beats",
+                        "",
+                    )
+                    or ""
+                )
+                origin_choice = str(
+                    getattr(
+                        runtime_control_state,
+                        "effect_origin",
+                        "",
+                    )
+                    or ""
+                )
+                next_presentation_signature = (
+                    presentation_effect_name,
+                    speed_choice,
+                    origin_choice,
+                    effect_presentation_generation,
+                )
+                if (
+                    next_presentation_signature
+                    != effect_presentation_signature
+                ):
+                    (
+                        resolved_effect_speed_beats,
+                        resolved_effect_origin,
+                    ) = _resolve_live_effect_presentation_choices(
+                        speed_choice,
+                        origin_choice,
+                        rng=effect_presentation_rng,
+                    )
+                    effect_presentation_signature = (
+                        next_presentation_signature
+                    )
+                runtime_params = _apply_live_effect_presentation(
+                    runtime_params,
+                    speed_beats=resolved_effect_speed_beats,
+                    origin=resolved_effect_origin,
+                    bpm=frame_intent.bpm,
                 )
                 if max_brightness:
                     frame_intent = dataclasses.replace(frame_intent, intensity=1.0)
@@ -5262,11 +5470,72 @@ def run_live_to_govee(
                     ),
                     "",
                 )
+                native_render_mode = (
+                    runtime_selected_mode
+                    if runtime_selected_mode
+                    else str(
+                        getattr(
+                            getattr(preset, "render_mode", None),
+                            "value",
+                            "",
+                        )
+                        or effective_render_mode
+                    ).strip().lower()
+                )
+                active_render_route = next(
+                    (
+                        route
+                        for route in (
+                            active_live_instrument_routes
+                            + active_live_eq_routes
+                        )
+                        if str(
+                            route.get("render_mode", "") or ""
+                        ).strip().lower()
+                        == effective_render_mode
+                    ),
+                    None,
+                )
+                route_override_source = ""
+                if (
+                    active_render_route is not None
+                    and effective_render_mode != native_render_mode
+                    and not runtime_selected_mode
+                ):
+                    route_subject = (
+                        str(
+                            active_render_route.get("instrument", "")
+                            or active_render_route.get("band", "")
+                            or "profile"
+                        )
+                    )
+                    route_condition = str(
+                        active_render_route.get("when", "") or ""
+                    )
+                    route_override_source = " ".join(
+                        value
+                        for value in (
+                            route_subject,
+                            route_condition,
+                            "route",
+                        )
+                        if value
+                    )
+                override_source = (
+                    "Live active-effect override"
+                    if (
+                        runtime_selected_mode
+                        and effective_render_mode != native_render_mode
+                    )
+                    else route_override_source
+                )
                 effect_source = (
                     "structural action"
                     if applied_structural_effect
                     else "live override"
                     if runtime_selected_mode
+                    else route_override_source
+                    if route_override_source
                     else "effect bank"
                     if effect_cycler is not None
                     else "reactive renderer"
@@ -5284,6 +5553,8 @@ def run_live_to_govee(
                 if renderer_changed or applied_structural_effect or beat_triggered:
                     active_effect_started_t = stream_t
                     active_effect_source = effect_source
+                    active_effect_native_mode = native_render_mode
+                    active_effect_override_source = override_source
                     event = _live_effect_diagnostic(
                         effect_name=selected_effect_name,
                         render_mode=effective_render_mode,
@@ -5291,6 +5562,8 @@ def run_live_to_govee(
                         trigger_t=stream_t,
                         now_t=stream_t,
                         params=runtime_params,
+                        native_render_mode=native_render_mode,
+                        override_source=override_source,
                     )
                     event["t"] = round(float(stream_t), 6)
                     event["trigger"] = (
@@ -5333,6 +5606,10 @@ def run_live_to_govee(
                         selected_effect_name
                     ),
                     "effective_render_mode": effective_render_mode,
+                    "native_render_mode": native_render_mode,
+                    "renderer_override_source": override_source,
+                    "effect_speed_beats": resolved_effect_speed_beats,
+                    "effect_origin": resolved_effect_origin,
                     "palette_name": (
                         effect_cycler.current_palette
                         if effect_cycler is not None
@@ -5975,6 +6252,12 @@ def run_live_to_govee(
                                     trigger_t=active_effect_started_t,
                                     now_t=stream_t,
                                     params=last_runtime_params,
+                                    native_render_mode=(
+                                        active_effect_native_mode
+                                    ),
+                                    override_source=(
+                                        active_effect_override_source
+                                    ),
                                 ),
                             )
                             if active_effect_signature is not None

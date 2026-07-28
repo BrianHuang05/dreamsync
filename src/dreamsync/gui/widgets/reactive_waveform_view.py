@@ -55,7 +55,7 @@ def build_reactive_waveform_view(qt_modules):
                 tuple[float, str, str, str, float], ...
             ] = ()
             self._effect_triggers: tuple[
-                tuple[float, str, str, str], ...
+                tuple[float, str, str, str, str, str], ...
             ] = ()
             self._chord_changes: tuple[tuple[float, str], ...] = ()
             self._window_seconds = 10.0
@@ -151,7 +151,9 @@ def build_reactive_waveform_view(qt_modules):
                     float(event.get("t", 0.0) or 0.0),
                     str(event.get("effect", "") or ""),
                     str(event.get("render_mode", "") or ""),
+                    str(event.get("native_render_mode", "") or ""),
                     str(event.get("source", "") or ""),
+                    str(event.get("override_source", "") or ""),
                 )
                 for event in effect_triggers
             )
@@ -229,9 +231,18 @@ def build_reactive_waveform_view(qt_modules):
                         "t": timestamp,
                         "effect": effect,
                         "render_mode": render_mode,
+                        "native_render_mode": native_render_mode,
                         "source": source,
+                        "override_source": override_source,
                     }
-                    for timestamp, effect, render_mode, source
+                    for (
+                        timestamp,
+                        effect,
+                        render_mode,
+                        native_render_mode,
+                        source,
+                        override_source,
+                    )
                     in normalized_effect_triggers
                 ],
             )
@@ -434,7 +445,9 @@ def build_reactive_waveform_view(qt_modules):
                 trigger_t,
                 effect,
                 render_mode,
+                native_render_mode,
                 _source,
+                override_source,
             ) in enumerate(visible_effect_triggers):
                 x = x_for(trigger_t)
                 painter.setPen(
@@ -444,14 +457,34 @@ def build_reactive_waveform_view(qt_modules):
                     QtCore.QPointF(x, plot.top()),
                     QtCore.QPointF(x, plot.bottom()),
                 )
-                event = (trigger_t, effect, render_mode, _source)
+                event = (
+                    trigger_t,
+                    effect,
+                    render_mode,
+                    native_render_mode,
+                    _source,
+                    override_source,
+                )
                 if event not in labelled_effect_triggers:
                     continue
                 label = effect or render_mode or "effect"
-                if render_mode and render_mode not in label:
+                if (
+                    native_render_mode
+                    and render_mode
+                    and native_render_mode != render_mode
+                ):
+                    label = (
+                        f"{label}: {native_render_mode}→{render_mode}"
+                        + (
+                            f" · {override_source}"
+                            if override_source
+                            else ""
+                        )
+                    )
+                elif render_mode and render_mode not in label:
                     label = f"{label} [{render_mode}]"
                 label_width = min(
-                    190.0,
+                    280.0,
                     max(70.0, 7.0 * len(label) + 12.0),
                 )
                 label_x = max(

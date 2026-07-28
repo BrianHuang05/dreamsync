@@ -454,6 +454,8 @@ def test_gui_settings_store_round_trips_reactive_live_layout_and_harmonics(
         reactive_harmonic_panel_visible=False,
         reactive_live_color_profile="neon",
         reactive_live_active_effect="ripple",
+        reactive_live_effect_speed="8",
+        reactive_live_effect_origin="outer",
         reactive_live_effect_bank=("pulse", "ripple"),
         reactive_settings=ReactiveSettings(
             harmonic_structure_enabled=True,
@@ -490,6 +492,8 @@ def test_gui_settings_store_round_trips_reactive_live_layout_and_harmonics(
     assert loaded.reactive_harmonic_panel_visible is False
     assert loaded.reactive_live_color_profile == "neon"
     assert loaded.reactive_live_active_effect == "ripple"
+    assert loaded.reactive_live_effect_speed == "8"
+    assert loaded.reactive_live_effect_origin == "outer"
     assert loaded.reactive_live_effect_bank == ("pulse", "ripple")
     assert loaded.reactive_settings.harmonic_structure_enabled is True
     assert loaded.reactive_settings.beats_per_bar == 3

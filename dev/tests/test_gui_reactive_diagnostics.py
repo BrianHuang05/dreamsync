@@ -97,11 +97,15 @@ def test_active_effect_readout_includes_renderer_and_decay() -> None:
     text = _format_active_live_effects(
         (
             {
-                "effect": "drop_blast",
+                "effect": "wave_drift",
                 "render_mode": "pulse",
-                "source": "structural action",
+                "native_render_mode": "wave",
+                "override_source": "bass enter route",
+                "source": "bass enter route",
                 "decay_seconds": 0.5,
                 "remaining_seconds": 0.25,
+                "effect_speed_beats": 1,
+                "effect_origin": "center",
             },
             {
                 "effect": "wave_drift",
@@ -113,9 +117,13 @@ def test_active_effect_readout_includes_renderer_and_decay() -> None:
         )
     )
 
-    assert "drop_blast [flash; renderer=pulse]" in text
+    assert "Preset wave_drift (native renderer=wave)" in text
+    assert "active renderer=pulse (flash)" in text
+    assert "overridden by bass enter route" in text
     assert "0.25s remaining / 0.50s decay" in text
-    assert "wave_drift [wave; renderer=wave] · continuous" in text
+    assert "speed=1 beat" in text
+    assert "origin=center" in text
+    assert "Preset wave_drift → active renderer=wave (wave)" in text
 
 
 def test_preview_exposes_frame_freeze_and_output_provenance_readout():

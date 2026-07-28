@@ -28,6 +28,21 @@ CONTINUOUS_MIN_BRIGHTNESS_FLOOR = 0.06
 OPTICAL_RGB_PEAK_FLOOR = 8
 
 
+def _effect_cycle_seconds(
+    intent: LightingIntent,
+    params: dict | None,
+) -> float | None:
+    if not params or "_effect_speed_beats" not in params:
+        return None
+    try:
+        beats = float(params["_effect_speed_beats"])
+    except (TypeError, ValueError):
+        return None
+    if beats <= 0.0:
+        return None
+    return beats * (60.0 / max(1.0, float(intent.bpm)))
+
+
 def _scale_visible_rgb(
     color: tuple[float, float, float],
     level: float,
@@ -132,7 +147,14 @@ class SegmentRenderer:
         self, intent: LightingIntent, dt: float, beat: bool,
         params: dict | None = None,
     ) -> list[tuple[int, int, int]]:
-        decay = params.get("pulse_decay", self._pulse_decay) if params else self._pulse_decay
+        cycle_seconds = _effect_cycle_seconds(intent, params)
+        decay = (
+            math.log(20.0) / cycle_seconds
+            if cycle_seconds is not None
+            else params.get("pulse_decay", self._pulse_decay)
+            if params
+            else self._pulse_decay
+        )
         self._pulse_brightness *= math.exp(-decay * dt)
         requested_floor = (
             float(params.get("pulse_floor", PULSE_DEFAULT_BRIGHTNESS_FLOOR))
@@ -168,7 +190,13 @@ class SegmentRenderer:
         params: dict | None = None,
     ) -> list[tuple[int, int, int]]:
         bpm = max(1.0, intent.bpm)
-        freq = (bpm / 60.0) * (params.get("breathe_rate_mult", 1.0) if params else 1.0)
+        cycle_seconds = _effect_cycle_seconds(intent, params)
+        freq = (
+            1.0 / cycle_seconds
+            if cycle_seconds is not None
+            else (bpm / 60.0)
+            * (params.get("breathe_rate_mult", 1.0) if params else 1.0)
+        )
         self._breathe_phase += freq * dt
         # Sine wave 0→1→0
         floor = (
@@ -202,8 +230,13 @@ class SegmentRenderer:
     ) -> list[tuple[int, int, int]]:
         half = len(self._scroll_buf)
         bpm = max(1.0, intent.bpm)
+        cycle_seconds = _effect_cycle_seconds(intent, params)
         # Scroll speed: pixels per second, scaled by BPM
-        pixels_per_sec = (bpm / 60.0) * max(0.1, intent.speed) * half
+        pixels_per_sec = (
+            half / cycle_seconds
+            if cycle_seconds is not None
+            else (bpm / 60.0) * max(0.1, intent.speed) * half
+        )
         self._scroll_pos += pixels_per_sec * dt
 
         # Shift buffer outward by whole pixels
@@ -291,7 +324,12 @@ class SegmentRenderer:
         allow_blackout = bool(params.get("allow_blackout", False)) if params else False
         minimum_floor = 0.0 if allow_blackout else CONTINUOUS_MIN_BRIGHTNESS_FLOOR
         floor = max(minimum_floor, min(1.0, floor))
-        freq = (bpm / 60.0) * rate_mult
+        cycle_seconds = _effect_cycle_seconds(intent, params)
+        freq = (
+            1.0 / cycle_seconds
+            if cycle_seconds is not None
+            else (bpm / 60.0) * rate_mult
+        )
 
         self._wave_phase += freq * dt
 
@@ -323,7 +361,14 @@ class SegmentRenderer:
         self, intent: LightingIntent, dt: float,
         params: dict | None = None,
     ) -> list[tuple[int, int, int]]:
-        speed = params.get("gradient_speed", 0.1) if params else 0.1
+        cycle_seconds = _effect_cycle_seconds(intent, params)
+        speed = (
+            1.0 / cycle_seconds
+            if cycle_seconds is not None
+            else params.get("gradient_speed", 0.1)
+            if params
+            else 0.1
+        )
         colors_hex = params.get("gradient_colors", None) if params else None
 
         self._gradient_offset += speed * dt

@@ -152,6 +152,8 @@ class QueuePanelWidgets:
     reactive_live_look_group: object
     reactive_live_color_profile_combo: object
     reactive_live_active_effect_combo: object
+    reactive_live_effect_speed_combo: object
+    reactive_live_effect_origin_combo: object
     reactive_live_effect_buttons: tuple[object, ...]
     reactive_live_look_status_label: object
     reactive_listening_label: object
@@ -1418,6 +1420,69 @@ def build_queue_panel(qt_modules):
         1,
         3,
     )
+    reactive_live_look_layout.addWidget(
+        QtWidgets.QLabel("Effect speed"),
+        2,
+        0,
+    )
+    reactive_live_effect_speed_combo = QtWidgets.QComboBox()
+    reactive_live_effect_speed_combo.setObjectName(
+        "reactiveLiveEffectSpeedCombo"
+    )
+    for speed_label, speed_value in (
+        ("1 beat", "1"),
+        ("2 beats", "2"),
+        ("4 beats", "4"),
+        ("8 beats", "8"),
+        ("Random per effect", "random"),
+    ):
+        reactive_live_effect_speed_combo.addItem(
+            speed_label,
+            speed_value,
+        )
+    reactive_live_effect_speed_combo.setToolTip(
+        "Set one complete effect cycle or pulse decay in detected beats. "
+        "Random chooses 1, 2, 4, or 8 beats when an effect activates."
+    )
+    reactive_live_look_layout.addWidget(
+        reactive_live_effect_speed_combo,
+        2,
+        1,
+    )
+    reactive_live_look_layout.addWidget(
+        QtWidgets.QLabel("Global origin"),
+        2,
+        2,
+    )
+    reactive_live_effect_origin_combo = QtWidgets.QComboBox()
+    reactive_live_effect_origin_combo.setObjectName(
+        "reactiveLiveEffectOriginCombo"
+    )
+    for origin_label, origin_value in (
+        ("Center", "center"),
+        ("Left", "left"),
+        ("Outer", "outer"),
+        ("Right", "right"),
+        ("Top", "top"),
+        ("Bottom", "bottom"),
+        ("Back", "back"),
+        ("Front", "front"),
+        ("Random per effect", "random"),
+    ):
+        reactive_live_effect_origin_combo.addItem(
+            origin_label,
+            origin_value,
+        )
+    reactive_live_effect_origin_combo.setToolTip(
+        "Project every effect as a radial pattern from this room origin. "
+        "Outer begins at the room boundary and moves inward. Random chooses "
+        "a stable origin whenever an effect activates."
+    )
+    reactive_live_look_layout.addWidget(
+        reactive_live_effect_origin_combo,
+        2,
+        3,
+    )
     reactive_live_look_status_label = QtWidgets.QLabel(
         "Selections apply immediately while Reactive is listening."
     )
@@ -1428,7 +1493,7 @@ def build_queue_panel(qt_modules):
     reactive_live_look_status_label.setWordWrap(True)
     reactive_live_look_layout.addWidget(
         reactive_live_look_status_label,
-        2,
+        3,
         0,
         1,
         4,
@@ -1765,6 +1830,16 @@ def build_queue_panel(qt_modules):
     reactive_effect_tempo_row.addWidget(
         reactive_effect_tempo_double_button
     )
+    # Beat-count speed is now controlled explicitly in Live Color + Effect
+    # Bank. Keep these legacy objects available to older integrations without
+    # presenting a second, conflicting speed control.
+    for legacy_effect_tempo_control in (
+        reactive_effect_tempo_label,
+        reactive_effect_tempo_half_button,
+        reactive_effect_tempo_normal_button,
+        reactive_effect_tempo_double_button,
+    ):
+        legacy_effect_tempo_control.setVisible(False)
     reactive_downbeat_nudge_button = QtWidgets.QPushButton(
         "Downbeat nearest  D"
     )
@@ -2606,6 +2681,8 @@ def build_queue_panel(qt_modules):
         reactive_live_look_group=reactive_live_look_group,
         reactive_live_color_profile_combo=reactive_live_color_profile_combo,
         reactive_live_active_effect_combo=reactive_live_active_effect_combo,
+        reactive_live_effect_speed_combo=reactive_live_effect_speed_combo,
+        reactive_live_effect_origin_combo=reactive_live_effect_origin_combo,
         reactive_live_effect_buttons=tuple(reactive_live_effect_buttons),
         reactive_live_look_status_label=reactive_live_look_status_label,
         reactive_listening_label=reactive_listening_label,

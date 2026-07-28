@@ -68,6 +68,8 @@ def test_apply_runtime_control_to_intent_params_tracks_runtime_state():
     state = RuntimeControlState(
         color_bias="#abcdef",
         render_mode="wave",
+        effect_speed_beats="4",
+        effect_origin="center",
         intensity_multiplier=1.1,
         speed_offset=0.2,
     )
@@ -78,6 +80,8 @@ def test_apply_runtime_control_to_intent_params_tracks_runtime_state():
     assert next_intent.speed == pytest.approx(0.6)
     assert params["_render_mode"] == "wave"
     assert params["runtime_control"]["active"] is True
+    assert params["runtime_control"]["effect_speed_beats"] == "4"
+    assert params["runtime_control"]["effect_origin"] == "center"
 
 
 def test_effect_speed_multiplier_is_relative_to_current_cycle_intent():

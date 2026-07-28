@@ -157,8 +157,16 @@ def _format_active_live_effects(
     for item in rows:
         effect = str(item.get("effect", "") or "effect")
         render_mode = str(item.get("render_mode", "") or "unknown")
+        native_render_mode = str(
+            item.get("native_render_mode", "") or render_mode
+        )
         display_mode = display_modes.get(render_mode, render_mode)
         source = str(item.get("source", "") or "reactive")
+        override_source = str(
+            item.get("override_source", "") or ""
+        )
+        speed_beats = item.get("effect_speed_beats")
+        effect_origin = str(item.get("effect_origin", "") or "")
         decay = item.get("decay_seconds")
         remaining = item.get("remaining_seconds")
         if decay is None:
@@ -168,11 +176,36 @@ def _format_active_live_effects(
                 f"{max(0.0, float(remaining or 0.0)):.2f}s remaining / "
                 f"{max(0.0, float(decay)):.2f}s decay"
             )
-        labels.append(
-            f"{effect} [{display_mode}; renderer={render_mode}] "
-            f"· {timing} · {source}"
+        if render_mode != native_render_mode:
+            renderer_text = (
+                f"Preset {effect} (native renderer={native_render_mode}) "
+                f"→ active renderer={render_mode} ({display_mode}); "
+                f"overridden by {override_source or source}"
+            )
+        else:
+            renderer_text = (
+                f"Preset {effect} → active renderer={render_mode} "
+                f"({display_mode})"
+            )
+        presentation = " · ".join(
+            value
+            for value in (
+                (
+                    f"speed={int(speed_beats)} "
+                    f"{'beat' if int(speed_beats) == 1 else 'beats'}"
+                    if speed_beats is not None
+                    else ""
+                ),
+                f"origin={effect_origin}" if effect_origin else "",
+            )
+            if value
         )
-    return "Active effects: " + " | ".join(labels)
+        labels.append(
+            f"{renderer_text} · {timing}"
+            + (f" · {presentation}" if presentation else "")
+            + f" · source={source}"
+        )
+    return "Active effects:\n" + "\n".join(labels)
 
 
 def _format_structure_similarity(snapshot: dict[str, object]) -> str:
@@ -705,6 +738,22 @@ def create_main_window(
     )
     queue_panel.reactive_live_active_effect_combo.setCurrentIndex(
         active_effect_index if active_effect_index >= 0 else 0
+    )
+    effect_speed_index = (
+        queue_panel.reactive_live_effect_speed_combo.findData(
+            settings.reactive_live_effect_speed
+        )
+    )
+    queue_panel.reactive_live_effect_speed_combo.setCurrentIndex(
+        effect_speed_index if effect_speed_index >= 0 else 0
+    )
+    effect_origin_index = (
+        queue_panel.reactive_live_effect_origin_combo.findData(
+            settings.reactive_live_effect_origin
+        )
+    )
+    queue_panel.reactive_live_effect_origin_combo.setCurrentIndex(
+        effect_origin_index if effect_origin_index >= 0 else 0
     )
     saved_effect_bank = {
         str(value).strip().lower()
@@ -7374,6 +7423,14 @@ def create_main_window(
             queue_panel.reactive_live_active_effect_combo.currentData()
             or ""
         )
+        effect_speed = str(
+            queue_panel.reactive_live_effect_speed_combo.currentData()
+            or "1"
+        )
+        effect_origin = str(
+            queue_panel.reactive_live_effect_origin_combo.currentData()
+            or "center"
+        )
         runtime_state = runtime_supervisor.snapshot()
         active_reactive = runtime_state.active_output_mode in {
             "reactive",
@@ -7390,9 +7447,9 @@ def create_main_window(
             palette_override=tuple(PALETTES.get(palette_name, ())),
             render_mode=active_effect,
             effect_bank=effect_bank,
-            speed_multiplier=reactive_effect_tempo_state[
-                "multiplier"
-            ],
+            speed_multiplier=1.0,
+            effect_speed_beats=effect_speed,
+            effect_origin=effect_origin,
         )
         if result:
             palette_label = (
@@ -7403,8 +7460,15 @@ def create_main_window(
             effect_label = (
                 queue_panel.reactive_live_active_effect_combo.currentText()
             )
+            speed_label = (
+                queue_panel.reactive_live_effect_speed_combo.currentText()
+            )
+            origin_label = (
+                queue_panel.reactive_live_effect_origin_combo.currentText()
+            )
             queue_panel.reactive_live_look_status_label.setText(
-                f"Applied {palette_label} colors with {effect_label}."
+                f"Applied {palette_label} colors with {effect_label}, "
+                f"{speed_label}, origin {origin_label}."
             )
         else:
             queue_panel.reactive_live_look_status_label.setText(
@@ -8921,9 +8985,6 @@ def create_main_window(
         ("Ctrl+R", lambda: None if _show_text_input_has_focus() else _refresh_queue()),
         ("Ctrl+P", lambda: None if _show_text_input_has_focus() else _cycle_live_palette()),
         ("Ctrl+C", lambda: None if _show_text_input_has_focus() else _recompile_selected_live_show()),
-        ("[", lambda: None if _show_text_input_has_focus() else _set_reactive_effect_tempo(0.5)),
-        ("\\", lambda: None if _show_text_input_has_focus() else _set_reactive_effect_tempo(1.0)),
-        ("]", lambda: None if _show_text_input_has_focus() else _set_reactive_effect_tempo(2.0)),
         ("Shift+[", lambda: _adjust_reactive_cycle_tempo(0.5)),
         ("Shift+]", lambda: _adjust_reactive_cycle_tempo(2.0)),
         ("D", _nudge_reactive_downbeat),
@@ -8967,15 +9028,6 @@ def create_main_window(
     queue_panel.local_list.reordered.connect(_move_queue_item)
     queue_panel.queue_mode_button.clicked.connect(lambda: _set_live_mode("queue"))
     queue_panel.reactive_mode_button.clicked.connect(lambda: _set_live_mode("reactive"))
-    queue_panel.reactive_effect_tempo_half_button.clicked.connect(
-        lambda: _set_reactive_effect_tempo(0.5)
-    )
-    queue_panel.reactive_effect_tempo_normal_button.clicked.connect(
-        lambda: _set_reactive_effect_tempo(1.0)
-    )
-    queue_panel.reactive_effect_tempo_double_button.clicked.connect(
-        lambda: _set_reactive_effect_tempo(2.0)
-    )
     queue_panel.reactive_cycle_tempo_half_button.clicked.connect(
         lambda: _set_reactive_cycle_tempo(0.5)
     )
@@ -9212,6 +9264,12 @@ def create_main_window(
     queue_panel.reactive_live_active_effect_combo.currentIndexChanged.connect(
         _apply_reactive_live_look
     )
+    queue_panel.reactive_live_effect_speed_combo.currentIndexChanged.connect(
+        _apply_reactive_live_look
+    )
+    queue_panel.reactive_live_effect_origin_combo.currentIndexChanged.connect(
+        _apply_reactive_live_look
+    )
     for effect_button in queue_panel.reactive_live_effect_buttons:
         effect_button.toggled.connect(_apply_reactive_live_look)
     queue_panel.reactive_chord_panel_check.toggled.connect(
@@ -9422,6 +9480,14 @@ def create_main_window(
                 queue_panel.reactive_live_active_effect_combo.currentData()
                 or ""
             ),
+            reactive_live_effect_speed=str(
+                queue_panel.reactive_live_effect_speed_combo.currentData()
+                or "1"
+            ),
+            reactive_live_effect_origin=str(
+                queue_panel.reactive_live_effect_origin_combo.currentData()
+                or "center"
+            ),
             reactive_live_effect_bank=_current_reactive_effect_bank(),
             show_compile_seed=(
                 int(queue_panel.compile_seed_spin.value())
@@ -9606,6 +9672,14 @@ def create_main_window(
                 reactive_live_active_effect=str(
                     queue_panel.reactive_live_active_effect_combo.currentData()
                     or ""
+                ),
+                reactive_live_effect_speed=str(
+                    queue_panel.reactive_live_effect_speed_combo.currentData()
+                    or "1"
+                ),
+                reactive_live_effect_origin=str(
+                    queue_panel.reactive_live_effect_origin_combo.currentData()
+                    or "center"
                 ),
                 reactive_live_effect_bank=_current_reactive_effect_bank(),
             )

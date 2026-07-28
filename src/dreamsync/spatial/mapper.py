@@ -44,6 +44,7 @@ SpatialPreset = Literal[
 class SpatialSpec:
     mode: SpatialMode
     origin: tuple[float, float, float]
+    origin_mode: str
     direction: tuple[float, float, float] | None
     width: float
     blend: str
@@ -253,6 +254,9 @@ class SpatialMapper:
             focus=params.get("spatial_focus"),
             mode=mode,
         )
+        origin_mode = self._resolve_origin_mode(
+            params.get("spatial_origin_mode")
+        )
         width = max(0.05, min(2.0, float(params.get("spatial_width", 0.35))))
         blend = str(params.get("spatial_blend", "radial" if mode == "emanation" else "linear"))
         extent = self._resolve_extent(params.get("spatial_extent"))
@@ -273,6 +277,7 @@ class SpatialMapper:
         return SpatialSpec(
             mode=mode,
             origin=origin,
+            origin_mode=origin_mode,
             direction=direction,
             width=width,
             blend=blend,
@@ -289,6 +294,7 @@ class SpatialMapper:
         params: dict | None = None,
         mode: SpatialMode | None = None,
         origin: tuple[float, float, float] | None = None,
+        origin_mode: str | None = None,
         direction: tuple[float, float, float] | None = None,
         width: float | None = None,
         blend: str | None = None,
@@ -324,6 +330,9 @@ class SpatialMapper:
             focus=normalized.get("spatial_focus"),
             mode=resolved_mode,
         )
+        resolved_origin_mode = origin_mode or self._resolve_origin_mode(
+            normalized.get("spatial_origin_mode")
+        )
         width_raw = width if width is not None else normalized.get("spatial_width", 0.35)
         resolved_width = max(0.05, min(2.0, float(width_raw)))
         resolved_blend = blend or str(
@@ -341,7 +350,11 @@ class SpatialMapper:
         )
         falloff = self._resolve_layer_falloff(normalized.get("falloff", resolved_blend))
         has_explicit_speed = "speed_units_per_second" in normalized
-        speed = self._resolve_layer_speed(normalized, intent=intent)
+        speed = self._resolve_layer_speed(
+            normalized,
+            intent=intent,
+            category=category,
+        )
         palette_raw = normalized.get("_spatial_palette")
         resolved_palette = palette or (
             tuple(str(color) for color in palette_raw) if isinstance(palette_raw, (list, tuple)) else ()
@@ -354,6 +367,7 @@ class SpatialMapper:
             effect_mode=render_mode or self._infer_render_mode_from_intent(intent),
             trigger_mode=trigger_mode,
             origin=resolved_origin,
+            origin_mode=resolved_origin_mode,
             direction=resolved_direction,
             extent=resolved_extent,
             thickness=resolved_width,
@@ -457,8 +471,21 @@ class SpatialMapper:
                 center = -1.0 + ((local_t * speed) % 2.0)
             return SpatialLayerState(layer=layer, t=local_t, center=center, radius=layer.radius)
         if layer.category == SpatialLayerCategory.EXPAND:
-            radius = layer.radius + (local_t * max(layer.speed_units_per_second, 0.0))
-            return SpatialLayerState(layer=layer, t=local_t, center=0.0, radius=min(2.0, radius))
+            travelled = local_t * max(
+                layer.speed_units_per_second,
+                0.0,
+            )
+            radius = (
+                layer.radius + (travelled % 2.0)
+                if layer.trigger_mode == SpatialTriggerMode.CONTINUOUS
+                else min(2.0, layer.radius + travelled)
+            )
+            return SpatialLayerState(
+                layer=layer,
+                t=local_t,
+                center=0.0,
+                radius=radius,
+            )
         return SpatialLayerState(layer=layer, t=local_t, center=0.0, radius=layer.radius)
 
     def sample_effect_layer(
@@ -473,6 +500,7 @@ class SpatialMapper:
             params={
                 "spatial_mode": spec.mode,
                 "spatial_origin": {"x": spec.origin[0], "y": spec.origin[1], "z": spec.origin[2]},
+                "spatial_origin_mode": spec.origin_mode,
                 "spatial_direction": (
                     {"x": spec.direction[0], "y": spec.direction[1], "z": spec.direction[2]}
                     if spec.direction is not None
@@ -483,6 +511,7 @@ class SpatialMapper:
             },
             mode=spec.mode,
             origin=spec.origin,
+            origin_mode=spec.origin_mode,
             direction=spec.direction,
             width=spec.width,
             blend=spec.blend,
@@ -731,7 +760,23 @@ class SpatialMapper:
         params: dict[str, object],
         *,
         intent: LightingIntent,
+        category: SpatialLayerCategory,
     ) -> float:
+        beats_raw = params.get("_effect_speed_beats")
+        if beats_raw is not None:
+            try:
+                beats = float(beats_raw)
+            except (TypeError, ValueError):
+                beats = 0.0
+            if beats > 0.0:
+                cycle_seconds = beats * (
+                    60.0 / max(1.0, float(intent.bpm))
+                )
+                return (
+                    2.0 / cycle_seconds
+                    if category == SpatialLayerCategory.EXPAND
+                    else 1.0 / cycle_seconds
+                )
         raw = params.get("speed_units_per_second")
         if raw is not None:
             try:
@@ -740,6 +785,14 @@ class SpatialMapper:
                 pass
         bpm_factor = max(0.5, intent.bpm / 60.0)
         return max(0.05, intent.speed) * bpm_factor
+
+    @staticmethod
+    def _resolve_origin_mode(raw: object) -> str:
+        return (
+            "outer"
+            if str(raw).strip().lower() == "outer"
+            else "point"
+        )
 
     def _resolve_direction(
         self,
@@ -1109,7 +1162,11 @@ class SpatialMapper:
             projection = self._raw_project(point, layer.origin, layer.direction) * layer.coordinate_scale
             return self._layer_falloff(abs(projection - state.center), layer.thickness, layer.falloff)
         if layer.category == SpatialLayerCategory.EXPAND:
-            distance = self._distance(point, layer.origin)
+            distance = self._distance(
+                point,
+                layer.origin,
+                origin_mode=layer.origin_mode,
+            )
             return self._layer_falloff(abs(distance - state.radius), layer.thickness, layer.falloff)
         return 0.0
 
@@ -1129,7 +1186,11 @@ class SpatialMapper:
         spec: SpatialSpec,
     ) -> float:
         if spec.direction is None:
-            return self._smoothstep(min(1.0, max(0.0, self._distance(point, spec.origin) / max(spec.width, 0.05))))
+            return self._smoothstep(min(1.0, max(0.0, self._distance(
+                point,
+                spec.origin,
+                origin_mode=spec.origin_mode,
+            ) / max(spec.width, 0.05))))
         projection = self._project(point, spec.origin, spec.direction)
         normalized = min(1.0, max(0.0, ((projection / max(spec.width, 0.05)) + 1.0) * 0.5))
         if spec.blend == "smoothstep":
@@ -1158,7 +1219,11 @@ class SpatialMapper:
         spec: SpatialSpec,
         freq: float,
     ) -> float:
-        distance = self._distance(point, spec.origin)
+        distance = self._distance(
+            point,
+            spec.origin,
+            origin_mode=spec.origin_mode,
+        )
         phase_time = (t * freq) - (distance * spec.delay_ms / 1000.0)
         radius = 2.0 * (phase_time % 1.0)
         return self._falloff(abs(distance - radius), spec.width, spec.blend)
@@ -1193,7 +1258,19 @@ class SpatialMapper:
         self,
         point: tuple[float, float, float],
         origin: tuple[float, float, float],
+        *,
+        origin_mode: str = "point",
     ) -> float:
+        if origin_mode == "outer":
+            return 2.0 * max(
+                0.0,
+                1.0
+                - max(
+                    abs(point[0]),
+                    abs(point[1]),
+                    abs(point[2]),
+                ),
+            )
         dx = point[0] - origin[0]
         dy = point[1] - origin[1]
         dz = point[2] - origin[2]
@@ -1237,8 +1314,10 @@ class SpatialMapper:
         if "_spatial_palette" in base_params:
             params["_spatial_palette"] = self._copy_spatial_value(base_params["_spatial_palette"])
         for key in (
+            "_effect_speed_beats",
             "spatial_mode",
             "spatial_origin",
+            "spatial_origin_mode",
             "spatial_direction",
             "spatial_width",
             "spatial_blend",
@@ -1260,6 +1339,23 @@ class SpatialMapper:
         ):
             if key in layer:
                 params[key] = self._copy_spatial_value(layer[key])
+        if "_effect_speed_beats" in base_params:
+            params["_effect_speed_beats"] = self._copy_spatial_value(
+                base_params["_effect_speed_beats"]
+            )
+        if base_params.get("_global_effect_origin"):
+            for key in (
+                "spatial_mode",
+                "spatial_origin",
+                "spatial_origin_mode",
+                "spatial_blend",
+                "layer_category",
+            ):
+                if key in base_params:
+                    params[key] = self._copy_spatial_value(
+                        base_params[key]
+                    )
+            params.pop("effect_layer", None)
         return params
 
     @staticmethod

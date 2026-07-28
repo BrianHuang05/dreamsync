@@ -6,10 +6,28 @@ from dreamsync.render import (
     PULSE_DEFAULT_BRIGHTNESS_FLOOR,
     RenderMode,
     SegmentRenderer,
+    _effect_cycle_seconds,
 )
 
 
 class SolidRenderTests(unittest.TestCase):
+    def test_global_effect_speed_converts_beats_to_cycle_seconds(self) -> None:
+        intent = LightingIntent(
+            mode=EffectMode.MOTION,
+            intensity=1.0,
+            speed=0.5,
+            bpm=120.0,
+            color="#ff0000",
+        )
+
+        self.assertEqual(
+            _effect_cycle_seconds(
+                intent,
+                {"_effect_speed_beats": 4},
+            ),
+            2.0,
+        )
+
     def test_solid_fills_all_segments_with_color(self) -> None:
         renderer = SegmentRenderer(segments=5, mode=RenderMode.SOLID)
         intent = LightingIntent(
