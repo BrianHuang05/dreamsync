@@ -3462,7 +3462,7 @@ def run_live_to_govee(
     if effect_cycler_override is not None:
         effect_cycler = effect_cycler_override
         effect_cycler.set_show_palette_cycle(show_palette_cycle)
-    elif auto_cycle or show_palette_cycle:
+    elif auto_cycle or show_palette_cycle or structure_similarity_controls_output:
         effect_cycler = EffectCycler(
             EffectCyclerConfig(cycle_interval=cycle_interval),
             profile=profile,
@@ -3853,6 +3853,7 @@ def run_live_to_govee(
     spectral_mean: np.ndarray | None = None
     prev_whitened_mag: np.ndarray | None = None
     preset = None
+    runtime_palette_override_active = False
     last_features: dict[str, float | bool] | None = None
     last_sf: SpectralFeatures | None = None
     last_wf = 0.0
@@ -4942,9 +4943,37 @@ def run_live_to_govee(
                         director.set_colors(
                             effect_cycler.show_palette_colors
                         )
+                runtime_control_state = (
+                    runtime_control_getter()
+                    if runtime_control_getter is not None
+                    else None
+                )
+                runtime_palette_override = tuple(
+                    str(color)
+                    for color in getattr(
+                        runtime_control_state,
+                        "palette_override",
+                        (),
+                    )
+                    if str(color).strip()
+                )
+                if runtime_palette_override:
+                    if director.colors != runtime_palette_override:
+                        director.set_colors(runtime_palette_override)
+                elif runtime_palette_override_active:
+                    fallback_palette = (
+                        tuple(preset.color_palette)
+                        if preset is not None
+                        else tuple(director.config.colors)
+                    )
+                    if fallback_palette and director.colors != fallback_palette:
+                        director.set_colors(fallback_palette)
+                runtime_palette_override_active = bool(runtime_palette_override)
+
                 # A structural effect/palette commit happens after the
                 # analysis intent is captured. Refresh its color authority so
                 # this exact frame cannot combine stale intent with new params.
+                # A hot-swapped runtime palette is the final color authority.
                 frame_intent = refresh_frame_intent_palette(
                     frame_intent,
                     director,
@@ -4972,7 +5001,6 @@ def run_live_to_govee(
                     frame_intent,
                     active_live_instrument_routes + active_live_eq_routes,
                 )
-                runtime_control_state = runtime_control_getter() if runtime_control_getter is not None else None
                 frame_intent, runtime_params = apply_runtime_control_to_intent_params(
                     frame_intent,
                     runtime_params,

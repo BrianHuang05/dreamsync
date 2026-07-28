@@ -25,6 +25,37 @@ _DEFAULT_COLOR = (255, 180, 100)  # warm white
 PULSE_MIN_BRIGHTNESS_FLOOR = 0.08
 PULSE_DEFAULT_BRIGHTNESS_FLOOR = 0.12
 CONTINUOUS_MIN_BRIGHTNESS_FLOOR = 0.06
+OPTICAL_RGB_PEAK_FLOOR = 8
+
+
+def _scale_visible_rgb(
+    color: tuple[float, float, float],
+    level: float,
+    *,
+    allow_blackout: bool = False,
+) -> tuple[int, int, int]:
+    """Scale one hue without letting a non-black frame quantize to black.
+
+    Low live master brightness is multiplied by the Director intensity and
+    animation envelope before integer RGB conversion.  That compound scaling
+    can otherwise turn a valid chromatic trough into ``(0, 0, 0)``.  Preserve
+    the selected hue at a small optical floor unless blackout was explicit.
+    """
+
+    clamped_level = max(0.0, min(1.0, float(level)))
+    pixel = tuple(int(max(0.0, min(255.0, channel * clamped_level))) for channel in color)
+    if allow_blackout or clamped_level <= 0.0 or max(color, default=0.0) <= 0.0:
+        return pixel
+    if max(pixel) >= OPTICAL_RGB_PEAK_FLOOR:
+        return pixel
+
+    source_peak = max(color)
+    target_peak = min(float(OPTICAL_RGB_PEAK_FLOOR), source_peak)
+    visibility_level = target_peak / source_peak
+    return tuple(
+        int(max(0.0, min(255.0, channel * visibility_level)))
+        for channel in color
+    )
 
 
 @dataclass
@@ -92,7 +123,7 @@ class SegmentRenderer:
     def _render_solid(self, intent: LightingIntent) -> list[tuple[int, int, int]]:
         r, g, b = _parse_hex(intent.color) if intent.color else _DEFAULT_COLOR
         factor = max(0.0, min(1.0, intent.intensity))
-        pixel = (int(r * factor), int(g * factor), int(b * factor))
+        pixel = _scale_visible_rgb((r, g, b), factor)
         return [pixel] * self.segments
 
     # -- Pulse ---------------------------------------------------------------
@@ -123,7 +154,11 @@ class SegmentRenderer:
         level = max(floor, self._pulse_brightness) * max(
             0.0, min(1.0, intent.intensity)
         )
-        pixel = (int(r * level), int(g * level), int(b * level))
+        pixel = _scale_visible_rgb(
+            (r, g, b),
+            level,
+            allow_blackout=allow_blackout,
+        )
         return [pixel] * self.segments
 
     # -- Breathe -------------------------------------------------------------
@@ -141,7 +176,9 @@ class SegmentRenderer:
             if params
             else CONTINUOUS_MIN_BRIGHTNESS_FLOOR
         )
-        floor = max(0.0, min(1.0, floor))
+        allow_blackout = bool(params.get("allow_blackout", False)) if params else False
+        minimum_floor = 0.0 if allow_blackout else CONTINUOUS_MIN_BRIGHTNESS_FLOOR
+        floor = max(minimum_floor, min(1.0, floor))
         wave = floor + (
             (1.0 - floor)
             * (math.sin(2.0 * math.pi * self._breathe_phase) + 1.0)
@@ -150,7 +187,11 @@ class SegmentRenderer:
 
         r, g, b = _parse_hex(intent.color) if intent.color else _DEFAULT_COLOR
         level = wave * max(0.0, min(1.0, intent.intensity))
-        pixel = (int(r * level), int(g * level), int(b * level))
+        pixel = _scale_visible_rgb(
+            (r, g, b),
+            level,
+            allow_blackout=allow_blackout,
+        )
         return [pixel] * self.segments
 
     # -- Scroll --------------------------------------------------------------
@@ -229,11 +270,7 @@ class SegmentRenderer:
                 full.append((0.0, 0.0, 0.0))
 
         return [
-            (
-                int(max(0, min(255, r * intensity))),
-                int(max(0, min(255, g * intensity))),
-                int(max(0, min(255, b * intensity))),
-            )
+            _scale_visible_rgb((r, g, b), intensity)
             for r, g, b in full
         ]
 
@@ -251,7 +288,9 @@ class SegmentRenderer:
             if params
             else CONTINUOUS_MIN_BRIGHTNESS_FLOOR
         )
-        floor = max(0.0, min(1.0, floor))
+        allow_blackout = bool(params.get("allow_blackout", False)) if params else False
+        minimum_floor = 0.0 if allow_blackout else CONTINUOUS_MIN_BRIGHTNESS_FLOOR
+        floor = max(minimum_floor, min(1.0, floor))
         freq = (bpm / 60.0) * rate_mult
 
         self._wave_phase += freq * dt
@@ -269,7 +308,13 @@ class SegmentRenderer:
                 / 2.0
             )
             level = wave * intensity
-            result.append((int(r * level), int(g * level), int(b * level)))
+            result.append(
+                _scale_visible_rgb(
+                    (r, g, b),
+                    level,
+                    allow_blackout=allow_blackout,
+                )
+            )
         return result
 
     # -- Gradient ------------------------------------------------------------
@@ -322,9 +367,5 @@ class SegmentRenderer:
             cr = c1[0] + (c2[0] - c1[0]) * frac
             cg = c1[1] + (c2[1] - c1[1]) * frac
             cb = c1[2] + (c2[2] - c1[2]) * frac
-            result.append((
-                int(max(0, min(255, cr * intensity))),
-                int(max(0, min(255, cg * intensity))),
-                int(max(0, min(255, cb * intensity))),
-            ))
+            result.append(_scale_visible_rgb((cr, cg, cb), intensity))
         return result

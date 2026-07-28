@@ -276,6 +276,10 @@ def _map_color_to_palette(
     colors = tuple(str(color) for color in palette if str(color).strip())
     if not colors:
         return source_color
+    normalized_source = str(source_color or "").strip().casefold()
+    for color in colors:
+        if color.strip().casefold() == normalized_source:
+            return color
     normalized = str(source_color or "").strip().lstrip("#")
     try:
         source_value = int(normalized, 16)

@@ -157,6 +157,27 @@ def test_reactive_palette_override_maps_live_director_color():
     assert next_intent.color in state.palette_override
 
 
+def test_reactive_palette_override_preserves_an_existing_palette_slot():
+    state = RuntimeControlState(
+        palette_override=("#ff0000", "#00ff00", "#0000ff"),
+    )
+    intent = LightingIntent(
+        mode=EffectMode.AMBIENT,
+        intensity=0.5,
+        speed=0.4,
+        bpm=100.0,
+        color="#00FF00",
+    )
+
+    next_intent, _params = apply_runtime_control_to_intent_params(
+        intent,
+        {},
+        state,
+    )
+
+    assert next_intent.color == "#00ff00"
+
+
 def test_runtime_control_bus_update_and_clear_increment_revision():
     bus = RuntimeControlBus()
     initial = bus.snapshot()

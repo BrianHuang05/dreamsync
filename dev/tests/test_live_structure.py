@@ -180,7 +180,7 @@ def test_song_reset_clears_phrase_and_candidate_state() -> None:
     assert tracker.last_event is None
 
 
-def test_structure_controlled_director_changes_color_only_on_macro() -> None:
+def test_structure_controlled_director_cycles_on_downbeat_and_macro() -> None:
     director = Director()
     director.set_colors(("#110000", "#001100", "#000011"))
     common = {
@@ -200,8 +200,8 @@ def test_structure_controlled_director_changes_color_only_on_macro() -> None:
         "structure_event": "macro_change",
     })
 
-    assert downbeat_intent.color == "#110000"
-    assert macro_intent.color == "#001100"
+    assert downbeat_intent.color == "#001100"
+    assert macro_intent.color == "#000011"
     assert director.last_beat_event
 
 

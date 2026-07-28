@@ -286,13 +286,15 @@ class Director:
         bass_ratio = float(features.get("bass_ratio", 0.0))
         onset_strength = float(features.get("onset_strength", 0.0))
 
-        # Reactive harmonic-structure mode owns large color changes explicitly.
-        # Other callers retain downbeat/every-beat fallback behavior.
+        # Palette replacement is structure-controlled, but movement within the
+        # active palette remains locked to downbeats.  Suppressing this index
+        # movement made a live palette appear frozen whenever structure
+        # similarity was enabled.
         structure_controlled = bool(features.get("structure_controlled", False))
-        if structure_controlled:
-            color_beat = features.get("structure_event") == "macro_change"
-        else:
-            color_beat = bool(features.get("downbeat", beat))
+        color_beat = bool(features.get("downbeat", beat)) or (
+            structure_controlled
+            and features.get("structure_event") == "macro_change"
+        )
         self.last_beat_event = beat
         if color_beat and self._colors:
             self._color_idx = (self._color_idx + 1) % len(self._colors)

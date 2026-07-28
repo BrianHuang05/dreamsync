@@ -20,6 +20,7 @@ from dreamsync.prediction.visual_actuator import (
     StructuralVisualActuator,
 )
 from dreamsync.render import (
+    OPTICAL_RGB_PEAK_FLOOR,
     PULSE_MIN_BRIGHTNESS_FLOOR,
     RenderMode,
     SegmentRenderer,
@@ -90,6 +91,55 @@ def test_pulse_has_hue_preserving_floor_and_distinct_beat_targets() -> None:
     assert decayed[0] >= int(255 * PULSE_MIN_BRIGHTNESS_FLOOR) - 1
     assert ordinary[0] > ordinary[1] > ordinary[2]
     assert decayed[0] > decayed[1] >= decayed[2]
+
+
+def test_low_master_brightness_breathe_stays_visible_and_chromatic() -> None:
+    renderer = SegmentRenderer(segments=15, mode=RenderMode.BREATHE)
+    low_live_intent = LightingIntent(
+        mode=EffectMode.AMBIENT,
+        intensity=0.15 * 0.20,
+        speed=0.22,
+        bpm=120.0,
+        color="#ffaacc",
+    )
+
+    frames = [
+        renderer.render(1.0 + (frame_index / 30.0), low_live_intent)[0]
+        for frame_index in range(30 * 10)
+    ]
+
+    assert all(max(pixel) >= OPTICAL_RGB_PEAK_FLOOR for pixel in frames)
+    assert all(max(pixel) - min(pixel) > 1 for pixel in frames)
+
+
+def test_structure_controlled_director_still_cycles_on_downbeats() -> None:
+    director = Director()
+    director.set_colors(("#ff0000", "#00ff00", "#0000ff"))
+
+    colors = []
+    for beat_index in range(5):
+        colors.append(
+            director.update(
+                {
+                    "t": beat_index * 0.5,
+                    "rms": 0.1,
+                    "zcr": 0.05,
+                    "bpm": 120.0,
+                    "beat": True,
+                    "downbeat": beat_index in {0, 4},
+                    "structure_controlled": True,
+                    "structure_event": "",
+                }
+            ).color
+        )
+
+    assert colors == [
+        "#00ff00",
+        "#00ff00",
+        "#00ff00",
+        "#00ff00",
+        "#0000ff",
+    ]
 
 
 def test_frame_trace_is_opt_in_sampled_and_bounded() -> None:
