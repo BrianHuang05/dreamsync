@@ -417,6 +417,23 @@ class SpatialMapper:
                         priority=self._layer_priority(layer),
                         color_override=str(layer["color_bias"]) if isinstance(layer.get("color_bias"), str) else None,
                         params=spatial_params,
+                        target_groups=tuple(
+                            str(value)
+                            for value in layer.get("target_groups", ())
+                        )
+                        if isinstance(layer.get("target_groups"), (list, tuple))
+                        else (),
+                        exclude_groups=tuple(
+                            str(value)
+                            for value in layer.get("exclude_groups", ())
+                        )
+                        if isinstance(layer.get("exclude_groups"), (list, tuple))
+                        else (),
+                        target_match=str(layer.get("target_match", "any") or "any"),
+                        untargeted_behavior=str(
+                            layer.get("untargeted_behavior", "preserve_base")
+                            or "preserve_base"
+                        ),
                     ),
                     spec=spec,
                 )
@@ -1336,6 +1353,10 @@ class SpatialMapper:
             "time_offset_s",
             "duration_s",
             "color_bias",
+            "target_groups",
+            "exclude_groups",
+            "target_match",
+            "untargeted_behavior",
         ):
             if key in layer:
                 params[key] = self._copy_spatial_value(layer[key])

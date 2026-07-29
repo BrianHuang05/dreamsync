@@ -7,12 +7,19 @@ import time
 from typing import Any
 
 from dreamsync.show.baked_frames import BakedFrame, BakedFrameArtifact
+from dreamsync.show.runtime_control import runtime_control_to_dict
 
 
 class BakedFramePlaybackRuntime:
     """Play precomputed frame colors through an adapter."""
 
-    def __init__(self, artifact: BakedFrameArtifact, multi_adapter) -> None:
+    def __init__(
+        self,
+        artifact: BakedFrameArtifact,
+        multi_adapter,
+        *,
+        control_state_getter=None,
+    ) -> None:
         self._artifact = artifact
         self._multi_adapter = multi_adapter
         self._frame_times = tuple(frame.t for frame in artifact.frames)
@@ -20,6 +27,7 @@ class BakedFramePlaybackRuntime:
         self._lookup_count = 0
         self._lookup_total_seconds = 0.0
         self._lookup_max_seconds = 0.0
+        self._control_state_getter = control_state_getter
 
     @property
     def stats(self) -> dict[str, Any]:
@@ -71,7 +79,16 @@ class BakedFramePlaybackRuntime:
             node.key: color
             for node, color in zip(self._artifact.nodes, frame.colors)
         }
-        sent = bool(send_baked_frame(t, node_colors))
+        params = None
+        if self._control_state_getter is not None:
+            state = self._control_state_getter()
+            if state is not None:
+                params = {"runtime_control": runtime_control_to_dict(state)}
+        sent = bool(
+            send_baked_frame(t, node_colors, params=params)
+            if params is not None
+            else send_baked_frame(t, node_colors)
+        )
         if sent:
             self._frames_sent += 1
         return sent

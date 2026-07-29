@@ -274,12 +274,38 @@ class DeviceDiscoveryService:
         next_configs: list[DeviceConfig] = []
         for existing in configs:
             if existing.address == config.address:
-                next_configs.append(config)
+                placement = config.placement
+                if placement is not None and existing.placement is not None:
+                    placement = replace(
+                        placement,
+                        orientation=existing.placement.orientation,
+                        weight=existing.placement.weight,
+                        enabled=existing.placement.enabled,
+                        sections=existing.placement.sections,
+                        groups=existing.placement.groups,
+                    )
+                next_configs.append(
+                    replace(
+                        config,
+                        placement=placement,
+                        group_definitions=existing.group_definitions,
+                    )
+                )
                 updated = True
             else:
                 next_configs.append(existing)
         if not updated:
-            next_configs.append(config)
+            definitions = next(
+                (
+                    existing.group_definitions
+                    for existing in configs
+                    if existing.group_definitions
+                ),
+                (),
+            )
+            next_configs.append(
+                replace(config, group_definitions=definitions)
+            )
         path.parent.mkdir(parents=True, exist_ok=True)
         save_device_config(path, next_configs)
 

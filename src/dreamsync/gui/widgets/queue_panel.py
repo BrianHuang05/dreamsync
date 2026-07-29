@@ -281,6 +281,9 @@ class QueuePanelWidgets:
     runtime_muted_instruments_edit: object
     runtime_spatial_preset_edit: object
     runtime_spatial_width_spin: object
+    runtime_disabled_groups_edit: object
+    runtime_enabled_groups_edit: object
+    runtime_solo_groups_edit: object
     runtime_apply_button: object
     runtime_clear_button: object
     runtime_control_status_label: object
@@ -1151,6 +1154,21 @@ def build_queue_panel(qt_modules):
     runtime_spatial_width_spin.setSingleStep(0.05)
     runtime_spatial_width_spin.setObjectName("runtimeSpatialWidthSpin")
     runtime_override_layout.addWidget(runtime_spatial_width_spin, 8, 1)
+    runtime_override_layout.addWidget(QtWidgets.QLabel("Disabled groups"), 9, 0)
+    runtime_disabled_groups_edit = QtWidgets.QLineEdit()
+    runtime_disabled_groups_edit.setPlaceholderText("group-a, top")
+    runtime_disabled_groups_edit.setObjectName("runtimeDisabledGroupsEdit")
+    runtime_override_layout.addWidget(runtime_disabled_groups_edit, 9, 1)
+    runtime_override_layout.addWidget(QtWidgets.QLabel("Force-enabled groups"), 10, 0)
+    runtime_enabled_groups_edit = QtWidgets.QLineEdit()
+    runtime_enabled_groups_edit.setPlaceholderText("group-b")
+    runtime_enabled_groups_edit.setObjectName("runtimeEnabledGroupsEdit")
+    runtime_override_layout.addWidget(runtime_enabled_groups_edit, 10, 1)
+    runtime_override_layout.addWidget(QtWidgets.QLabel("Solo groups"), 11, 0)
+    runtime_solo_groups_edit = QtWidgets.QLineEdit()
+    runtime_solo_groups_edit.setPlaceholderText("left")
+    runtime_solo_groups_edit.setObjectName("runtimeSoloGroupsEdit")
+    runtime_override_layout.addWidget(runtime_solo_groups_edit, 11, 1)
     runtime_buttons = QtWidgets.QHBoxLayout()
     runtime_apply_button = QtWidgets.QPushButton("Apply Override")
     runtime_apply_button.setObjectName("applyRuntimeControlButton")
@@ -1158,11 +1176,11 @@ def build_queue_panel(qt_modules):
     runtime_clear_button.setObjectName("clearRuntimeControlButton")
     runtime_buttons.addWidget(runtime_apply_button)
     runtime_buttons.addWidget(runtime_clear_button)
-    runtime_override_layout.addLayout(runtime_buttons, 9, 0, 1, 2)
+    runtime_override_layout.addLayout(runtime_buttons, 12, 0, 1, 2)
     runtime_control_status_label = QtWidgets.QLabel("Live overrides are temporary and session-local.")
     runtime_control_status_label.setWordWrap(True)
     runtime_control_status_label.setObjectName("runtimeControlStatusLabel")
-    runtime_override_layout.addWidget(runtime_control_status_label, 10, 0, 1, 2)
+    runtime_override_layout.addWidget(runtime_control_status_label, 13, 0, 1, 2)
     controls_column.addWidget(runtime_override_group)
     controls_column.addStretch(1)
 
@@ -2478,7 +2496,7 @@ def build_queue_panel(qt_modules):
     show_editor_buttons.addStretch(1)
     show_editor_layout.addLayout(show_editor_buttons)
 
-    show_cues_table = QtWidgets.QTableWidget(0, 27)
+    show_cues_table = QtWidgets.QTableWidget(0, 31)
     show_cues_table.setObjectName("showCuesTable")
     show_cues_table.setHorizontalHeaderLabels(
         [
@@ -2509,6 +2527,10 @@ def build_queue_panel(qt_modules):
             "Layer Thickness",
             "Layer Speed",
             "Layer Priority",
+            "Target Groups",
+            "Group Match",
+            "Exclude Groups",
+            "Untargeted",
         ]
     )
     show_cues_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
@@ -2803,6 +2825,9 @@ def build_queue_panel(qt_modules):
         runtime_muted_instruments_edit=runtime_muted_instruments_edit,
         runtime_spatial_preset_edit=runtime_spatial_preset_edit,
         runtime_spatial_width_spin=runtime_spatial_width_spin,
+        runtime_disabled_groups_edit=runtime_disabled_groups_edit,
+        runtime_enabled_groups_edit=runtime_enabled_groups_edit,
+        runtime_solo_groups_edit=runtime_solo_groups_edit,
         runtime_apply_button=runtime_apply_button,
         runtime_clear_button=runtime_clear_button,
         runtime_control_status_label=runtime_control_status_label,

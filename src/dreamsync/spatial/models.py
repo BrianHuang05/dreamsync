@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from dreamsync.director import LightingIntent
+from dreamsync.groups.models import ALL_GROUP_ID, normalize_group_ids
 
 
 class DeviceOrientation(str, Enum):
@@ -80,6 +81,8 @@ class SectionPlacement:
     z: float
     weight: float = 1.0
     enabled: bool = True
+    groups: tuple[str, ...] = ()
+    exclude_groups: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -93,6 +96,10 @@ class DevicePlacement:
     weight: float = 1.0
     enabled: bool = True
     sections: tuple[SectionPlacement, ...] = ()
+    groups: tuple[str, ...] = ()
+
+    def effective_groups(self) -> frozenset[str]:
+        return frozenset((ALL_GROUP_ID, *self.groups))
 
 
 @dataclass(frozen=True)
@@ -117,6 +124,10 @@ class SpatialLayerSpec:
     priority: int = 0
     color_override: str | None = None
     params: dict[str, object] | None = None
+    target_groups: tuple[str, ...] = ()
+    exclude_groups: tuple[str, ...] = ()
+    target_match: str = "any"
+    untargeted_behavior: str = "preserve_base"
 
 
 @dataclass(frozen=True)
@@ -233,7 +244,9 @@ def parse_device_placement(entry: Mapping[str, object]) -> DevicePlacement | Non
     has_y_numeric = "y" in entry
     has_z_numeric = "z" in entry
 
-    if not any((has_x_alias, has_y_alias, has_z_alias, has_x_numeric, has_y_numeric, has_z_numeric)) and not sections:
+    groups = normalize_group_ids(entry.get("groups"), field_name="groups")
+    has_group_metadata = "groups" in entry
+    if not any((has_x_alias, has_y_alias, has_z_alias, has_x_numeric, has_y_numeric, has_z_numeric)) and not sections and not has_group_metadata:
         return None
 
     if has_x_alias and has_x_numeric:
@@ -297,6 +310,7 @@ def parse_device_placement(entry: Mapping[str, object]) -> DevicePlacement | Non
         weight=weight,
         enabled=enabled,
         sections=sections,
+        groups=groups,
     )
 
 
@@ -377,9 +391,17 @@ def placement_to_mapping(placement: DevicePlacement) -> dict[str, object]:
                 "z": float(section.z),
                 "weight": float(section.weight),
                 "enabled": bool(section.enabled),
+                **({"groups": list(section.groups)} if section.groups else {}),
+                **(
+                    {"exclude_groups": list(section.exclude_groups)}
+                    if section.exclude_groups
+                    else {}
+                ),
             }
             for section in placement.sections
         ]
+    if placement.groups:
+        data["groups"] = list(placement.groups)
     return data
 
 
@@ -407,6 +429,14 @@ def _parse_section_placements(entry: Mapping[str, object]) -> tuple[SectionPlace
                 z=z,
                 weight=weight,
                 enabled=bool(raw_section.get("enabled", True)),
+                groups=normalize_group_ids(
+                    raw_section.get("groups"),
+                    field_name=f"sections[{index}].groups",
+                ),
+                exclude_groups=normalize_group_ids(
+                    raw_section.get("exclude_groups"),
+                    field_name=f"sections[{index}].exclude_groups",
+                ),
             )
         )
 

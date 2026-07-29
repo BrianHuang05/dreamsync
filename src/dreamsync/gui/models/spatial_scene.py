@@ -42,10 +42,20 @@ class SceneNode:
     section_index: int | None = None
     section_count: int = 1
     is_section: bool = False
+    groups: tuple[str, ...] = ()
+    exclude_groups: tuple[str, ...] = ()
+    inherited_groups: tuple[str, ...] = ()
 
     @property
     def chain_key(self) -> str:
         return self.address if self.is_section else ""
+
+    @property
+    def effective_groups(self) -> frozenset[str]:
+        return frozenset(
+            (set(self.inherited_groups) | set(self.groups))
+            - set(self.exclude_groups)
+        )
 
 
 @dataclass(frozen=True)

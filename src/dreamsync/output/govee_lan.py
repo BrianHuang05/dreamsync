@@ -11,6 +11,12 @@ from enum import Enum
 from typing import Any, Callable
 
 from dreamsync.director import EffectMode, LightingIntent
+from dreamsync.groups.models import (
+    ALL_GROUP_ID,
+    GroupDefinition,
+    GroupRuntimeState,
+    GroupSelector,
+)
 from dreamsync.output.roles import DeviceRole, DeviceType, adapt_render_mode, transform_intent
 from dreamsync.render import RenderMode, SegmentRenderer
 from dreamsync.spatial.grid import resolve_grid_cell
@@ -33,6 +39,10 @@ _SPATIAL_RENDER_PARAM_KEYS = frozenset({
     "intensity_scale",
     "layer_category",
     "layer_priority",
+    "target_groups",
+    "exclude_groups",
+    "target_match",
+    "untargeted_behavior",
     "radius",
     "scene_layers",
     "spatial_blend",
@@ -406,6 +416,7 @@ class MultiGoveeLanAdapter:
         devices: list[tuple],  # legacy tuples or (adapter, renderer, role, brightness_scale, placement)
         ble_followers: list | None = None,
         spatial_mapper=None,
+        group_definitions: tuple[GroupDefinition, ...] = (),
     ) -> None:
         # Normalize to 5-tuples:
         # (adapter, renderer, role, brightness_scale, placement)
@@ -415,6 +426,12 @@ class MultiGoveeLanAdapter:
         # list of GoveeBleAdapter instances or tuples carrying follower metadata
         self._ble_followers: list = ble_followers or []
         self._spatial_mapper = spatial_mapper
+        self._group_definitions = tuple(group_definitions)
+        self._default_disabled_groups = tuple(
+            definition.id
+            for definition in self._group_definitions
+            if not definition.enabled_by_default
+        )
         self._prepared_spatial_cues: dict[object, tuple[object, tuple]] = {}
         self._placement_section_cache: dict[tuple[int, int], tuple[DevicePlacement, ...]] = {}
         self._last_output_colors: dict[str, tuple[tuple[int, int, int], ...]] = {}
@@ -500,6 +517,8 @@ class MultiGoveeLanAdapter:
             if params and isinstance(params.get("_frame_provenance"), dict)
             else {}
         )
+        group_state = self._group_runtime_state(params)
+        group_selector = self._group_selector(params)
         row: dict[str, Any] = {
             **provenance,
             "output_t": float(t),
@@ -522,6 +541,18 @@ class MultiGoveeLanAdapter:
                 != tuple(device.get("post_spatial_rgb", ()))
                 for device in devices
             ),
+            "group_routing": {
+                "target_groups": group_selector.target_groups,
+                "target_match": group_selector.target_match,
+                "exclude_groups": group_selector.exclude_groups,
+                "untargeted_behavior": group_selector.untargeted_behavior,
+                "disabled_groups": tuple(sorted(group_state.disabled_groups)),
+                "enabled_groups": tuple(sorted(group_state.enabled_groups)),
+                "solo_groups": tuple(sorted(group_state.solo_groups)),
+                "catalog_groups": tuple(
+                    definition.id for definition in self._group_definitions
+                ),
+            },
             "devices": tuple(devices),
         }
         self._last_frame_diagnostics = row
@@ -633,6 +664,19 @@ class MultiGoveeLanAdapter:
                 )
             else:
                 follower_colors = [self._intent_rgb(follower_intent)]
+                follower_colors = self._gate_group_colors(
+                    follower_colors,
+                    follower_placement,
+                    params,
+                )
+                if follower_colors == [(0, 0, 0)]:
+                    follower_intent = LightingIntent(
+                        mode=follower_intent.mode,
+                        intensity=0.0,
+                        speed=follower_intent.speed,
+                        bpm=follower_intent.bpm,
+                        color=follower_intent.color,
+                    )
                 follower_adapter.emit(t, follower_intent)
             self._last_output_colors[address] = tuple(follower_colors)
             diagnostic_devices.append({
@@ -689,6 +733,11 @@ class MultiGoveeLanAdapter:
                 params=cell_state.params,
                 placement=placement,
             )
+            colors = self._gate_group_colors(
+                colors,
+                placement,
+                cell_state.params,
+            )
             address = str(adapter.config.device_ip)
             self._last_output_colors[address] = tuple(colors)
             diagnostic_devices.append({
@@ -740,12 +789,30 @@ class MultiGoveeLanAdapter:
                     params=cell_state.params,
                     placement=follower_placement,
                 )
+                follower_colors = self._gate_group_colors(
+                    follower_colors,
+                    follower_placement,
+                    cell_state.params,
+                )
                 follower_adapter.send_segment_colors(
                     follower_colors,
                     brightness=self._intent_brightness(follower_intent),
                 )
             else:
                 follower_colors = [self._intent_rgb(follower_intent)]
+                follower_colors = self._gate_group_colors(
+                    follower_colors,
+                    follower_placement,
+                    cell_state.params,
+                )
+                if follower_colors == [(0, 0, 0)]:
+                    follower_intent = LightingIntent(
+                        mode=follower_intent.mode,
+                        intensity=0.0,
+                        speed=follower_intent.speed,
+                        bpm=follower_intent.bpm,
+                        color=follower_intent.color,
+                    )
                 follower_adapter.emit(t, follower_intent)
             self._last_output_colors[address] = tuple(follower_colors)
             diagnostic_devices.append({
@@ -806,6 +873,7 @@ class MultiGoveeLanAdapter:
                 intent=device_intent,
                 spec=spec,
                 layers=layers,
+                params=params,
             )
             address = str(adapter.config.device_ip)
             self._last_output_colors[address] = tuple(colors)
@@ -840,25 +908,44 @@ class MultiGoveeLanAdapter:
                     intent=follower_intent,
                     spec=spec,
                     layers=layers,
+                    params=params,
                 )
                 follower_adapter.send_segment_colors(
                     follower_colors,
                     brightness=self._intent_brightness(follower_intent),
                 )
             elif follower_placement is not None:
+                memberships = follower_placement.effective_groups()
+                group_state = self._group_runtime_state(params)
+                base_selector = self._group_selector(params)
+                base_enabled = (
+                    (
+                        base_selector.matches(memberships)
+                        or base_selector.untargeted_behavior == "preserve_base"
+                    )
+                    and group_state.contribution_enabled(base_selector)
+                    and group_state.node_enabled(memberships)
+                )
                 sample = self._spatial_mapper.sample_point(spatial_t, follower_placement, follower_intent, spec)
                 layer_samples = self._layer_samples(
                     t=spatial_t,
                     placement=follower_placement,
                     intent=follower_intent,
                     layers=layers,
+                    memberships=memberships,
+                    group_state=group_state,
                 )
                 color = self._resolve_sampled_color(
                     follower_intent.color,
                     sample,
                     layer_samples,
                 )
-                intensity_scale = self._resolve_sampled_intensity(sample, layer_samples)
+                intensity_scale = self._resolve_sampled_intensity(
+                    sample,
+                    layer_samples,
+                )
+                if not base_enabled and not layer_samples:
+                    intensity_scale = 0.0
                 follower_intent = LightingIntent(
                     mode=follower_intent.mode,
                     intensity=max(0.0, min(1.0, follower_intent.intensity * intensity_scale)),
@@ -912,6 +999,7 @@ class MultiGoveeLanAdapter:
         node_colors: dict[str, str],
         *,
         fallback_color: str = "#000000",
+        params: dict | None = None,
     ) -> bool:
         """Send precomputed logical node colors to devices.
 
@@ -921,7 +1009,8 @@ class MultiGoveeLanAdapter:
         """
         any_sent = False
         diagnostic_devices: list[dict[str, Any]] = []
-        for adapter, renderer, _role, _bs, _placement in self.devices:
+        group_state = self._group_runtime_state(params)
+        for adapter, renderer, _role, _bs, placement in self.devices:
             address = str(adapter.config.device_ip)
             colors = self._baked_device_colors(
                 address,
@@ -929,6 +1018,7 @@ class MultiGoveeLanAdapter:
                 node_colors,
                 fallback_color=fallback_color,
             )
+            colors = self._gate_baked_colors(colors, placement, group_state)
             self._last_output_colors[address] = tuple(colors)
             diagnostic_devices.append({
                 "address": address,
@@ -946,7 +1036,7 @@ class MultiGoveeLanAdapter:
                 follower_adapter,
                 _follower_role,
                 _follower_bs,
-                _follower_placement,
+                follower_placement,
                 follower_renderer,
             ) = self._normalize_ble_follower(follower)
             address = self._ble_address(follower_adapter)
@@ -960,6 +1050,11 @@ class MultiGoveeLanAdapter:
                 segments,
                 node_colors,
                 fallback_color=fallback_color,
+            )
+            follower_colors = self._gate_baked_colors(
+                follower_colors,
+                follower_placement,
+                group_state,
             )
             if follower_renderer is not None:
                 follower_adapter.send_segment_colors(
@@ -999,7 +1094,7 @@ class MultiGoveeLanAdapter:
             t=t,
             intent=fallback_intent,
             beat=False,
-            params={"_render_mode": "baked"},
+            params={**(params or {}), "_render_mode": "baked"},
             devices=diagnostic_devices,
         )
         return any_sent
@@ -1153,32 +1248,73 @@ class MultiGoveeLanAdapter:
         intent: LightingIntent,
         spec,
         layers: tuple = (),
+        params: dict | None = None,
     ) -> list[tuple[int, int, int]]:
         if placement is None or self._spatial_mapper is None:
             return colors
+
+        group_state = self._group_runtime_state(params)
+        base_selector = self._group_selector(params)
 
         if placement.sections:
             section_placements = self._section_placements_for(placement, len(colors))
             result: list[tuple[int, int, int]] = []
             for color, section_placement in zip(colors, section_placements):
+                memberships = section_placement.effective_groups()
+                base_enabled = (
+                    (
+                        base_selector.matches(memberships)
+                        or base_selector.untargeted_behavior == "preserve_base"
+                    )
+                    and group_state.contribution_enabled(base_selector)
+                    and group_state.node_enabled(memberships)
+                )
                 sample = self._spatial_mapper.sample_point(t, section_placement, intent, spec)
                 layer_samples = self._layer_samples(
                     t=t,
                     placement=section_placement,
                     intent=intent,
                     layers=layers,
+                    memberships=memberships,
+                    group_state=group_state,
                 )
-                result.append(self._apply_spatial_sample(color, sample, layer_samples))
+                result.append(
+                    self._apply_spatial_sample(
+                        color,
+                        sample,
+                        layer_samples,
+                        base_enabled=base_enabled,
+                    )
+                )
             return result
 
+        memberships = placement.effective_groups()
+        base_enabled = (
+            (
+                base_selector.matches(memberships)
+                or base_selector.untargeted_behavior == "preserve_base"
+            )
+            and group_state.contribution_enabled(base_selector)
+            and group_state.node_enabled(memberships)
+        )
         sample = self._spatial_mapper.sample_point(t, placement, intent, spec)
         layer_samples = self._layer_samples(
             t=t,
             placement=placement,
             intent=intent,
             layers=layers,
+            memberships=memberships,
+            group_state=group_state,
         )
-        return [self._apply_spatial_sample(color, sample, layer_samples) for color in colors]
+        return [
+            self._apply_spatial_sample(
+                color,
+                sample,
+                layer_samples,
+                base_enabled=base_enabled,
+            )
+            for color in colors
+        ]
 
     def _section_placements_for(
         self,
@@ -1203,6 +1339,12 @@ class MultiGoveeLanAdapter:
                 orientation=placement.orientation,
                 weight=section.weight,
                 enabled=section.enabled,
+                groups=tuple(
+                    sorted(
+                        (set(placement.groups) | set(section.groups))
+                        - set(section.exclude_groups)
+                    )
+                ),
             ))
         prepared = tuple(placements)
         self._placement_section_cache[cache_key] = prepared
@@ -1215,11 +1357,27 @@ class MultiGoveeLanAdapter:
         placement: DevicePlacement,
         intent: LightingIntent,
         layers: tuple,
+        memberships: frozenset[str],
+        group_state: GroupRuntimeState,
     ) -> list[tuple[object, object]]:
         if self._spatial_mapper is None:
             return []
         samples: list[tuple[object, object]] = []
         for resolved in layers:
+            selector = GroupSelector(
+                target_groups=tuple(resolved.layer.target_groups),
+                exclude_groups=tuple(resolved.layer.exclude_groups),
+                target_match=str(resolved.layer.target_match or "any"),
+                untargeted_behavior=str(
+                    resolved.layer.untargeted_behavior or "preserve_base"
+                ),
+            )
+            if not selector.matches(memberships):
+                continue
+            if not group_state.contribution_enabled(selector):
+                continue
+            if not group_state.node_enabled(memberships):
+                continue
             sample = self._spatial_mapper.sample_point(t, placement, intent, resolved.spec)
             samples.append((resolved.layer, sample))
         return samples
@@ -1229,11 +1387,17 @@ class MultiGoveeLanAdapter:
         color: tuple[int, int, int],
         sample,
         layer_samples: list[tuple[object, object]] | None = None,
+        *,
+        base_enabled: bool = True,
     ) -> tuple[int, int, int]:
         base_color = color
         if sample.color_override:
             base_color = _parse_hex_color(sample.color_override)
-        result = _scale_rgb(base_color, sample.intensity_scale)
+        result = (
+            _scale_rgb(base_color, sample.intensity_scale)
+            if base_enabled
+            else (0, 0, 0)
+        )
         if not layer_samples:
             return result
 
@@ -1267,6 +1431,83 @@ class MultiGoveeLanAdapter:
                     max(result[2], tinted[2]),
                 )
         return result
+
+    def _group_runtime_state(self, params: dict | None) -> GroupRuntimeState:
+        runtime_control = (
+            params.get("runtime_control")
+            if isinstance(params, dict)
+            else None
+        )
+        if not isinstance(runtime_control, dict):
+            runtime_control = {}
+        return GroupRuntimeState.from_mapping(
+            runtime_control,
+            default_disabled=self._default_disabled_groups,
+        )
+
+    def _gate_baked_colors(
+        self,
+        colors: list[tuple[int, int, int]],
+        placement: DevicePlacement | None,
+        group_state: GroupRuntimeState,
+    ) -> list[tuple[int, int, int]]:
+        if placement is None:
+            return colors
+        if placement.sections:
+            section_placements = self._section_placements_for(
+                placement,
+                len(colors),
+            )
+            return [
+                color
+                if group_state.node_enabled(section.effective_groups())
+                else (0, 0, 0)
+                for color, section in zip(colors, section_placements)
+            ]
+        if group_state.node_enabled(placement.effective_groups()):
+            return colors
+        return [(0, 0, 0) for _color in colors]
+
+    def _gate_group_colors(
+        self,
+        colors: list[tuple[int, int, int]],
+        placement: DevicePlacement | None,
+        params: dict | None,
+    ) -> list[tuple[int, int, int]]:
+        selector = self._group_selector(params)
+        state = self._group_runtime_state(params)
+        if placement is None:
+            enabled = selector.targets_all and state.node_enabled((ALL_GROUP_ID,))
+            return colors if enabled else [(0, 0, 0) for _color in colors]
+
+        def node_enabled(node: DevicePlacement) -> bool:
+            memberships = node.effective_groups()
+            targeted = (
+                selector.matches(memberships)
+                or selector.untargeted_behavior == "preserve_base"
+            )
+            return (
+                targeted
+                and state.contribution_enabled(selector)
+                and state.node_enabled(memberships)
+            )
+
+        if placement.sections:
+            sections = self._section_placements_for(placement, len(colors))
+            return [
+                color if node_enabled(section) else (0, 0, 0)
+                for color, section in zip(colors, sections)
+            ]
+        return colors if node_enabled(placement) else [
+            (0, 0, 0) for _color in colors
+        ]
+
+    @staticmethod
+    def _group_selector(params: dict | None) -> GroupSelector:
+        try:
+            return GroupSelector.from_mapping(params)
+        except ValueError:
+            return GroupSelector(target_groups=(ALL_GROUP_ID,))
 
     @classmethod
     def _resolve_sampled_color(

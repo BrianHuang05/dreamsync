@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from dreamsync.groups.models import (
+    GroupDefinition,
+    normalize_group_ids,
+    parse_group_definitions,
+)
 from dreamsync.output.auto_detect import DeviceConfig, load_device_config
 from dreamsync.spatial.models import parse_device_placement
 
@@ -24,6 +29,9 @@ class DeviceSceneEntry:
     section_count: int = 1
     protocol: str | None = None
     is_section: bool = False
+    groups: tuple[str, ...] = ()
+    exclude_groups: tuple[str, ...] = ()
+    inherited_groups: tuple[str, ...] = ()
 
 
 class DeviceService:
@@ -44,6 +52,9 @@ class DeviceService:
 
     def validate_config(self, path: Path) -> list[DeviceConfig]:
         return self.load_config(path)
+
+    def load_groups(self, path: Path) -> tuple[GroupDefinition, ...]:
+        return parse_group_definitions(self._load_raw_config(path).get("groups"))
 
     def _load_raw_config(self, path: Path) -> dict[str, Any]:
         yaml = self._require_yaml()
@@ -121,6 +132,19 @@ class DeviceService:
                             section_count=max(1, segments),
                             protocol=protocol,
                             is_section=True,
+                            groups=(
+                                normalize_group_ids(
+                                    section_entry.get("groups"),
+                                    field_name=f"sections[{index}].groups",
+                                )
+                            ),
+                            exclude_groups=(
+                                normalize_group_ids(
+                                    section_entry.get("exclude_groups"),
+                                    field_name=f"sections[{index}].exclude_groups",
+                                )
+                            ),
+                            inherited_groups=placement.groups if placement else (),
                         )
                     )
                 continue
@@ -135,21 +159,43 @@ class DeviceService:
                     z=base_z,
                     physical_name=name,
                     protocol=protocol,
+                    groups=placement.groups if placement else (),
                 )
             )
         return entries
 
-    def save_scene(self, path: Path, placements: dict[str, tuple[float, float, float]]) -> None:
+    def save_scene(
+        self,
+        path: Path,
+        placements: dict[str, tuple[float, float, float]],
+        *,
+        group_definitions: tuple[GroupDefinition, ...] | None = None,
+        device_groups: dict[str, tuple[str, ...]] | None = None,
+        section_groups: dict[str, tuple[str, ...]] | None = None,
+        section_exclude_groups: dict[str, tuple[str, ...]] | None = None,
+    ) -> None:
         yaml = self._require_yaml()
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         devices = data.get("devices", [])
         if not isinstance(devices, list):
             raise ValueError("Device config must contain a top-level devices list")
+        if group_definitions is not None:
+            if group_definitions:
+                data["groups"] = [
+                    definition.to_mapping() for definition in group_definitions
+                ]
+            else:
+                data.pop("groups", None)
 
         for entry in devices:
             if not isinstance(entry, dict):
                 continue
             key = str(entry.get("address", ""))
+            if device_groups is not None and key in device_groups:
+                if device_groups[key]:
+                    entry["groups"] = list(device_groups[key])
+                else:
+                    entry.pop("groups", None)
             if self._should_expand_sections(entry):
                 segments = self._section_count(entry)
                 prior_sections = entry.get("sections", [])
@@ -178,6 +224,21 @@ class DeviceService:
                     payload["x"] = float(x)
                     payload["y"] = float(y)
                     payload["z"] = float(z)
+                    if section_groups is not None and section_key in section_groups:
+                        if section_groups[section_key]:
+                            payload["groups"] = list(section_groups[section_key])
+                        else:
+                            payload.pop("groups", None)
+                    if (
+                        section_exclude_groups is not None
+                        and section_key in section_exclude_groups
+                    ):
+                        if section_exclude_groups[section_key]:
+                            payload["exclude_groups"] = list(
+                                section_exclude_groups[section_key]
+                            )
+                        else:
+                            payload.pop("exclude_groups", None)
                     section_payloads.append(payload)
                     section_positions.append((float(x), float(y), float(z)))
                 if section_payloads:

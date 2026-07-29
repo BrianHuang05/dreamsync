@@ -333,6 +333,10 @@ SHOW_CUE_COL_LAYER_FALLOFF = 23
 SHOW_CUE_COL_LAYER_THICKNESS = 24
 SHOW_CUE_COL_LAYER_SPEED = 25
 SHOW_CUE_COL_LAYER_PRIORITY = 26
+SHOW_CUE_COL_TARGET_GROUPS = 27
+SHOW_CUE_COL_TARGET_MATCH = 28
+SHOW_CUE_COL_EXCLUDE_GROUPS = 29
+SHOW_CUE_COL_UNTARGETED_BEHAVIOR = 30
 
 
 def _format_spatial_summary(scene_entries: list[object], config_path: Path | None) -> str:
@@ -687,6 +691,44 @@ def create_main_window(
     spin_grid.addWidget(spatial_y_spin, 1, 1)
     spin_grid.addWidget(spatial_z_spin, 2, 1)
     spatial_editor_layout.addLayout(spin_grid)
+    spatial_group_box = QtWidgets.QGroupBox("Groups")
+    spatial_group_box.setObjectName("spatialGroupBox")
+    spatial_group_layout = QtWidgets.QVBoxLayout(spatial_group_box)
+    spatial_group_list = QtWidgets.QListWidget()
+    spatial_group_list.setObjectName("spatialGroupList")
+    spatial_group_list.setMaximumHeight(110)
+    spatial_group_layout.addWidget(spatial_group_list)
+    spatial_group_default_enabled_check = QtWidgets.QCheckBox(
+        "Selected group enabled by default"
+    )
+    spatial_group_default_enabled_check.setObjectName(
+        "spatialGroupDefaultEnabledCheck"
+    )
+    spatial_group_layout.addWidget(spatial_group_default_enabled_check)
+    spatial_group_button_row = QtWidgets.QHBoxLayout()
+    add_spatial_group_button = QtWidgets.QPushButton("Add")
+    rename_spatial_group_button = QtWidgets.QPushButton("Rename")
+    delete_spatial_group_button = QtWidgets.QPushButton("Delete")
+    add_spatial_group_button.setObjectName("addSpatialGroupButton")
+    rename_spatial_group_button.setObjectName("renameSpatialGroupButton")
+    delete_spatial_group_button.setObjectName("deleteSpatialGroupButton")
+    spatial_group_button_row.addWidget(add_spatial_group_button)
+    spatial_group_button_row.addWidget(rename_spatial_group_button)
+    spatial_group_button_row.addWidget(delete_spatial_group_button)
+    spatial_group_layout.addLayout(spatial_group_button_row)
+    spatial_group_whole_device_check = QtWidgets.QCheckBox(
+        "Apply membership to whole device / strip"
+    )
+    spatial_group_whole_device_check.setObjectName(
+        "spatialGroupWholeDeviceCheck"
+    )
+    spatial_group_layout.addWidget(spatial_group_whole_device_check)
+    spatial_group_layout.addWidget(QtWidgets.QLabel("Selected node memberships"))
+    spatial_membership_list = QtWidgets.QListWidget()
+    spatial_membership_list.setObjectName("spatialMembershipList")
+    spatial_membership_list.setMaximumHeight(150)
+    spatial_group_layout.addWidget(spatial_membership_list)
+    spatial_editor_layout.addWidget(spatial_group_box)
     spatial_validation_label = QtWidgets.QLabel("Layout validity: no strip chains loaded.")
     spatial_validation_label.setWordWrap(True)
     spatial_validation_label.setObjectName("spatialValidationLabel")
@@ -2507,6 +2549,89 @@ def create_main_window(
         spatial_node_list.clear()
         nodes_snapshot = spatial_controller.snapshot()
         selected_node = spatial_controller.nodes.get(spatial_controller.selected_key)
+        selected_group_id = ""
+        selected_group_item = spatial_group_list.currentItem()
+        if selected_group_item is not None:
+            selected_group_id = str(
+                selected_group_item.data(QtCore.Qt.ItemDataRole.UserRole) or ""
+            )
+        spatial_group_list.clear()
+        for definition in spatial_controller.group_definitions:
+            member_count = sum(
+                1
+                for node in nodes_snapshot
+                if definition.id in node.effective_groups
+            )
+            item = QtWidgets.QListWidgetItem(
+                f"{definition.name} ({member_count})"
+            )
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, definition.id)
+            item.setToolTip(
+                f"{definition.id} · default "
+                f"{'on' if definition.enabled_by_default else 'off'}"
+            )
+            spatial_group_list.addItem(item)
+            if definition.id == selected_group_id:
+                spatial_group_list.setCurrentItem(item)
+        selected_definition = next(
+            (
+                definition
+                for definition in spatial_controller.group_definitions
+                if definition.id == selected_group_id
+            ),
+            None,
+        )
+        spatial_group_default_enabled_check.setEnabled(
+            selected_definition is not None
+        )
+        spatial_group_default_enabled_check.setChecked(
+            bool(
+                selected_definition is not None
+                and selected_definition.enabled_by_default
+            )
+        )
+        spatial_membership_list.clear()
+        whole_device_membership = bool(
+            selected_node is not None
+            and (
+                not selected_node.is_section
+                or spatial_group_whole_device_check.isChecked()
+            )
+        )
+        spatial_group_whole_device_check.setEnabled(
+            bool(selected_node is not None and selected_node.is_section)
+        )
+        if selected_node is not None and not selected_node.is_section:
+            spatial_group_whole_device_check.setChecked(True)
+        membership_source = (
+            set(spatial_controller.device_groups.get(selected_node.address, ()))
+            if selected_node is not None and whole_device_membership
+            else (
+                set(selected_node.effective_groups)
+                if selected_node is not None
+                else set()
+            )
+        )
+        for definition in spatial_controller.group_definitions:
+            label = definition.name
+            if (
+                selected_node is not None
+                and selected_node.is_section
+                and not whole_device_membership
+                and definition.id in selected_node.inherited_groups
+            ):
+                label += " (inherited)"
+            item = QtWidgets.QListWidgetItem(label)
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, definition.id)
+            item.setFlags(
+                item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable
+            )
+            item.setCheckState(
+                QtCore.Qt.CheckState.Checked
+                if definition.id in membership_source
+                else QtCore.Qt.CheckState.Unchecked
+            )
+            spatial_membership_list.addItem(item)
         selected_chain_key = (
             selected_node.chain_key
             if selected_node is not None and selected_node.is_section
@@ -2712,16 +2837,167 @@ def create_main_window(
             )
             _refresh_spatial_controls()
             return
-        placements = {
-            key: (node.x, node.y, node.z)
-            for key, node in spatial_controller.nodes.items()
-        }
         try:
-            device_service.save_scene(config_path, placements)
+            spatial_controller.save()
         except Exception as exc:
             _set_page_error(spatial_status_label, f"Could not save spatial config: {exc}")
             return
         _reload_spatial_scene(status=f"Saved spatial layout to {config_path.name}.")
+
+    def _add_spatial_group() -> None:  # pragma: no cover - Qt only
+        name, accepted = QtWidgets.QInputDialog.getText(
+            window,
+            "Add Group",
+            "Display name",
+        )
+        if not accepted or not str(name).strip():
+            return
+        suggested_id = "-".join(
+            part
+            for part in "".join(
+                character.lower()
+                if character.isalnum()
+                else " "
+                for character in str(name)
+            ).split()
+            if part
+        )
+        group_id, accepted = QtWidgets.QInputDialog.getText(
+            window,
+            "Add Group",
+            "Stable group ID",
+            text=suggested_id,
+        )
+        if not accepted:
+            return
+        color = QtWidgets.QColorDialog.getColor(
+            QtGui.QColor("#64748b"),
+            window,
+            "Group Color",
+        )
+        try:
+            definition = spatial_controller.create_group(
+                str(group_id),
+                str(name),
+                color=color.name() if color.isValid() else "#64748b",
+            )
+        except ValueError as exc:
+            _set_page_error(spatial_status_label, exc)
+            return
+        _refresh_spatial_controls()
+        spatial_status_label.setText(
+            f"Created group {definition.name}. Save Layout to persist it."
+        )
+
+    def _selected_spatial_group_id() -> str:
+        item = spatial_group_list.currentItem()
+        if item is None:
+            return ""
+        return str(item.data(QtCore.Qt.ItemDataRole.UserRole) or "")
+
+    def _rename_spatial_group() -> None:  # pragma: no cover - Qt only
+        group_id = _selected_spatial_group_id()
+        definition = next(
+            (
+                item
+                for item in spatial_controller.group_definitions
+                if item.id == group_id
+            ),
+            None,
+        )
+        if definition is None:
+            spatial_status_label.setText("Select a group to rename.")
+            return
+        name, accepted = QtWidgets.QInputDialog.getText(
+            window,
+            "Rename Group",
+            "Display name",
+            text=definition.name,
+        )
+        if not accepted:
+            return
+        try:
+            spatial_controller.rename_group(group_id, str(name))
+        except ValueError as exc:
+            _set_page_error(spatial_status_label, exc)
+            return
+        _refresh_spatial_controls()
+        spatial_status_label.setText(
+            f"Renamed group {group_id}. Save Layout to persist it."
+        )
+
+    def _delete_spatial_group() -> None:  # pragma: no cover - Qt only
+        group_id = _selected_spatial_group_id()
+        definition = next(
+            (
+                item
+                for item in spatial_controller.group_definitions
+                if item.id == group_id
+            ),
+            None,
+        )
+        if definition is None:
+            spatial_status_label.setText("Select a group to delete.")
+            return
+        answer = QtWidgets.QMessageBox.question(
+            window,
+            "Delete Group",
+            f"Delete {definition.name} and remove all of its memberships?",
+        )
+        if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        spatial_controller.delete_group(group_id)
+        _refresh_spatial_controls()
+        spatial_status_label.setText(
+            f"Deleted group {definition.name}. Save Layout to persist it."
+        )
+
+    def _on_spatial_group_default_toggled(
+        enabled: bool,
+    ) -> None:  # pragma: no cover - Qt only
+        if spatial_signal_block["value"]:
+            return
+        group_id = _selected_spatial_group_id()
+        if not group_id:
+            return
+        try:
+            spatial_controller.set_group_default_enabled(
+                group_id,
+                bool(enabled),
+            )
+        except ValueError as exc:
+            _set_page_error(spatial_status_label, exc)
+            return
+        _refresh_spatial_controls()
+        spatial_status_label.setText(
+            f"Updated {group_id} default state. Save Layout to persist it."
+        )
+
+    def _on_spatial_membership_changed(item) -> None:  # pragma: no cover - Qt only
+        if spatial_signal_block["value"]:
+            return
+        key = spatial_controller.selected_key
+        if not key or key not in spatial_controller.nodes:
+            return
+        group_id = str(
+            item.data(QtCore.Qt.ItemDataRole.UserRole) or ""
+        )
+        try:
+            spatial_controller.set_group_membership(
+                key,
+                group_id,
+                item.checkState() == QtCore.Qt.CheckState.Checked,
+                whole_device=bool(
+                    spatial_group_whole_device_check.isChecked()
+                ),
+            )
+        except ValueError as exc:
+            _set_page_error(spatial_status_label, exc)
+            return
+        _refresh_spatial_controls()
+        spatial_status_label.setText(
+            f"Updated {group_id} membership. Save Layout to persist it."
+        )
 
     def _on_spatial_list_selection_changed() -> None:  # pragma: no cover - Qt only
         if spatial_signal_block["value"]:
@@ -3509,6 +3785,18 @@ def create_main_window(
                     eq_route.get("color_bias", params.pop("color_bias", "")),
                 )
                 or ""
+            ),
+            "target_groups": ", ".join(
+                str(value)
+                for value in params.pop("target_groups", ())
+            ),
+            "target_match": str(params.pop("target_match", "any") or "any"),
+            "exclude_groups": ", ".join(
+                str(value)
+                for value in params.pop("exclude_groups", ())
+            ),
+            "untargeted_behavior": str(
+                params.pop("untargeted_behavior", "blackout") or "blackout"
             ),
             **layer_state,
             "extra": json.dumps(params, sort_keys=True),
@@ -4724,6 +5012,50 @@ def create_main_window(
         layer_priority_spin.setValue(int(cue_state["layer_priority"]))
         layer_priority_spin.valueChanged.connect(refresh_timeline)
         table.setCellWidget(row, SHOW_CUE_COL_LAYER_PRIORITY, layer_priority_spin)
+        target_groups_edit = _show_cue_text_edit(
+            str(cue_state["target_groups"]),
+            object_name="showCueTargetGroupsEdit",
+        )
+        target_groups_edit.setPlaceholderText("group-a, left")
+        target_groups_edit.textChanged.connect(refresh_timeline)
+        table.setCellWidget(
+            row,
+            SHOW_CUE_COL_TARGET_GROUPS,
+            target_groups_edit,
+        )
+        target_match_combo = _combo_widget(
+            ("any", "all"),
+            str(cue_state["target_match"]),
+            allow_blank=False,
+        )
+        target_match_combo.currentIndexChanged.connect(refresh_timeline)
+        table.setCellWidget(
+            row,
+            SHOW_CUE_COL_TARGET_MATCH,
+            target_match_combo,
+        )
+        exclude_groups_edit = _show_cue_text_edit(
+            str(cue_state["exclude_groups"]),
+            object_name="showCueExcludeGroupsEdit",
+        )
+        exclude_groups_edit.setPlaceholderText("accent")
+        exclude_groups_edit.textChanged.connect(refresh_timeline)
+        table.setCellWidget(
+            row,
+            SHOW_CUE_COL_EXCLUDE_GROUPS,
+            exclude_groups_edit,
+        )
+        untargeted_combo = _combo_widget(
+            ("blackout", "preserve_base", "ignore"),
+            str(cue_state["untargeted_behavior"]),
+            allow_blank=False,
+        )
+        untargeted_combo.currentIndexChanged.connect(refresh_timeline)
+        table.setCellWidget(
+            row,
+            SHOW_CUE_COL_UNTARGETED_BEHAVIOR,
+            untargeted_combo,
+        )
         _store_cue_row_timing_snapshot(row)
 
     def _timeline_from_editor() -> ShowTimeline | None:
@@ -4793,6 +5125,40 @@ def create_main_window(
             )
             layer_speed = float(_row_value(queue_panel.show_cues_table, row, SHOW_CUE_COL_LAYER_SPEED))
             layer_priority = int(_row_value(queue_panel.show_cues_table, row, SHOW_CUE_COL_LAYER_PRIORITY))
+            target_groups = tuple(
+                part.strip().lower()
+                for part in _row_text_edit(
+                    queue_panel.show_cues_table,
+                    row,
+                    SHOW_CUE_COL_TARGET_GROUPS,
+                ).split(",")
+                if part.strip()
+            )
+            target_match = str(
+                _row_value(
+                    queue_panel.show_cues_table,
+                    row,
+                    SHOW_CUE_COL_TARGET_MATCH,
+                )
+                or "any"
+            )
+            exclude_groups = tuple(
+                part.strip().lower()
+                for part in _row_text_edit(
+                    queue_panel.show_cues_table,
+                    row,
+                    SHOW_CUE_COL_EXCLUDE_GROUPS,
+                ).split(",")
+                if part.strip()
+            )
+            untargeted_behavior = str(
+                _row_value(
+                    queue_panel.show_cues_table,
+                    row,
+                    SHOW_CUE_COL_UNTARGETED_BEHAVIOR,
+                )
+                or "blackout"
+            )
 
             if abs(wave_rate - 1.0) > 1e-9:
                 params["wave_rate_mult"] = wave_rate
@@ -4801,6 +5167,22 @@ def create_main_window(
             else:
                 params.pop("palette_override", None)
                 palette = show_palette
+            if target_groups:
+                params["target_groups"] = list(target_groups)
+            else:
+                params.pop("target_groups", None)
+            if target_match != "any":
+                params["target_match"] = target_match
+            else:
+                params.pop("target_match", None)
+            if exclude_groups:
+                params["exclude_groups"] = list(exclude_groups)
+            else:
+                params.pop("exclude_groups", None)
+            if untargeted_behavior != "blackout":
+                params["untargeted_behavior"] = untargeted_behavior
+            else:
+                params.pop("untargeted_behavior", None)
             effect_layer = _show_cue_effect_layer_from_controls(
                 category=layer_category,
                 target=layer_target,
@@ -7387,6 +7769,15 @@ def create_main_window(
             ),
             spatial_preset=queue_panel.runtime_spatial_preset_edit.text().strip(),
             spatial_width=(spatial_width_value if spatial_width_value > 0.0 else None),
+            disabled_groups=_current_runtime_muted_values(
+                queue_panel.runtime_disabled_groups_edit.text()
+            ),
+            enabled_groups=_current_runtime_muted_values(
+                queue_panel.runtime_enabled_groups_edit.text()
+            ),
+            solo_groups=_current_runtime_muted_values(
+                queue_panel.runtime_solo_groups_edit.text()
+            ),
         )
         if result:
             queue_panel.runtime_control_status_label.setText(
@@ -9326,6 +9717,29 @@ def create_main_window(
 
     reload_spatial_button.clicked.connect(lambda: _reload_spatial_scene(status="Spatial config reloaded from disk."))
     save_spatial_button.clicked.connect(_save_spatial_scene)
+    add_spatial_group_button.clicked.connect(_add_spatial_group)
+    rename_spatial_group_button.clicked.connect(_rename_spatial_group)
+    delete_spatial_group_button.clicked.connect(_delete_spatial_group)
+    spatial_membership_list.itemChanged.connect(
+        _on_spatial_membership_changed
+    )
+    spatial_group_whole_device_check.toggled.connect(
+        lambda _checked: (
+            None
+            if spatial_signal_block["value"]
+            else _refresh_spatial_controls()
+        )
+    )
+    spatial_group_list.currentItemChanged.connect(
+        lambda _current, _previous: (
+            None
+            if spatial_signal_block["value"]
+            else _refresh_spatial_controls()
+        )
+    )
+    spatial_group_default_enabled_check.toggled.connect(
+        _on_spatial_group_default_toggled
+    )
     reload_spatial_button.setToolTip("Reload the room-layout config (Ctrl+R)")
     save_spatial_button.setToolTip("Save the room layout (Ctrl+S)")
     apply_spatial_line_button.setToolTip("Apply the selected layout line (L)")

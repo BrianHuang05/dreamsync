@@ -213,7 +213,7 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
     assert show_timeline_fit_button is not None
     assert show_timeline_scroll_bar is not None
     assert show_cues_table is not None
-    assert show_cues_table.columnCount() == 27
+    assert show_cues_table.columnCount() == 31
     assert [
         show_cues_table.horizontalHeaderItem(index).text()
         for index in range(20, show_cues_table.columnCount())
@@ -225,6 +225,10 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
         "Layer Thickness",
         "Layer Speed",
         "Layer Priority",
+        "Target Groups",
+        "Group Match",
+        "Exclude Groups",
+        "Untargeted",
     ]
     assert add_show_cue_button is not None
     assert duplicate_show_cue_button is not None

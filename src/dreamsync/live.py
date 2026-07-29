@@ -16,6 +16,11 @@ import numpy as np
 from dreamsync.audio.ring import AudioBlockRing, PcmFrameBuffer
 from dreamsync.audio.system_input import _require_sounddevice
 from dreamsync.director import Director, DirectorConfig, EffectMode
+from dreamsync.groups.models import GroupRuntimeState
+from dreamsync.groups.reactive_policy import (
+    ReactiveGroupPolicy,
+    descriptors_from_adapter,
+)
 from dreamsync.dsp.features import _estimate_bpm, _estimate_bpm_from_beats, _smooth_signal
 from dreamsync.dsp.harmonic import (
     LiveBarChordHistory,
@@ -3766,6 +3771,9 @@ def run_live_to_govee(
     if normalized_render_mode_policy not in {"adaptive", "fixed"}:
         raise ValueError("render_mode_policy must be 'adaptive' or 'fixed'")
     configured_render_mode = RenderMode(str(render_mode)).value
+    reactive_group_policy = ReactiveGroupPolicy(
+        descriptors_from_adapter(multi_adapter)
+    )
 
     from dreamsync.telemetry import SongTelemetryWriter
 
@@ -5437,6 +5445,64 @@ def run_live_to_govee(
                     runtime_params,
                     runtime_control_state,
                 )
+                runtime_params = dict(runtime_params or {})
+                if (
+                    reactive_group_policy.descriptors
+                    and not runtime_params.get("target_groups")
+                ):
+                    group_runtime_state = GroupRuntimeState.from_mapping(
+                        {
+                            "disabled_groups": tuple(
+                                getattr(
+                                    runtime_control_state,
+                                    "disabled_groups",
+                                    (),
+                                )
+                            ),
+                            "enabled_groups": tuple(
+                                getattr(
+                                    runtime_control_state,
+                                    "enabled_groups",
+                                    (),
+                                )
+                            ),
+                            "solo_groups": tuple(
+                                getattr(
+                                    runtime_control_state,
+                                    "solo_groups",
+                                    (),
+                                )
+                            ),
+                        },
+                        default_disabled=getattr(
+                            multi_adapter,
+                            "_default_disabled_groups",
+                            (),
+                        ),
+                    )
+                    group_decision = reactive_group_policy.update(
+                        downbeat=bool(render_downbeat),
+                        routes=(
+                            *active_live_instrument_routes,
+                            *active_live_eq_routes,
+                        ),
+                        runtime_state=group_runtime_state,
+                        force_boundary=bool(structural_action_results),
+                    )
+                    if group_decision.target_groups:
+                        runtime_params["target_groups"] = list(
+                            group_decision.target_groups
+                        )
+                        runtime_params.setdefault(
+                            "untargeted_behavior",
+                            "blackout",
+                        )
+                    runtime_params["reactive_group_routing"] = {
+                        "target_groups": group_decision.target_groups,
+                        "reason": group_decision.reason,
+                        "confidence": round(group_decision.confidence, 4),
+                        "revision": group_decision.revision,
+                    }
                 presentation_effect_name = (
                     str(
                         getattr(

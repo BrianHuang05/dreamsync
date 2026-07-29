@@ -110,6 +110,7 @@ class NullMultiAdapter:
         node_colors: dict[str, str],
         *,
         fallback_color: str = "#000000",
+        params: dict | None = None,
     ) -> bool:
         self._frames_sent += 1
         return True
@@ -186,13 +187,26 @@ class PreviewMirrorAdapter:
         )
         return bool(preview_sent or output_sent)
 
-    def send_baked_frame(self, t: float, node_colors: dict[str, str], *, fallback_color: str = "#000000") -> bool:
+    def send_baked_frame(
+        self,
+        t: float,
+        node_colors: dict[str, str],
+        *,
+        fallback_color: str = "#000000",
+        params: dict | None = None,
+    ) -> bool:
         output_sent = self._output_adapter.send_baked_frame(
-            t, node_colors, fallback_color=fallback_color
+            t,
+            node_colors,
+            fallback_color=fallback_color,
+            params=params,
         )
         preview_sent = self._mirror_final_output(
             fallback=lambda: self._preview_adapter.send_baked_frame(
-                t, node_colors, fallback_color=fallback_color
+                t,
+                node_colors,
+                fallback_color=fallback_color,
+                params=params,
             ),
             t=t,
         )
@@ -296,8 +310,14 @@ class SimulationMultiAdapter(MultiGoveeLanAdapter):
         *,
         node_keys: dict[str, list[str]],
         spatial_mapper: SpatialMapper | None = None,
+        group_definitions: tuple = (),
     ) -> None:
-        super().__init__(devices, ble_followers=[], spatial_mapper=spatial_mapper)
+        super().__init__(
+            devices,
+            ble_followers=[],
+            spatial_mapper=spatial_mapper,
+            group_definitions=group_definitions,
+        )
         self._frames_sent = 0
         self._node_keys = {key: list(value) for key, value in node_keys.items()}
         self._preview_colors: dict[str, str] = {}
@@ -350,7 +370,20 @@ class SimulationMultiAdapter(MultiGoveeLanAdapter):
                 node_keys[adapter.address] = [adapter.address]
 
         mapper = SpatialMapper(enabled=spatial_enabled) if spatial_enabled else None
-        return cls(device_tuples, node_keys=node_keys, spatial_mapper=mapper)
+        group_definitions = next(
+            (
+                tuple(getattr(cfg, "group_definitions", ()) or ())
+                for cfg in configs
+                if getattr(cfg, "group_definitions", ())
+            ),
+            (),
+        )
+        return cls(
+            device_tuples,
+            node_keys=node_keys,
+            spatial_mapper=mapper,
+            group_definitions=group_definitions,
+        )
 
     def activate(self, brightness: int = 100) -> None:
         for adapter, _renderer, _role, _bs, _placement in self.devices:
@@ -380,8 +413,14 @@ class SimulationMultiAdapter(MultiGoveeLanAdapter):
         node_colors: dict[str, str],
         *,
         fallback_color: str = "#000000",
+        params: dict | None = None,
     ) -> bool:
-        sent = super().send_baked_frame(t, node_colors, fallback_color=fallback_color)
+        sent = super().send_baked_frame(
+            t,
+            node_colors,
+            fallback_color=fallback_color,
+            params=params,
+        )
         if sent:
             self._frames_sent += 1
             self._capture_preview_colors()

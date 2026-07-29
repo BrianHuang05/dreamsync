@@ -30,6 +30,9 @@ class RuntimeControlState:
     disable_instrument_routes: bool = False
     muted_bands: tuple[str, ...] = ()
     muted_instruments: tuple[str, ...] = ()
+    disabled_groups: tuple[str, ...] = ()
+    enabled_groups: tuple[str, ...] = ()
+    solo_groups: tuple[str, ...] = ()
     revision: int = 0
 
     @property
@@ -49,6 +52,9 @@ class RuntimeControlState:
                 self.disable_instrument_routes,
                 self.muted_bands,
                 self.muted_instruments,
+                self.disabled_groups,
+                self.enabled_groups,
+                self.solo_groups,
                 self.intensity_multiplier != 1.0,
                 self.intensity_offset != 0.0,
                 self.speed_multiplier != 1.0,
@@ -142,6 +148,34 @@ class RuntimeControlBus:
             changes["spatial_width"] = float(spatial_width)
         return self.update(**changes)
 
+    def set_group_state(
+        self,
+        *,
+        disabled_groups: tuple[str, ...] | list[str] | None = None,
+        enabled_groups: tuple[str, ...] | list[str] | None = None,
+        solo_groups: tuple[str, ...] | list[str] | None = None,
+    ) -> RuntimeControlState:
+        changes: dict[str, Any] = {}
+        if disabled_groups is not None:
+            changes["disabled_groups"] = tuple(
+                str(value).strip().lower()
+                for value in disabled_groups
+                if str(value).strip()
+            )
+        if enabled_groups is not None:
+            changes["enabled_groups"] = tuple(
+                str(value).strip().lower()
+                for value in enabled_groups
+                if str(value).strip()
+            )
+        if solo_groups is not None:
+            changes["solo_groups"] = tuple(
+                str(value).strip().lower()
+                for value in solo_groups
+                if str(value).strip()
+            )
+        return self.update(**changes)
+
 
 def runtime_control_to_dict(state: RuntimeControlState | None) -> dict[str, Any]:
     if state is None:
@@ -164,6 +198,9 @@ def runtime_control_to_dict(state: RuntimeControlState | None) -> dict[str, Any]
         "disable_instrument_routes": state.disable_instrument_routes,
         "muted_bands": tuple(state.muted_bands),
         "muted_instruments": tuple(state.muted_instruments),
+        "disabled_groups": tuple(state.disabled_groups),
+        "enabled_groups": tuple(state.enabled_groups),
+        "solo_groups": tuple(state.solo_groups),
         "revision": state.revision,
         "active": state.active,
     }

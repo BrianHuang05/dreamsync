@@ -26,6 +26,10 @@ _SPATIAL_LAYER_ROUTE_KEYS: tuple[str, ...] = (
     "time_offset_s",
     "duration_s",
     "layer_priority",
+    "target_groups",
+    "exclude_groups",
+    "target_match",
+    "untargeted_behavior",
 )
 
 _EQ_ROUTE_DEFAULTS: dict[tuple[str, str], dict[str, object]] = {

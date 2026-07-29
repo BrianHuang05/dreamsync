@@ -17,6 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from dreamsync.groups.models import (
+    GroupDefinition,
+    parse_group_definitions,
+    validate_memberships,
+)
 from dreamsync.output.govee_lan import (
     GoveeLanAdapter,
     GoveeLanConfig,
@@ -70,6 +75,7 @@ class DeviceConfig:
     brightness_scale: float | None = None  # 0.0–1.0, None = use default
     max_fps: float = 5.0
     placement: DevicePlacement | None = None
+    group_definitions: tuple[GroupDefinition, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -345,6 +351,7 @@ def load_device_config(path: Path) -> list[DeviceConfig]:
     if not isinstance(devices, list):
         raise ValueError(f"'devices' must be a list in {path}")
 
+    group_definitions = parse_group_definitions(raw.get("groups"))
     configs: list[DeviceConfig] = []
     for i, entry in enumerate(devices):
         if not isinstance(entry, dict):
@@ -353,6 +360,25 @@ def load_device_config(path: Path) -> list[DeviceConfig]:
             raise ValueError(f"Device entry {i} missing required 'address' field in {path}")
         bs_raw = entry.get("brightness_scale")
         placement = parse_device_placement(entry)
+        if placement is not None:
+            validate_memberships(
+                group_definitions,
+                placement.groups,
+                field_name=f"devices[{i}].groups",
+            )
+            for section in placement.sections:
+                validate_memberships(
+                    group_definitions,
+                    (*section.groups, *section.exclude_groups),
+                    field_name=f"devices[{i}].sections[{section.index}]",
+                )
+                overlap = set(section.groups) & set(section.exclude_groups)
+                if overlap:
+                    raise ValueError(
+                        f"devices[{i}].sections[{section.index}] lists group(s) "
+                        f"in both groups and exclude_groups: "
+                        f"{', '.join(sorted(overlap))}."
+                    )
         configs.append(DeviceConfig(
             name=entry.get("name", entry["address"]),
             address=entry["address"],
@@ -364,6 +390,7 @@ def load_device_config(path: Path) -> list[DeviceConfig]:
             brightness_scale=float(bs_raw) if bs_raw is not None else None,
             max_fps=float(entry.get("max_fps", 5.0)),
             placement=placement,
+            group_definitions=group_definitions,
         ))
 
     return configs
@@ -372,7 +399,18 @@ def load_device_config(path: Path) -> list[DeviceConfig]:
 def save_device_config(path: Path, configs: list[DeviceConfig]) -> None:
     """Write a list of DeviceConfig objects back to a YAML file."""
     yaml = _require_yaml()
-    payload = {"devices": [device_config_to_mapping(cfg) for cfg in configs]}
+    definitions = next(
+        (cfg.group_definitions for cfg in configs if cfg.group_definitions),
+        (),
+    )
+    payload: dict[str, object] = {
+        "devices": [device_config_to_mapping(cfg) for cfg in configs]
+    }
+    if definitions:
+        payload = {
+            "groups": [definition.to_mapping() for definition in definitions],
+            **payload,
+        }
     with open(path, "w", encoding="utf-8") as handle:
         yaml.safe_dump(payload, handle, sort_keys=False)
 
@@ -709,6 +747,10 @@ def build_multi_adapter(
         device_triples,
         ble_followers=ble_followers,
         spatial_mapper=spatial_mapper,
+        group_definitions=next(
+            (cfg.group_definitions for cfg in configs if cfg.group_definitions),
+            (),
+        ),
     )
 
 

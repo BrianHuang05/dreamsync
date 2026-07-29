@@ -100,7 +100,11 @@ def choose_show_playback_runtime(
 
     artifact = BakedFrameArtifact.from_json(artifact_path)
     return PlaybackRuntimeChoice(
-        runtime=BakedFramePlaybackRuntime(artifact, multi_adapter),
+        runtime=BakedFramePlaybackRuntime(
+            artifact,
+            multi_adapter,
+            control_state_getter=control_state_getter,
+        ),
         playback_mode_used="baked",
         baked_validation=validation,
         baked_artifact_path=artifact_path,
