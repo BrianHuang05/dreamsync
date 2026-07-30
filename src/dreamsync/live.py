@@ -3649,6 +3649,27 @@ def refresh_frame_intent_palette(
     return dataclasses.replace(intent, color=director.current_color)
 
 
+def synchronize_live_palette_params(
+    params: dict[str, Any] | None,
+    *,
+    palette_colors: tuple[str, ...],
+    palette_name: str | None,
+    render_mode: str,
+) -> dict[str, Any]:
+    """Make the active palette authoritative over stale effect parameters."""
+
+    synchronized = dict(params or {})
+    colors = tuple(str(color) for color in palette_colors if str(color).strip())
+    synchronized["_palette_colors"] = colors
+    synchronized["_palette_name"] = str(palette_name or "")
+    if str(render_mode).strip().lower() == RenderMode.GRADIENT.value:
+        if len(colors) >= 2:
+            synchronized["gradient_colors"] = colors
+        else:
+            synchronized.pop("gradient_colors", None)
+    return synchronized
+
+
 def _predictive_enabled_effects(
     effect_cycler: EffectCycler | None,
     *,
@@ -4023,14 +4044,16 @@ def run_live_to_govee(
             runtime_params["_render_mode"] = resolved_render_mode
         else:
             runtime_params.setdefault("_render_mode", resolved_render_mode)
-        runtime_params["_palette_colors"] = director.colors
-        runtime_params["_palette_name"] = (
-            effect_cycler.current_palette
-            if effect_cycler is not None
-            else ""
+        runtime_params = synchronize_live_palette_params(
+            runtime_params,
+            palette_colors=director.colors,
+            palette_name=(
+                effect_cycler.current_palette
+                if effect_cycler is not None
+                else ""
+            ),
+            render_mode=resolved_render_mode,
         )
-        if resolved_render_mode == RenderMode.GRADIENT.value and len(director.colors) >= 2:
-            runtime_params.setdefault("gradient_colors", director.colors)
 
         if intent.mode == EffectMode.RIPPLE:
             runtime_params.setdefault("spatial_preset", "ripple_from_center")

@@ -104,6 +104,11 @@ class SegmentRenderer:
 
     # Tracking
     _last_t: float = field(default=0.0, init=False, repr=False)
+    _last_palette_signature: tuple[str, ...] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         half = (self.segments + 1) // 2
@@ -116,6 +121,7 @@ class SegmentRenderer:
         params: dict | None = None,
     ) -> list[tuple[int, int, int]]:
         """Produce one frame of RGB segment colors."""
+        self._synchronize_palette_state(intent, params)
         dt = max(0.0, t - self._last_t) if self._last_t > 0 else 0.0
         self._last_t = t
 
@@ -132,6 +138,41 @@ class SegmentRenderer:
         elif self.mode == RenderMode.GRADIENT:
             return self._render_gradient(intent, dt, params)
         return self._render_solid(intent)
+
+    def _synchronize_palette_state(
+        self,
+        intent: LightingIntent,
+        params: dict | None,
+    ) -> None:
+        """Retint stateful pixels when the live palette changes."""
+
+        raw_palette = params.get("_palette_colors") if params else None
+        if not isinstance(raw_palette, (list, tuple)):
+            return
+        signature = tuple(
+            str(color).strip().lower()
+            for color in raw_palette
+            if str(color).strip()
+        )
+        if not signature:
+            return
+        previous_signature = self._last_palette_signature
+        self._last_palette_signature = signature
+        if previous_signature is None or previous_signature == signature:
+            return
+
+        active_color = intent.color or signature[0]
+        try:
+            target = _parse_hex(active_color)
+        except (ValueError, IndexError):
+            target = _parse_hex(signature[0])
+        retinted: list[tuple[float, float, float]] = []
+        for pixel in self._scroll_buf:
+            brightness = max(pixel, default=0.0) / 255.0
+            retinted.append(
+                tuple(float(channel) * brightness for channel in target)
+            )
+        self._scroll_buf = retinted
 
     # -- Solid ---------------------------------------------------------------
 

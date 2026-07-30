@@ -6,7 +6,11 @@ import pytest
 
 from dreamsync.director import Director, EffectMode, LightingIntent
 from dreamsync.effects import EffectCycler
-from dreamsync.live import _predictive_enabled_effects, refresh_frame_intent_palette
+from dreamsync.live import (
+    _predictive_enabled_effects,
+    refresh_frame_intent_palette,
+    synchronize_live_palette_params,
+)
 from dreamsync.output.govee_lan import MultiGoveeLanAdapter
 from dreamsync.output.null_adapter import (
     PreviewMirrorAdapter,
@@ -390,6 +394,54 @@ def test_structural_palette_commit_refreshes_stale_frame_intent() -> None:
     assert refreshed.intensity == stale.intensity
     assert refreshed.speed == stale.speed
     assert refreshed.bpm == stale.bpm
+
+
+def test_live_palette_cycle_replaces_stale_gradient_colors() -> None:
+    warm = ("#ff4400", "#ff8800")
+    ice = ("#0044ff", "#00ccff")
+
+    params = synchronize_live_palette_params(
+        {
+            "gradient_colors": warm,
+            "gradient_speed": 0.08,
+        },
+        palette_colors=ice,
+        palette_name="ice",
+        render_mode="gradient",
+    )
+    frame = SegmentRenderer(segments=7, mode=RenderMode.GRADIENT).render(
+        1.0,
+        _intent(color=ice[0], intensity=1.0),
+        params=params,
+    )
+
+    assert params["gradient_colors"] == ice
+    assert params["_palette_colors"] == ice
+    assert params["_palette_name"] == "ice"
+    assert all(pixel[2] >= pixel[0] for pixel in frame)
+
+
+def test_live_palette_cycle_retints_existing_scroll_trail() -> None:
+    renderer = SegmentRenderer(segments=9, mode=RenderMode.SCROLL)
+
+    warm_frame = renderer.render(
+        1.0,
+        _intent(color="#ff4400", intensity=1.0),
+        beat=True,
+        params={"_palette_colors": ("#ff4400", "#ff8800")},
+    )
+    assert any(pixel[0] > pixel[2] for pixel in warm_frame if max(pixel) > 0)
+
+    ice_frame = renderer.render(
+        1.1,
+        _intent(color="#0044ff", intensity=1.0),
+        beat=False,
+        params={"_palette_colors": ("#0044ff", "#00ccff")},
+    )
+    lit_pixels = [pixel for pixel in ice_frame if max(pixel) > 0]
+
+    assert lit_pixels
+    assert all(pixel[2] >= pixel[0] for pixel in lit_pixels)
 
 
 def _committed_cue(cue_class: str) -> CueProposal:
