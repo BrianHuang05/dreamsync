@@ -137,6 +137,7 @@ def build_spatial_canvas(qt_modules, nodes: list[SceneNode], *, interactive: boo
             self._background_theme = background_theme
             self._interactive = interactive
             self._individual_node_editing = False
+            self._strip_render_mode = "bounds" if interactive else "segments"
             self._drag_key = ""
             self._last_drag_pos = None
             self.setObjectName("spatialCanvas" if interactive else "simulationSpatialCanvas")
@@ -159,6 +160,21 @@ def build_spatial_canvas(qt_modules, nodes: list[SceneNode], *, interactive: boo
         def set_individual_node_editing(self, enabled: bool) -> None:
             self._individual_node_editing = bool(enabled)
             self.update()
+
+        def set_strip_render_mode(self, mode: str) -> None:
+            self._strip_render_mode = (
+                "bounds" if str(mode).strip().lower() == "bounds" else "segments"
+            )
+            self.update()
+
+        def strip_render_mode(self) -> str:
+            return self._strip_render_mode
+
+        def _renders_strip_segments(self) -> bool:
+            return (
+                self._individual_node_editing
+                or self._strip_render_mode == "segments"
+            )
 
         def set_background_theme(self, background_name: str) -> None:
             self._background_theme = "light" if background_name == "light" else "dark"
@@ -420,6 +436,26 @@ def build_spatial_canvas(qt_modules, nodes: list[SceneNode], *, interactive: boo
                     chain[0].physical_name or chain[0].label,
                 )
 
+        def _draw_strip_segment_labels(self, painter, *, dark_theme: bool) -> None:
+            painter.setPen(
+                QtGui.QPen(
+                    QtGui.QColor("#d8e1ee" if dark_theme else "#1b2431")
+                )
+            )
+            for chain in group_section_chains(self._nodes).values():
+                if not chain:
+                    continue
+                midpoint = chain[len(chain) // 2]
+                px, py = _project_node_for_view(
+                    midpoint,
+                    view_mode=self._view_mode,
+                    config=cfg,
+                )
+                painter.drawText(
+                    QtCore.QPointF(px + 8.0, py - 9.0),
+                    chain[0].physical_name or chain[0].label,
+                )
+
         def paintEvent(self, _event) -> None:  # pragma: no cover - Qt only
             painter = QtGui.QPainter(self)
             painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
@@ -444,17 +480,18 @@ def build_spatial_canvas(qt_modules, nodes: list[SceneNode], *, interactive: boo
                 QtCore.QRectF(20.0, 48.0, self.width() - 40.0, 20.0),
                 f"View: {self._view_mode.upper()} | Drag axis: {self._active_axis.upper()}",
             )
+            render_strip_segments = self._renders_strip_segments()
             if self._individual_node_editing:
                 self._draw_selected_guides(painter)
-            if self._individual_node_editing:
+            if render_strip_segments:
                 self._draw_strip_links(painter, dark_theme=dark_theme)
 
             selected = self._selected_node()
             selected_chain_key = selected.chain_key if selected is not None else ""
-            if not self._individual_node_editing:
+            if not render_strip_segments:
                 self._draw_strip_boxes(painter, dark_theme=dark_theme)
             for node in self._nodes:
-                if node.is_section and not self._individual_node_editing:
+                if node.is_section and not render_strip_segments:
                     continue
                 px, py = _project_node_for_view(node, view_mode=self._view_mode, config=cfg)
                 painter.setBrush(QtGui.QColor(node.color))
@@ -468,14 +505,35 @@ def build_spatial_canvas(qt_modules, nodes: list[SceneNode], *, interactive: boo
                         else QtGui.QColor("#0b0f16" if dark_theme else "#4f5d73")
                     )
                 )
-                radius = 12.0 if node.selected else 9.0
-                painter.drawEllipse(QtCore.QPointF(px, py), radius, radius)
-                node_label = (
-                    str((node.section_index or 0) + 1)
-                    if node.is_section and node.section_index is not None
-                    else node.label
+                radius = (
+                    12.0
+                    if node.selected
+                    else 6.0
+                    if node.is_section and not self._individual_node_editing
+                    else 9.0
                 )
-                painter.setPen(QtGui.QPen(text_color))
-                painter.drawText(QtCore.QPointF(px + 12.0, py + 4.0), node_label)
+                painter.drawEllipse(QtCore.QPointF(px, py), radius, radius)
+                if node.is_section:
+                    node_label = (
+                        str((node.section_index or 0) + 1)
+                        if (
+                            node.section_index is not None
+                            and self._individual_node_editing
+                        )
+                        else ""
+                    )
+                else:
+                    node_label = node.label
+                if node_label:
+                    painter.setPen(QtGui.QPen(text_color))
+                    painter.drawText(
+                        QtCore.QPointF(px + 12.0, py + 4.0),
+                        node_label,
+                    )
+            if render_strip_segments and not self._individual_node_editing:
+                self._draw_strip_segment_labels(
+                    painter,
+                    dark_theme=dark_theme,
+                )
 
     return SpatialCanvas()

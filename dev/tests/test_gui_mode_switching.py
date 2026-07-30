@@ -28,6 +28,14 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
     show_preview_canvas = window.findChild(QtWidgets.QWidget, "showSimulationSpatialCanvas")
     show_preview_view = window.findChild(QtWidgets.QComboBox, "showSimulationViewCombo")
     show_preview_background = window.findChild(QtWidgets.QComboBox, "showSimulationBackgroundCombo")
+    show_preview_strip_mode = window.findChild(
+        QtWidgets.QComboBox,
+        "showSimulationStripModeCombo",
+    )
+    live_preview_strip_mode = window.findChild(
+        QtWidgets.QComboBox,
+        "simulationStripModeCombo",
+    )
     routing_status = window.findChild(QtWidgets.QLabel, "routingStatusLabel")
     ready_list = window.findChild(QtWidgets.QListWidget, "capturedReadyList")
     recent_saved = window.findChild(QtWidgets.QListWidget, "recentSavedShowsList")
@@ -169,6 +177,17 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
     assert show_preview_canvas is not None
     assert show_preview_view is not None
     assert show_preview_background is not None
+    assert show_preview_strip_mode is not None
+    assert live_preview_strip_mode is not None
+    assert show_preview_strip_mode.currentData() == "segments"
+    assert live_preview_strip_mode.currentData() == "segments"
+    assert show_preview_canvas.strip_render_mode() == "segments"
+    show_preview_strip_mode.setCurrentIndex(
+        show_preview_strip_mode.findData("bounds")
+    )
+    app.processEvents()
+    assert live_preview_strip_mode.currentData() == "bounds"
+    assert show_preview_canvas.strip_render_mode() == "bounds"
     assert routing_status is not None
     assert ready_list is not None
     assert recent_saved is not None

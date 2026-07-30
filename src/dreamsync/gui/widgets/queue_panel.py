@@ -221,6 +221,7 @@ class QueuePanelWidgets:
     show_simulation_content: object
     show_simulation_view_combo: object
     show_simulation_background_combo: object
+    show_simulation_strip_mode_combo: object
     show_simulation_popout_button: object
     show_simulation_fullscreen_button: object
     show_simulation_host: object
@@ -243,6 +244,7 @@ class QueuePanelWidgets:
     input_device_status_label: object
     simulation_view_combo: object
     simulation_background_combo: object
+    simulation_strip_mode_combo: object
     simulation_freeze_check: object
     simulation_frame_diagnostics_label: object
     simulation_popout_button: object
@@ -2126,6 +2128,12 @@ def build_queue_panel(qt_modules):
     simulation_background_combo.addItem("White", "light")
     simulation_background_combo.setObjectName("simulationBackgroundCombo")
     simulation_controls.addWidget(simulation_background_combo, 1)
+    simulation_controls.addWidget(QtWidgets.QLabel("Strips"))
+    simulation_strip_mode_combo = QtWidgets.QComboBox()
+    simulation_strip_mode_combo.addItem("Segments", "segments")
+    simulation_strip_mode_combo.addItem("Bounds", "bounds")
+    simulation_strip_mode_combo.setObjectName("simulationStripModeCombo")
+    simulation_controls.addWidget(simulation_strip_mode_combo, 1)
     simulation_freeze_check = QtWidgets.QCheckBox("Freeze frame")
     simulation_freeze_check.setObjectName("simulationFreezeFrameCheck")
     simulation_freeze_check.setToolTip(
@@ -2392,6 +2400,17 @@ def build_queue_panel(qt_modules):
     show_simulation_background_combo.addItem("White", "light")
     show_simulation_background_combo.setObjectName("showSimulationBackgroundCombo")
     show_simulation_controls.addWidget(show_simulation_background_combo, 1)
+    show_simulation_controls.addWidget(QtWidgets.QLabel("Strips"))
+    show_simulation_strip_mode_combo = QtWidgets.QComboBox()
+    show_simulation_strip_mode_combo.addItem("Segments", "segments")
+    show_simulation_strip_mode_combo.addItem("Bounds", "bounds")
+    show_simulation_strip_mode_combo.setObjectName(
+        "showSimulationStripModeCombo"
+    )
+    show_simulation_controls.addWidget(
+        show_simulation_strip_mode_combo,
+        1,
+    )
     show_simulation_popout_button = QtWidgets.QPushButton("Pop Out")
     show_simulation_popout_button.setObjectName("showSimulationPopoutButton")
     show_simulation_controls.addWidget(show_simulation_popout_button)
@@ -2765,6 +2784,7 @@ def build_queue_panel(qt_modules):
         show_simulation_content=show_simulation_content,
         show_simulation_view_combo=show_simulation_view_combo,
         show_simulation_background_combo=show_simulation_background_combo,
+        show_simulation_strip_mode_combo=show_simulation_strip_mode_combo,
         show_simulation_popout_button=show_simulation_popout_button,
         show_simulation_fullscreen_button=show_simulation_fullscreen_button,
         show_simulation_host=show_simulation_host,
@@ -2787,6 +2807,7 @@ def build_queue_panel(qt_modules):
         input_device_status_label=input_device_status_label,
         simulation_view_combo=simulation_view_combo,
         simulation_background_combo=simulation_background_combo,
+        simulation_strip_mode_combo=simulation_strip_mode_combo,
         simulation_freeze_check=simulation_freeze_check,
         simulation_frame_diagnostics_label=simulation_frame_diagnostics_label,
         simulation_popout_button=simulation_popout_button,

@@ -12,7 +12,14 @@ from dreamsync.gui.models.spatial_scene import ProjectionConfig, project_point
 from dreamsync.gui.services.device_service import DeviceService
 from dreamsync.gui.settings import GuiSettings
 from dreamsync.gui.qt import require_qt
-from dreamsync.gui.widgets.spatial_canvas import _cycle_axis_name, _cycle_view_mode, _project_node_for_view, _spatial_hint_text, _visible_axes_for_view
+from dreamsync.gui.widgets.spatial_canvas import (
+    _cycle_axis_name,
+    _cycle_view_mode,
+    _project_node_for_view,
+    _spatial_hint_text,
+    _visible_axes_for_view,
+    build_spatial_canvas,
+)
 
 
 def test_projection_is_deterministic():
@@ -50,6 +57,46 @@ def test_cycle_view_mode_advances_in_room_plane_order():
     assert _cycle_view_mode("xz") == "yz"
     assert _cycle_view_mode("yz") == "room"
     assert _cycle_view_mode("invalid") == "room"
+
+
+def test_preview_defaults_to_segmented_strips_while_editor_uses_bounds():
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    nodes = [
+        SceneNode(
+            key=f"strip#section:{index}",
+            label=f"Strip [{index + 1}/2]",
+            x=index * 0.05,
+            y=0.0,
+            address="strip",
+            physical_name="Strip",
+            section_index=index,
+            section_count=2,
+            is_section=True,
+        )
+        for index in range(2)
+    ]
+
+    preview = build_spatial_canvas(
+        require_qt(),
+        nodes,
+        interactive=False,
+    )
+    editor = build_spatial_canvas(
+        require_qt(),
+        nodes,
+        interactive=True,
+    )
+
+    assert preview.strip_render_mode() == "segments"
+    assert preview._renders_strip_segments() is True
+    assert editor.strip_render_mode() == "bounds"
+    assert editor._renders_strip_segments() is False
+    editor.set_individual_node_editing(True)
+    assert editor._renders_strip_segments() is True
+    preview.close()
+    editor.close()
+    app.processEvents()
 
 
 def test_spatial_controller_round_trip(tmp_path: Path):

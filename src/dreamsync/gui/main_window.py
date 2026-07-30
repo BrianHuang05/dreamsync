@@ -2122,6 +2122,10 @@ def create_main_window(
         data = queue_panel.simulation_background_combo.currentData()
         return str(data or "dark")
 
+    def _current_simulation_strip_mode() -> str:
+        data = queue_panel.simulation_strip_mode_combo.currentData()
+        return "bounds" if str(data or "") == "bounds" else "segments"
+
     def _preview_scene_nodes(color_overrides: dict[str, str] | None = None) -> list[SceneNode]:
         overrides = color_overrides or {}
         return [
@@ -2140,6 +2144,7 @@ def create_main_window(
         canvas.set_nodes(_preview_scene_nodes(simulation_frame_state["node_colors"]))
         canvas.set_view_mode(_current_simulation_view_mode())
         canvas.set_background_theme(_current_simulation_background())
+        canvas.set_strip_render_mode(_current_simulation_strip_mode())
 
     def _render_preview_simulation(preview_snapshot: dict[str, object] | None = None) -> None:
         if preview_snapshot is not None:
@@ -9766,6 +9771,12 @@ def create_main_window(
             queue_panel.show_simulation_background_combo,
         )
     )
+    queue_panel.simulation_strip_mode_combo.currentIndexChanged.connect(
+        lambda _index: _sync_preview_combo(
+            queue_panel.simulation_strip_mode_combo,
+            queue_panel.show_simulation_strip_mode_combo,
+        )
+    )
     queue_panel.show_simulation_view_combo.currentIndexChanged.connect(
         lambda _index: _sync_preview_combo(
             queue_panel.show_simulation_view_combo,
@@ -9776,6 +9787,12 @@ def create_main_window(
         lambda _index: _sync_preview_combo(
             queue_panel.show_simulation_background_combo,
             queue_panel.simulation_background_combo,
+        )
+    )
+    queue_panel.show_simulation_strip_mode_combo.currentIndexChanged.connect(
+        lambda _index: _sync_preview_combo(
+            queue_panel.show_simulation_strip_mode_combo,
+            queue_panel.simulation_strip_mode_combo,
         )
     )
     queue_panel.simulation_popout_button.clicked.connect(lambda: _show_simulation_window(fullscreen=False))
