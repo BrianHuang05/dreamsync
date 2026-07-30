@@ -3505,12 +3505,140 @@ def create_main_window(
         edit.setObjectName(object_name)
         return edit
 
+    def _show_cue_group_picker(
+        text: str,
+        *,
+        object_name: str,
+        empty_label: str,
+        on_change,
+    ) -> object:
+        """Build a checkable dropdown backed by stable group IDs."""
+
+        selected_ids = {
+            part.strip().lower()
+            for part in str(text or "").split(",")
+            if part.strip() and part.strip().lower() != "all"
+        }
+        button = QtWidgets.QToolButton()
+        button.setObjectName(object_name)
+        button.setProperty("groupPicker", True)
+        button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        button.setToolButtonStyle(
+            QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        button.setMinimumWidth(130)
+        menu = QtWidgets.QMenu(button)
+        button.setMenu(menu)
+
+        def _ordered_ids() -> tuple[str, ...]:
+            defined_ids = tuple(
+                definition.id
+                for definition in spatial_controller.group_definitions
+            )
+            return (
+                *(group_id for group_id in defined_ids if group_id in selected_ids),
+                *sorted(selected_ids - set(defined_ids)),
+            )
+
+        def _refresh_button() -> None:
+            ordered_ids = _ordered_ids()
+            labels_by_id = {
+                definition.id: definition.name
+                for definition in spatial_controller.group_definitions
+            }
+            labels = tuple(
+                labels_by_id.get(group_id, f"{group_id} (missing)")
+                for group_id in ordered_ids
+            )
+            if not labels:
+                display = empty_label
+            elif len(labels) <= 2:
+                display = ", ".join(labels)
+            else:
+                display = f"{labels[0]}, {labels[1]} +{len(labels) - 2}"
+            button.setText(display)
+            button.setToolTip(
+                ", ".join(
+                    f"{labels_by_id.get(group_id, group_id)} [{group_id}]"
+                    for group_id in ordered_ids
+                )
+                or empty_label
+            )
+            button.setProperty("selectedGroupIds", list(ordered_ids))
+
+        def _set_selected(group_id: str, checked: bool) -> None:
+            if checked:
+                selected_ids.add(group_id)
+            else:
+                selected_ids.discard(group_id)
+            _refresh_button()
+            on_change()
+
+        def _clear_selected() -> None:
+            if not selected_ids:
+                return
+            selected_ids.clear()
+            _refresh_button()
+            _rebuild_menu()
+            on_change()
+
+        def _rebuild_menu() -> None:
+            menu.clear()
+            definitions = tuple(spatial_controller.group_definitions)
+            labels_by_id = {
+                definition.id: definition.name
+                for definition in definitions
+            }
+            option_ids = (
+                *(definition.id for definition in definitions),
+                *sorted(selected_ids - set(labels_by_id)),
+            )
+            if not option_ids:
+                empty_action = menu.addAction("No groups defined in Room Layout")
+                empty_action.setEnabled(False)
+            for group_id in option_ids:
+                checkbox = QtWidgets.QCheckBox(
+                    labels_by_id.get(group_id, f"{group_id} (missing)")
+                )
+                checkbox.setObjectName(f"{object_name}Option")
+                checkbox.setProperty("groupId", group_id)
+                checkbox.setChecked(group_id in selected_ids)
+                checkbox.toggled.connect(
+                    lambda checked, selected_group_id=group_id: _set_selected(
+                        selected_group_id,
+                        bool(checked),
+                    )
+                )
+                action = QtWidgets.QWidgetAction(menu)
+                action.setDefaultWidget(checkbox)
+                menu.addAction(action)
+            menu.addSeparator()
+            clear_button = QtWidgets.QPushButton("Clear selection")
+            clear_button.setObjectName(f"{object_name}ClearButton")
+            clear_button.setEnabled(bool(selected_ids))
+            clear_button.clicked.connect(_clear_selected)
+            clear_action = QtWidgets.QWidgetAction(menu)
+            clear_action.setDefaultWidget(clear_button)
+            menu.addAction(clear_action)
+
+        menu.aboutToShow.connect(_rebuild_menu)
+        _refresh_button()
+        _rebuild_menu()
+        return button
+
     def _row_text_edit(table: object, row: int, column: int) -> str:
         widget = table.cellWidget(row, column)
         if widget is not None and widget.objectName() == "showCuePaletteEdit":
             return ", ".join(_show_cue_palette_colors(widget))
         if widget is not None and widget.objectName() == "showPaletteEdit":
             return ", ".join(_show_cue_palette_colors(widget))
+        if widget is not None and bool(widget.property("groupPicker")):
+            return ", ".join(
+                str(group_id)
+                for group_id in (
+                    widget.property("selectedGroupIds") or ()
+                )
+            )
         if widget is None or not hasattr(widget, "text"):
             return ""
         return str(widget.text()).strip()
@@ -5027,12 +5155,12 @@ def create_main_window(
         layer_priority_spin.setValue(int(cue_state["layer_priority"]))
         layer_priority_spin.valueChanged.connect(refresh_timeline)
         table.setCellWidget(row, SHOW_CUE_COL_LAYER_PRIORITY, layer_priority_spin)
-        target_groups_edit = _show_cue_text_edit(
+        target_groups_edit = _show_cue_group_picker(
             str(cue_state["target_groups"]),
-            object_name="showCueTargetGroupsEdit",
+            object_name="showCueTargetGroupsPicker",
+            empty_label="All groups",
+            on_change=refresh_timeline,
         )
-        target_groups_edit.setPlaceholderText("group-a, left")
-        target_groups_edit.textChanged.connect(refresh_timeline)
         table.setCellWidget(
             row,
             SHOW_CUE_COL_TARGET_GROUPS,
@@ -5049,12 +5177,12 @@ def create_main_window(
             SHOW_CUE_COL_TARGET_MATCH,
             target_match_combo,
         )
-        exclude_groups_edit = _show_cue_text_edit(
+        exclude_groups_edit = _show_cue_group_picker(
             str(cue_state["exclude_groups"]),
-            object_name="showCueExcludeGroupsEdit",
+            object_name="showCueExcludeGroupsPicker",
+            empty_label="No exclusions",
+            on_change=refresh_timeline,
         )
-        exclude_groups_edit.setPlaceholderText("accent")
-        exclude_groups_edit.textChanged.connect(refresh_timeline)
         table.setCellWidget(
             row,
             SHOW_CUE_COL_EXCLUDE_GROUPS,

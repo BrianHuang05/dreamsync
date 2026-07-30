@@ -427,7 +427,9 @@ if __name__ == "__main__":
     unittest.main()
 
 
-def test_gui_exposes_group_membership_runtime_and_cue_controls() -> None:
+def test_gui_exposes_group_membership_runtime_and_cue_controls(
+    monkeypatch,
+) -> None:
     import pytest
 
     QtWidgets = pytest.importorskip("PySide6.QtWidgets")
@@ -442,6 +444,8 @@ def test_gui_exposes_group_membership_runtime_and_cue_controls() -> None:
 groups:
   - id: group-a
     name: Group A
+  - id: group-b
+    name: Group B
 devices:
   - name: Strip
     address: strip-a
@@ -458,6 +462,45 @@ devices:
 """,
         encoding="utf-8",
     )
+    from dreamsync.show.models import Show, ShowCue, ShowTimeline, ShowTrack
+
+    audio_path = directory / "picker-test.mp3"
+    audio_path.touch()
+    show_path = directory / "picker-test.show.json"
+    timeline = ShowTimeline(
+        song_path=str(audio_path),
+        duration=1.0,
+        bpm=120.0,
+        time_signature=4,
+        beat_times=(0.0,),
+        downbeat_times=(0.0,),
+        cues=(
+            ShowCue(
+                t=0.0,
+                render_mode="solid",
+                color_palette=("#123456",),
+                intensity=1.0,
+                speed=1.0,
+                params={
+                    "target_groups": ["group-a"],
+                    "exclude_groups": ["group-b"],
+                },
+                transition="cut",
+                transition_beats=0,
+            ),
+        ),
+        metadata={},
+    )
+    Show(
+        name="Picker Test",
+        tracks=(
+            ShowTrack(
+                audio_path=str(audio_path),
+                timeline=timeline,
+            ),
+        ),
+        metadata={},
+    ).to_json(show_path)
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     window = create_main_window(require_qt(), GuiSettings(), config_path=path)
     membership = window.findChild(QtWidgets.QListWidget, "spatialMembershipList")
@@ -475,8 +518,8 @@ devices:
         "runtimeSoloGroupsEdit",
     )
     cue_table = window.findChild(QtWidgets.QTableWidget, "showCuesTable")
-    assert membership is not None and membership.count() == 1
-    assert group_list is not None and group_list.count() == 1
+    assert membership is not None and membership.count() == 2
+    assert group_list is not None and group_list.count() == 2
     assert disabled_groups is not None
     assert enabled_groups is not None
     assert solo_groups is not None
@@ -491,5 +534,42 @@ devices:
         "Exclude Groups",
         "Untargeted",
     ]
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "getOpenFileName",
+        lambda *args, **kwargs: (str(show_path), ""),
+    )
+    window.findChild(QtWidgets.QPushButton, "loadShowButton").click()
+    app.processEvents()
+    target_picker = window.findChild(
+        QtWidgets.QToolButton,
+        "showCueTargetGroupsPicker",
+    )
+    exclude_picker = window.findChild(
+        QtWidgets.QToolButton,
+        "showCueExcludeGroupsPicker",
+    )
+    assert target_picker is not None
+    assert exclude_picker is not None
+    assert target_picker.property("selectedGroupIds") == ["group-a"]
+    assert exclude_picker.property("selectedGroupIds") == ["group-b"]
+    target_options = {
+        option.property("groupId"): option
+        for option in target_picker.menu().findChildren(QtWidgets.QCheckBox)
+    }
+    assert set(target_options) == {"group-a", "group-b"}
+    target_options["group-b"].setChecked(True)
+    app.processEvents()
+    assert target_picker.property("selectedGroupIds") == [
+        "group-a",
+        "group-b",
+    ]
+    assert target_picker.text() == "Group A, Group B"
+    window.findChild(QtWidgets.QPushButton, "saveShowButton").click()
+    app.processEvents()
+    saved_show = Show.from_json(show_path)
+    saved_params = saved_show.tracks[0].timeline.cues[0].params
+    assert saved_params["target_groups"] == ["group-a", "group-b"]
+    assert saved_params["exclude_groups"] == ["group-b"]
     window.close()
     app.processEvents()
