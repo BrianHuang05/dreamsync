@@ -124,6 +124,7 @@ class QueuePanelWidgets:
     reactive_profile_override_label: object
     browse_reactive_profile_button: object
     reactive_show_palette_set_combo: object
+    reactive_palette_rotation_label: object
     reactive_rotation_profiles_edit: object
     reactive_configuration_warning_label: object
     reactive_rotation_interval_spin: object
@@ -821,18 +822,18 @@ def build_queue_panel(qt_modules):
     reactive_layout.addWidget(reactive_telemetry_dir_edit, 12, 1)
     reactive_layout.addWidget(QtWidgets.QLabel("Reactive profile"), 13, 0)
     reactive_profile_strategy_combo = QtWidgets.QComboBox()
-    reactive_profile_strategy_combo.addItem("Use active profile", "active_profile")
-    reactive_profile_strategy_combo.addItem("Choose one profile", "override_profile")
+    reactive_profile_strategy_combo.addItem("Follow active profile", "active_profile")
+    reactive_profile_strategy_combo.addItem("Use one profile", "override_profile")
     reactive_profile_strategy_combo.addItem(
-        "Cycle profiles on song change", "song_change_rotation"
+        "Change profiles on song change", "song_change_rotation"
     )
-    reactive_profile_strategy_combo.addItem("Auto Profile", "auto_profile")
     reactive_profile_strategy_combo.addItem("Rotate profiles on a timer", "profile_rotation")
-    reactive_profile_strategy_combo.addItem("Smart timed rotation", "smart_rotation")
+    reactive_profile_strategy_combo.addItem("Smart profile rotation", "smart_rotation")
     reactive_profile_strategy_combo.setObjectName("reactiveProfileStrategyCombo")
     reactive_profile_strategy_combo.setToolTip(
-        "Choose one profile manually, or cycle the listed profiles only when "
-        "the Reactive detector identifies a new song."
+        "Advanced behavior-profile automation. Follow the active profile, "
+        "choose one file, rotate on detected song changes or a timer, or use "
+        "smart blended rotation."
     )
     reactive_layout.addWidget(reactive_profile_strategy_combo, 13, 1)
     reactive_layout.addWidget(QtWidgets.QLabel("Selected profile"), 14, 0)
@@ -1288,7 +1289,9 @@ def build_queue_panel(qt_modules):
     reactive_mode_status_label.setObjectName("reactiveModeStatusLabel")
     reactive_mode_status_label.setWordWrap(True)
     reactive_status_layout.addWidget(reactive_mode_status_label)
-    reactive_profile_label = QtWidgets.QLabel("Active profile: awaiting Reactive session")
+    reactive_profile_label = QtWidgets.QLabel(
+        "Behavior profile queued: follows the active profile"
+    )
     reactive_profile_label.setObjectName("reactiveProfileLabel")
     reactive_profile_label.setStyleSheet("color: #94a3b8;")
     reactive_profile_label.setWordWrap(True)
@@ -1566,107 +1569,191 @@ def build_queue_panel(qt_modules):
         reactive_live_output_group
     )
 
-    reactive_live_profile_group = QtWidgets.QGroupBox(
-        "Profile + Palette Source"
-    )
+    reactive_live_profile_group = QtWidgets.QGroupBox("Palette Source + Rotation")
+    reactive_live_profile_group.setObjectName("reactivePaletteSourceGroup")
     reactive_live_profile_layout = QtWidgets.QGridLayout(
         reactive_live_profile_group
     )
     reactive_live_profile_layout.addWidget(
-        QtWidgets.QLabel("Profile behavior"),
+        QtWidgets.QLabel("Palette pool"),
         0,
-        0,
-    )
-    reactive_live_profile_layout.addWidget(
-        reactive_profile_strategy_combo,
-        0,
-        1,
-    )
-    reactive_live_profile_layout.addWidget(
-        QtWidgets.QLabel("Selected profile"),
-        1,
-        0,
-    )
-    reactive_live_profile_layout.addWidget(
-        reactive_profile_picker,
-        1,
-        1,
-    )
-    reactive_live_profile_layout.addWidget(
-        QtWidgets.QLabel("Show Palette set"),
-        2,
         0,
     )
     reactive_live_profile_layout.addWidget(
         reactive_show_palette_set_combo,
+        0,
+        1,
+    )
+    reactive_palette_rotation_label = QtWidgets.QLabel(
+        "Mood palettes from the active profile"
+    )
+    reactive_palette_rotation_label.setObjectName(
+        "reactivePaletteRotationLabel"
+    )
+    reactive_palette_rotation_label.setWordWrap(True)
+    reactive_palette_rotation_label.setTextInteractionFlags(
+        QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+    )
+    reactive_live_profile_layout.addWidget(
+        QtWidgets.QLabel("Palettes in rotation"),
+        1,
+        0,
+    )
+    reactive_live_profile_layout.addWidget(
+        reactive_palette_rotation_label,
+        1,
+        1,
+    )
+    reactive_palette_rotation_help = QtWidgets.QLabel(
+        "Show Palette sets advance at detected song boundaries. "
+        "Mood palettes follow the active mood and effect."
+    )
+    reactive_palette_rotation_help.setObjectName(
+        "reactivePaletteRotationHelpLabel"
+    )
+    reactive_palette_rotation_help.setWordWrap(True)
+    reactive_palette_rotation_help.setStyleSheet("color: #94a3b8;")
+    reactive_live_profile_layout.addWidget(
+        reactive_palette_rotation_help,
+        2,
+        0,
+        1,
+        2,
+    )
+    reactive_live_settings_layout.addWidget(reactive_live_profile_group)
+
+    reactive_profile_automation_group = QtWidgets.QGroupBox(
+        "Advanced Profile Automation"
+    )
+    reactive_profile_automation_group.setObjectName(
+        "reactiveProfileAutomationGroup"
+    )
+    reactive_profile_automation_layout = QtWidgets.QGridLayout(
+        reactive_profile_automation_group
+    )
+    reactive_profile_automation_layout.addWidget(
+        QtWidgets.QLabel("Profile automation"),
+        0,
+        0,
+    )
+    reactive_profile_automation_layout.addWidget(
+        reactive_profile_strategy_combo,
+        0,
+        1,
+    )
+    reactive_profile_picker_label = QtWidgets.QLabel("Profile file")
+    reactive_profile_picker_label.setObjectName(
+        "reactiveProfilePickerLabel"
+    )
+    reactive_profile_automation_layout.addWidget(
+        reactive_profile_picker_label,
+        1,
+        0,
+    )
+    reactive_profile_automation_layout.addWidget(
+        reactive_profile_picker,
+        1,
+        1,
+    )
+    reactive_rotation_profiles_label = QtWidgets.QLabel(
+        "Profiles in automation"
+    )
+    reactive_rotation_profiles_label.setObjectName(
+        "reactiveRotationProfilesLabel"
+    )
+    reactive_profile_automation_layout.addWidget(
+        reactive_rotation_profiles_label,
+        2,
+        0,
+    )
+    reactive_profile_automation_layout.addWidget(
+        reactive_rotation_profiles_edit,
         2,
         1,
     )
-    reactive_live_profile_layout.addWidget(
-        QtWidgets.QLabel("Profile cycle list"),
+    reactive_rotation_interval_label = QtWidgets.QLabel("Rotation interval")
+    reactive_rotation_interval_label.setObjectName(
+        "reactiveRotationIntervalLabel"
+    )
+    reactive_profile_automation_layout.addWidget(
+        reactive_rotation_interval_label,
         3,
         0,
     )
-    reactive_live_profile_layout.addWidget(
-        reactive_rotation_profiles_edit,
-        3,
-        1,
-    )
-    reactive_live_profile_layout.addWidget(
-        QtWidgets.QLabel("Rotation interval"),
-        4,
-        0,
-    )
-    reactive_live_profile_layout.addWidget(
+    reactive_profile_automation_layout.addWidget(
         reactive_rotation_interval_spin,
-        4,
+        3,
         1,
     )
-    reactive_live_profile_layout.addWidget(
+    reactive_auto_palette_check.setText("Generate the smart profile pool")
+    reactive_profile_automation_layout.addWidget(
         reactive_auto_palette_check,
-        5,
+        4,
         0,
-    )
-    reactive_live_profile_layout.addWidget(
-        reactive_smart_rotation_check,
-        5,
         1,
+        2,
     )
-    reactive_live_profile_layout.addWidget(
-        QtWidgets.QLabel("Chain blend"),
-        6,
+    # Kept for settings migration only. The strategy selector is now the
+    # single authority for smart profile rotation.
+    reactive_smart_rotation_check.setVisible(False)
+    reactive_chain_blend_label = QtWidgets.QLabel("Chain blend")
+    reactive_chain_blend_label.setObjectName("reactiveChainBlendLabel")
+    reactive_profile_automation_layout.addWidget(
+        reactive_chain_blend_label,
+        5,
         0,
     )
-    reactive_live_profile_layout.addWidget(
+    reactive_profile_automation_layout.addWidget(
         reactive_chain_blend_spin,
-        6,
+        5,
         1,
     )
-    reactive_live_profile_layout.addWidget(
+    seed_widget.setObjectName("reactiveAutoPaletteSeedWidget")
+    reactive_profile_automation_layout.addWidget(
         seed_widget,
+        6,
+        0,
+        1,
+        2,
+    )
+    reactive_auto_palette_pool_size_label = QtWidgets.QLabel(
+        "Generated profile count"
+    )
+    reactive_auto_palette_pool_size_label.setObjectName(
+        "reactiveAutoPalettePoolSizeLabel"
+    )
+    reactive_profile_automation_layout.addWidget(
+        reactive_auto_palette_pool_size_label,
         7,
         0,
-        1,
-        2,
     )
-    reactive_live_profile_layout.addWidget(
-        reactive_chain_dwell_range_check,
+    reactive_profile_automation_layout.addWidget(
+        reactive_auto_palette_pool_size_spin,
+        7,
+        1,
+    )
+    reactive_chain_dwell_range_check.setVisible(False)
+    reactive_chain_dwell_label = QtWidgets.QLabel("Dwell range")
+    reactive_chain_dwell_label.setObjectName("reactiveChainDwellLabel")
+    reactive_profile_automation_layout.addWidget(
+        reactive_chain_dwell_label,
         8,
         0,
     )
-    reactive_live_profile_layout.addWidget(
+    dwell_widget.setObjectName("reactiveChainDwellWidget")
+    reactive_profile_automation_layout.addWidget(
         dwell_widget,
         8,
         1,
     )
-    reactive_live_profile_layout.addWidget(
+    reactive_profile_automation_layout.addWidget(
         preview_profile_chain_button,
         9,
         0,
         1,
         2,
     )
-    reactive_live_profile_layout.addWidget(
+    reactive_profile_automation_layout.addWidget(
         reactive_configuration_warning_label,
         10,
         0,
@@ -1674,7 +1761,12 @@ def build_queue_panel(qt_modules):
         2,
     )
     reactive_live_settings_layout.addWidget(
-        reactive_live_profile_group
+        _reactive_collapsible_panel(
+            reactive_profile_automation_group,
+            title="Advanced Profile Automation",
+            object_name="reactiveProfileAutomationPanel",
+            expanded=False,
+        )
     )
 
     reactive_live_structure_group = QtWidgets.QGroupBox(
@@ -2673,6 +2765,7 @@ def build_queue_panel(qt_modules):
         reactive_profile_override_label=reactive_profile_override_label,
         browse_reactive_profile_button=browse_reactive_profile_button,
         reactive_show_palette_set_combo=reactive_show_palette_set_combo,
+        reactive_palette_rotation_label=reactive_palette_rotation_label,
         reactive_rotation_profiles_edit=reactive_rotation_profiles_edit,
         reactive_configuration_warning_label=reactive_configuration_warning_label,
         reactive_rotation_interval_spin=reactive_rotation_interval_spin,

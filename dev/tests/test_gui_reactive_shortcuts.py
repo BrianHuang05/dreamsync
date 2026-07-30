@@ -156,6 +156,168 @@ class ReactiveShortcutTests(unittest.TestCase):
         self.assertIsNone(parent)
         self.assertTrue(start_button.isVisible())
 
+    def test_live_palette_source_is_simple_and_profile_automation_is_advanced(
+        self,
+    ) -> None:
+        self._tab("Live")
+        self.window.findChild(
+            QtWidgets.QPushButton,
+            "reactiveLiveModeButton",
+        ).click()
+        palette_group = self.window.findChild(
+            QtWidgets.QGroupBox,
+            "reactivePaletteSourceGroup",
+        )
+        palette_rotation = self.window.findChild(
+            QtWidgets.QLabel,
+            "reactivePaletteRotationLabel",
+        )
+        advanced_header = self.window.findChild(
+            QtWidgets.QToolButton,
+            "reactiveProfileAutomationPanelHeader",
+        )
+        advanced_group = self.window.findChild(
+            QtWidgets.QGroupBox,
+            "reactiveProfileAutomationGroup",
+        )
+
+        self.assertEqual(palette_group.title(), "Palette Source + Rotation")
+        self.assertTrue(palette_rotation.text())
+        self.assertNotIn(
+            "No active profile",
+            palette_rotation.text(),
+        )
+        self.assertFalse(advanced_header.isChecked())
+        self.assertFalse(advanced_group.isVisible())
+
+        advanced_header.click()
+        self.app.processEvents()
+
+        self.assertTrue(advanced_group.isVisible())
+        visible_labels = {
+            label.text()
+            for label in palette_group.findChildren(QtWidgets.QLabel)
+            if label.isVisible()
+        }
+        self.assertNotIn("Profile behavior", visible_labels)
+        self.assertNotIn("Selected profile", visible_labels)
+
+    def test_advanced_profile_automation_shows_only_relevant_controls(
+        self,
+    ) -> None:
+        self._tab("Live")
+        self.window.findChild(
+            QtWidgets.QPushButton,
+            "reactiveLiveModeButton",
+        ).click()
+        self.window.findChild(
+            QtWidgets.QToolButton,
+            "reactiveProfileAutomationPanelHeader",
+        ).click()
+        strategy = self.window.findChild(
+            QtWidgets.QComboBox,
+            "reactiveProfileStrategyCombo",
+        )
+        profile_picker = self.window.findChild(
+            QtWidgets.QLabel,
+            "reactiveProfileOverrideLabel",
+        ).parentWidget()
+        profiles = self.window.findChild(
+            QtWidgets.QLineEdit,
+            "reactiveRotationProfilesEdit",
+        )
+        interval = self.window.findChild(
+            QtWidgets.QDoubleSpinBox,
+            "reactiveRotationIntervalSpin",
+        )
+        generated = self.window.findChild(
+            QtWidgets.QCheckBox,
+            "reactiveAutoPaletteCheck",
+        )
+        smart_checkbox = self.window.findChild(
+            QtWidgets.QCheckBox,
+            "reactiveSmartRotationCheck",
+        )
+        chain_blend = self.window.findChild(
+            QtWidgets.QDoubleSpinBox,
+            "reactiveChainBlendSpin",
+        )
+
+        self.assertEqual(
+            [
+                strategy.itemData(index)
+                for index in range(strategy.count())
+            ],
+            [
+                "active_profile",
+                "override_profile",
+                "song_change_rotation",
+                "profile_rotation",
+                "smart_rotation",
+            ],
+        )
+        self.assertFalse(profile_picker.isVisible())
+        self.assertFalse(profiles.isVisible())
+        self.assertFalse(interval.isVisible())
+        self.assertFalse(generated.isVisible())
+        self.assertFalse(smart_checkbox.isVisible())
+
+        strategy.setCurrentIndex(strategy.findData("profile_rotation"))
+        self.app.processEvents()
+        self.assertTrue(profiles.isVisible())
+        self.assertTrue(interval.isVisible())
+        self.assertFalse(generated.isVisible())
+        self.assertFalse(chain_blend.isVisible())
+
+        strategy.setCurrentIndex(strategy.findData("smart_rotation"))
+        self.app.processEvents()
+        self.assertTrue(profiles.isVisible())
+        self.assertFalse(interval.isVisible())
+        self.assertTrue(generated.isVisible())
+        self.assertTrue(chain_blend.isVisible())
+
+        generated.setChecked(True)
+        self.app.processEvents()
+        self.assertFalse(profiles.isVisible())
+        self.assertTrue(
+            self.window.findChild(
+                QtWidgets.QSpinBox,
+                "reactiveAutoPalettePoolSizeSpin",
+            ).isVisible()
+        )
+
+    def test_smart_profile_automation_persists_without_redundant_checkbox(
+        self,
+    ) -> None:
+        self._tab("Live")
+        self.window.findChild(
+            QtWidgets.QPushButton,
+            "reactiveLiveModeButton",
+        ).click()
+        strategy = self.window.findChild(
+            QtWidgets.QComboBox,
+            "reactiveProfileStrategyCombo",
+        )
+        generated = self.window.findChild(
+            QtWidgets.QCheckBox,
+            "reactiveAutoPaletteCheck",
+        )
+
+        strategy.setCurrentIndex(strategy.findData("smart_rotation"))
+        generated.setChecked(True)
+        self._tab("Config")
+        self.window.findChild(
+            QtWidgets.QPushButton,
+            "saveConfigurationButton",
+        ).click()
+        self.app.processEvents()
+
+        saved = GuiSettingsStore(self.settings_path).load().reactive_settings
+        self.assertEqual(saved.profile_strategy, "smart_rotation")
+        self.assertTrue(saved.smart_rotation)
+        self.assertTrue(saved.auto_palette)
+        self.assertTrue(saved.chain_dwell_range_enabled)
+
     def test_override_profile_uses_file_picker_from_profile_directory(self) -> None:
         self._tab("Live")
         self.window.findChild(

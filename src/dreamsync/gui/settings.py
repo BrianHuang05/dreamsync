@@ -87,11 +87,12 @@ class GuiSettingsStore:
         profile_strategy = str(
             reactive_raw.get("profile_strategy", "active_profile")
         )
+        auto_palette = bool(reactive_raw.get("auto_palette", False))
         if profile_strategy in {
             "song_change_rotation",
             "profile_rotation",
             "smart_rotation",
-        } and not rotation_profiles:
+        } and not rotation_profiles and not auto_palette:
             # Older saved settings can retain a rotation mode after its profile
             # list was cleared.  Starting Reactive should still be possible;
             # use the active profile until the user configures a new rotation.
@@ -337,7 +338,7 @@ class GuiSettingsStore:
                 show_palette_set=str(reactive_raw.get("show_palette_set", "")),
                 rotation_profiles=rotation_profiles,
                 rotation_interval=float(reactive_raw.get("rotation_interval", 300.0)),
-                auto_palette=bool(reactive_raw.get("auto_palette", False)),
+                auto_palette=auto_palette,
                 smart_rotation=bool(reactive_raw.get("smart_rotation", False)),
                 chain_blend_seconds=float(reactive_raw.get("chain_blend_seconds", 8.0)),
                 auto_palette_seed=(

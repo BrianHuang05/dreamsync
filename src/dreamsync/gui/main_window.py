@@ -1767,6 +1767,242 @@ def create_main_window(
             selected_path or "No profile selected"
         )
         queue_panel.reactive_profile_override_label.setToolTip(selected_path)
+        _refresh_reactive_palette_source_controls()
+
+    def _reactive_palette_source_profile():
+        strategy = str(
+            queue_panel.reactive_profile_strategy_combo.currentData()
+            or "active_profile"
+        )
+        candidate = ""
+        if strategy == "override_profile":
+            candidate = str(
+                queue_panel.reactive_profile_override_label.property(
+                    "profilePath"
+                )
+                or ""
+            ).strip()
+        elif strategy in {
+            "song_change_rotation",
+            "profile_rotation",
+            "smart_rotation",
+        }:
+            candidate = next(
+                (
+                    value.strip()
+                    for value in queue_panel.reactive_rotation_profiles_edit.text().split(
+                        ","
+                    )
+                    if value.strip()
+                ),
+                "",
+            )
+        if not candidate:
+            active_path = active_profile_ref["path"]
+            if active_path:
+                candidate = str(active_path)
+        if not candidate:
+            return None
+        try:
+            return profile_service.load_profile(
+                resolve_profile_path(candidate)
+            )
+        except Exception:
+            return None
+
+    def _reactive_profile_configuration_summary() -> str:
+        strategy = str(
+            queue_panel.reactive_profile_strategy_combo.currentData()
+            or "active_profile"
+        )
+        if strategy == "override_profile":
+            selected_path = str(
+                queue_panel.reactive_profile_override_label.property(
+                    "profilePath"
+                )
+                or ""
+            ).strip()
+            return (
+                f"one profile ({Path(selected_path).stem})"
+                if selected_path
+                else "one profile (not selected)"
+            )
+        if strategy in {
+            "song_change_rotation",
+            "profile_rotation",
+            "smart_rotation",
+        }:
+            if (
+                strategy == "smart_rotation"
+                and queue_panel.reactive_auto_palette_check.isChecked()
+            ):
+                members = "generated pool"
+            else:
+                profile_names = tuple(
+                    Path(value.strip()).stem
+                    for value in queue_panel.reactive_rotation_profiles_edit.text().split(
+                        ","
+                    )
+                    if value.strip()
+                )
+                members = (
+                    " \u2192 ".join(profile_names)
+                    if profile_names
+                    else "no profiles selected"
+                )
+            mode = {
+                "song_change_rotation": "song-change rotation",
+                "profile_rotation": "timed rotation",
+                "smart_rotation": "smart rotation",
+            }[strategy]
+            return f"{mode} ({members})"
+        active_path = active_profile_ref["path"]
+        active_name = Path(active_path).stem if active_path else "default"
+        return f"follow active profile ({active_name})"
+
+    def _update_reactive_palette_rotation_preview() -> None:
+        profile = _reactive_palette_source_profile()
+        selected_set = str(
+            queue_panel.reactive_show_palette_set_combo.currentData() or ""
+        )
+        if profile is None:
+            palette_names: tuple[str, ...] = ()
+            source_text = "No active profile palettes available"
+        elif selected_set:
+            palette_names = tuple(
+                profile.show_palette_sets.get(selected_set, ())
+            )
+            source_text = (
+                " \u2192 ".join(palette_names)
+                if palette_names
+                else f"Set '{selected_set}' is unavailable in {profile.name}"
+            )
+        else:
+            palette_names = tuple(
+                dict.fromkeys(
+                    palette_name
+                    for mood in profile.moods.values()
+                    for palette_name in mood.palettes
+                )
+            )
+            source_text = (
+                " \u00b7 ".join(palette_names)
+                if palette_names
+                else "No mood palettes are defined"
+            )
+        queue_panel.reactive_palette_rotation_label.setText(source_text)
+        queue_panel.reactive_palette_rotation_label.setToolTip(
+            (
+                f"Palette source: {profile.name}\n"
+                if profile is not None
+                else ""
+            )
+            + (
+                "\n".join(palette_names)
+                if palette_names
+                else source_text
+            )
+        )
+
+    def _refresh_reactive_palette_source_controls() -> None:
+        profile = _reactive_palette_source_profile()
+        selected_set = str(
+            queue_panel.reactive_show_palette_set_combo.currentData() or ""
+        )
+        queue_panel.reactive_show_palette_set_combo.blockSignals(True)
+        queue_panel.reactive_show_palette_set_combo.clear()
+        queue_panel.reactive_show_palette_set_combo.addItem(
+            "Use mood palettes",
+            "",
+        )
+        if profile is not None:
+            for set_name in profile.show_palette_sets:
+                queue_panel.reactive_show_palette_set_combo.addItem(
+                    set_name,
+                    set_name,
+                )
+        if (
+            selected_set
+            and queue_panel.reactive_show_palette_set_combo.findData(
+                selected_set
+            )
+            < 0
+        ):
+            queue_panel.reactive_show_palette_set_combo.addItem(
+                f"{selected_set} (not in selected profile)",
+                selected_set,
+            )
+        _select_combo_data(
+            queue_panel.reactive_show_palette_set_combo,
+            selected_set,
+        )
+        queue_panel.reactive_show_palette_set_combo.blockSignals(False)
+        _update_reactive_palette_rotation_preview()
+
+    def _update_reactive_profile_automation_visibility() -> None:
+        strategy = str(
+            queue_panel.reactive_profile_strategy_combo.currentData()
+            or "active_profile"
+        )
+        override = strategy == "override_profile"
+        rotating = strategy in {
+            "song_change_rotation",
+            "profile_rotation",
+            "smart_rotation",
+        }
+        timed = strategy == "profile_rotation"
+        smart = strategy == "smart_rotation"
+        generated = smart and queue_panel.reactive_auto_palette_check.isChecked()
+
+        for object_name in (
+            "reactiveProfilePickerLabel",
+        ):
+            widget = queue_panel.widget.findChild(QtWidgets.QWidget, object_name)
+            if widget is not None:
+                widget.setVisible(override)
+        queue_panel.reactive_profile_override_label.parentWidget().setVisible(
+            override
+        )
+
+        rotation_label = queue_panel.widget.findChild(
+            QtWidgets.QWidget,
+            "reactiveRotationProfilesLabel",
+        )
+        if rotation_label is not None:
+            rotation_label.setVisible(rotating and not generated)
+        queue_panel.reactive_rotation_profiles_edit.setVisible(
+            rotating and not generated
+        )
+
+        interval_label = queue_panel.widget.findChild(
+            QtWidgets.QWidget,
+            "reactiveRotationIntervalLabel",
+        )
+        if interval_label is not None:
+            interval_label.setVisible(timed)
+        queue_panel.reactive_rotation_interval_spin.setVisible(timed)
+        queue_panel.reactive_auto_palette_check.setVisible(smart)
+
+        for object_name in (
+            "reactiveChainBlendLabel",
+            "reactiveChainDwellLabel",
+            "reactiveChainDwellWidget",
+        ):
+            widget = queue_panel.widget.findChild(QtWidgets.QWidget, object_name)
+            if widget is not None:
+                widget.setVisible(smart)
+        queue_panel.reactive_chain_blend_spin.setVisible(smart)
+        queue_panel.preview_profile_chain_button.setVisible(smart)
+
+        for object_name in (
+            "reactiveAutoPaletteSeedWidget",
+            "reactiveAutoPalettePoolSizeLabel",
+        ):
+            widget = queue_panel.widget.findChild(QtWidgets.QWidget, object_name)
+            if widget is not None:
+                widget.setVisible(generated)
+        queue_panel.reactive_auto_palette_pool_size_spin.setVisible(generated)
+        _refresh_reactive_palette_source_controls()
 
     def _reveal_reactive_configuration_warning() -> None:
         header = queue_panel.widget.findChild(
@@ -1775,6 +2011,12 @@ def create_main_window(
         )
         if header is not None:
             header.setChecked(True)
+        advanced_header = queue_panel.widget.findChild(
+            QtWidgets.QToolButton,
+            "reactiveProfileAutomationPanelHeader",
+        )
+        if advanced_header is not None:
+            advanced_header.setChecked(True)
         scroll = queue_panel.widget.findChild(
             QtWidgets.QScrollArea,
             "reactiveLiveScrollArea",
@@ -1855,8 +2097,23 @@ def create_main_window(
             show_palette_set=str(queue_panel.reactive_show_palette_set_combo.currentData() or ""),
             rotation_profiles=profiles,
             rotation_interval=float(queue_panel.reactive_rotation_interval_spin.value()),
-            auto_palette=bool(queue_panel.reactive_auto_palette_check.isChecked()),
-            smart_rotation=bool(queue_panel.reactive_smart_rotation_check.isChecked()),
+            auto_palette=(
+                str(
+                    queue_panel.reactive_profile_strategy_combo.currentData()
+                    or ""
+                )
+                == "smart_rotation"
+                and bool(
+                    queue_panel.reactive_auto_palette_check.isChecked()
+                )
+            ),
+            smart_rotation=(
+                str(
+                    queue_panel.reactive_profile_strategy_combo.currentData()
+                    or ""
+                )
+                == "smart_rotation"
+            ),
             chain_blend_seconds=float(queue_panel.reactive_chain_blend_spin.value()),
             auto_palette_seed=(
                 int(queue_panel.reactive_auto_palette_seed_spin.value())
@@ -1864,8 +2121,12 @@ def create_main_window(
                 else None
             ),
             auto_palette_pool_size=int(queue_panel.reactive_auto_palette_pool_size_spin.value()),
-            chain_dwell_range_enabled=bool(
-                queue_panel.reactive_chain_dwell_range_check.isChecked()
+            chain_dwell_range_enabled=(
+                str(
+                    queue_panel.reactive_profile_strategy_combo.currentData()
+                    or ""
+                )
+                == "smart_rotation"
             ),
             chain_min_dwell_seconds=float(queue_panel.reactive_chain_min_dwell_spin.value()),
             chain_max_dwell_seconds=float(queue_panel.reactive_chain_max_dwell_spin.value()),
@@ -1994,7 +2255,18 @@ def create_main_window(
             settings_state.structure_section_actions_enabled
         )
         queue_panel.reactive_telemetry_dir_edit.setText(settings_state.telemetry_dir)
-        _select_combo_data(queue_panel.reactive_profile_strategy_combo, settings_state.profile_strategy)
+        profile_strategy = settings_state.profile_strategy
+        if profile_strategy == "auto_profile":
+            profile_strategy = "active_profile"
+        elif settings_state.smart_rotation and profile_strategy in {
+            "profile_rotation",
+            "smart_rotation",
+        }:
+            profile_strategy = "smart_rotation"
+        _select_combo_data(
+            queue_panel.reactive_profile_strategy_combo,
+            profile_strategy,
+        )
         _set_reactive_profile_override_path(settings_state.profile_override_path)
         if (
             settings_state.show_palette_set
@@ -2036,6 +2308,8 @@ def create_main_window(
         )
         for widget in widgets:
             widget.blockSignals(False)
+        queue_panel.reactive_smart_rotation_check.setChecked(False)
+        _update_reactive_profile_automation_visibility()
         _update_reactive_configuration_warning()
 
     def _sync_runtime_settings_from_form() -> tuple[CaptureSettings, ReactiveSettings]:
@@ -5734,6 +6008,7 @@ def create_main_window(
             )
         _select_combo_data(queue_panel.reactive_show_palette_set_combo, selected_reactive_set)
         queue_panel.reactive_show_palette_set_combo.blockSignals(False)
+        _refresh_reactive_palette_source_controls()
         current_colors = state.palettes.get(state.selected_palette, ())
         _set_profile_palette_strip(current_colors)
         seed_defaults = ("Seed 1", "Optional Seed 2")
@@ -5869,7 +6144,10 @@ def create_main_window(
             _set_reactive_chord_surface_data(
                 status="Waiting for live input",
             )
-            queue_panel.reactive_profile_label.setText("Active profile: awaiting Reactive session")
+            queue_panel.reactive_profile_label.setText(
+                "Behavior profile queued: "
+                + _reactive_profile_configuration_summary()
+            )
             queued_palette_name = str(
                 queue_panel.reactive_live_color_profile_combo.currentData()
                 or ""
@@ -6217,12 +6495,20 @@ def create_main_window(
             )
 
         if active_profile_name:
-            profile_text = f"Active profile: {active_profile_name}"
+            profile_text = f"Behavior profile running: {active_profile_name}"
             if profile_cycle_mode == "song_change":
                 profile_text += " · cycles on detected song changes"
+            profile_text += (
+                " · configured: "
+                + _reactive_profile_configuration_summary()
+            )
             queue_panel.reactive_profile_label.setText(profile_text)
         else:
-            queue_panel.reactive_profile_label.setText("Active profile: active/default profile")
+            queue_panel.reactive_profile_label.setText(
+                "Behavior profile running: active/default profile"
+                " · configured: "
+                + _reactive_profile_configuration_summary()
+            )
 
         live_color_profile = str(
             queue_panel.reactive_live_color_profile_combo.currentData()
@@ -7539,6 +7825,7 @@ def create_main_window(
             )
         _select_combo_data(queue_panel.reactive_show_palette_set_combo, selected_set)
         queue_panel.reactive_show_palette_set_combo.blockSignals(False)
+        _update_reactive_palette_rotation_preview()
         _on_runtime_settings_changed()
 
     def _browse_directory(edit, title: str) -> None:  # pragma: no cover - Qt only
@@ -9661,14 +9948,34 @@ def create_main_window(
         lambda _checked: _on_runtime_settings_changed()
     )
     queue_panel.reactive_telemetry_dir_edit.editingFinished.connect(_on_runtime_settings_changed)
-    queue_panel.reactive_profile_strategy_combo.currentIndexChanged.connect(lambda _index: _on_runtime_settings_changed())
+    queue_panel.reactive_profile_strategy_combo.currentIndexChanged.connect(
+        lambda _index: (
+            _update_reactive_profile_automation_visibility(),
+            _on_runtime_settings_changed(),
+        )
+    )
+    queue_panel.reactive_show_palette_set_combo.currentIndexChanged.connect(
+        lambda _index: (
+            _update_reactive_palette_rotation_preview(),
+            _on_runtime_settings_changed(),
+        )
+    )
     queue_panel.reactive_rotation_profiles_edit.textChanged.connect(
         lambda _text: _update_reactive_configuration_warning()
     )
-    queue_panel.reactive_rotation_profiles_edit.editingFinished.connect(_on_runtime_settings_changed)
+    queue_panel.reactive_rotation_profiles_edit.editingFinished.connect(
+        lambda: (
+            _refresh_reactive_palette_source_controls(),
+            _on_runtime_settings_changed(),
+        )
+    )
     queue_panel.reactive_rotation_interval_spin.valueChanged.connect(lambda _value: _on_runtime_settings_changed())
-    queue_panel.reactive_auto_palette_check.toggled.connect(lambda _checked: _on_runtime_settings_changed())
-    queue_panel.reactive_smart_rotation_check.toggled.connect(lambda _checked: _on_runtime_settings_changed())
+    queue_panel.reactive_auto_palette_check.toggled.connect(
+        lambda _checked: (
+            _update_reactive_profile_automation_visibility(),
+            _on_runtime_settings_changed(),
+        )
+    )
     queue_panel.reactive_chain_blend_spin.valueChanged.connect(lambda _value: _on_runtime_settings_changed())
     queue_panel.reactive_auto_palette_seed_check.toggled.connect(lambda _checked: _on_runtime_settings_changed())
     queue_panel.reactive_auto_palette_seed_spin.valueChanged.connect(lambda _value: _on_runtime_settings_changed())
