@@ -345,3 +345,79 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
 
     if app is not None and QtWidgets.QApplication.instance() is app:
         window.close()
+
+
+def test_room_layout_group_controls_scroll_into_view_and_add_group(monkeypatch):
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    QtCore = pytest.importorskip("PySide6.QtCore")
+    qt_modules = require_qt()
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    window = create_main_window(
+        qt_modules,
+        GuiSettings(),
+        config_path=Path("dev/devices-dummy.yaml"),
+    )
+    window.resize(900, 600)
+    window.show()
+    tabs = window.centralWidget()
+    tabs.setCurrentIndex(
+        next(
+            index
+            for index in range(tabs.count())
+            if tabs.tabText(index) == "Room Layout"
+        )
+    )
+    app.processEvents()
+
+    scroll = window.findChild(
+        QtWidgets.QScrollArea,
+        "spatialEditorScrollArea",
+    )
+    add_button = window.findChild(
+        QtWidgets.QPushButton,
+        "addSpatialGroupButton",
+    )
+    assert scroll is not None
+    assert add_button is not None
+    assert scroll.verticalScrollBar().maximum() > 0
+
+    scroll.ensureWidgetVisible(add_button, 12, 12)
+    app.processEvents()
+    button_rect = QtCore.QRect(
+        add_button.mapTo(scroll.viewport(), QtCore.QPoint(0, 0)),
+        add_button.size(),
+    )
+    assert scroll.viewport().rect().intersects(button_rect)
+    assert add_button.isEnabled()
+
+    group_list = window.findChild(
+        QtWidgets.QListWidget,
+        "spatialGroupList",
+    )
+    status_label = window.findChild(
+        QtWidgets.QLabel,
+        "spatialStatusLabel",
+    )
+    initial_count = group_list.count()
+    answers = iter((("Test Group", True), ("test-group", True)))
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog,
+        "getText",
+        lambda *args, **kwargs: next(answers),
+    )
+    monkeypatch.setattr(
+        QtWidgets.QColorDialog,
+        "getColor",
+        lambda *args, **kwargs: qt_modules.QtGui.QColor("#123456"),
+    )
+    add_button.click()
+    app.processEvents()
+
+    assert group_list.count() == initial_count + 1
+    assert any(
+        group_list.item(index).data(QtCore.Qt.ItemDataRole.UserRole)
+        == "test-group"
+        for index in range(group_list.count())
+    )
+    assert "Created group Test Group" in status_label.text()
+    window.close()

@@ -609,8 +609,22 @@ def create_main_window(
     spatial_layout.addWidget(spatial_splitter, 1)
     spatial_canvas = build_spatial_canvas(qt_modules, nodes)
     spatial_splitter.addWidget(spatial_canvas)
+    spatial_editor_scroll = QtWidgets.QScrollArea()
+    spatial_editor_scroll.setObjectName("spatialEditorScrollArea")
+    spatial_editor_scroll.setWidgetResizable(True)
+    spatial_editor_scroll.setHorizontalScrollBarPolicy(
+        QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+    )
+    spatial_editor_scroll.setVerticalScrollBarPolicy(
+        QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+    )
+    spatial_editor_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
     spatial_editor = QtWidgets.QWidget()
+    spatial_editor.setObjectName("spatialEditorScrollContent")
     spatial_editor_layout = QtWidgets.QVBoxLayout(spatial_editor)
+    spatial_editor_layout.setSizeConstraint(
+        QtWidgets.QLayout.SizeConstraint.SetMinimumSize
+    )
     spatial_editor_layout.addWidget(QtWidgets.QLabel("Spatial Nodes"))
     spatial_node_list = QtWidgets.QListWidget()
     spatial_node_list.setObjectName("spatialNodeList")
@@ -744,7 +758,8 @@ def create_main_window(
     spatial_status_label.setObjectName("spatialStatusLabel")
     spatial_editor_layout.addWidget(spatial_status_label)
     spatial_editor_layout.addStretch(1)
-    spatial_splitter.addWidget(spatial_editor)
+    spatial_editor_scroll.setWidget(spatial_editor)
+    spatial_splitter.addWidget(spatial_editor_scroll)
     spatial_splitter.setStretchFactor(0, 3)
     spatial_splitter.setStretchFactor(1, 2)
     device_discovery_panel = build_device_discovery_panel(qt_modules)
