@@ -1769,6 +1769,184 @@ def create_main_window(
         queue_panel.reactive_profile_override_label.setToolTip(selected_path)
         _refresh_reactive_palette_source_controls()
 
+    def _selected_reactive_rotation_profiles() -> tuple[str, ...]:
+        return tuple(
+            str(value).strip()
+            for value in (
+                queue_panel.reactive_rotation_profiles_picker.property(
+                    "selectedProfiles"
+                )
+                or ()
+            )
+            if str(value).strip()
+        )
+
+    def _configure_reactive_rotation_profiles_picker() -> None:
+        button = queue_panel.reactive_rotation_profiles_picker
+        menu = button.menu()
+
+        def _entries():
+            configured_directory = (
+                queue_panel.profile_directory_edit.text().strip()
+            )
+            directories = (
+                (Path(configured_directory),)
+                if configured_directory
+                else ()
+            )
+            return tuple(
+                entry
+                for entry in profile_service.search_profiles(directories)
+                if entry.valid
+            )
+
+        def _canonical_values(
+            values: tuple[str, ...],
+        ) -> tuple[str, ...]:
+            entries = _entries()
+            aliases: dict[str, str] = {}
+            for entry in entries:
+                canonical = str(entry.path)
+                aliases[canonical.casefold()] = canonical
+                aliases[entry.path.stem.casefold()] = canonical
+                aliases[entry.name.casefold()] = canonical
+            canonical_values: list[str] = []
+            for raw_value in values:
+                value = str(raw_value).strip()
+                if not value:
+                    continue
+                matched = aliases.get(value.casefold())
+                if matched is None:
+                    candidate = Path(value).expanduser()
+                    if candidate.exists():
+                        matched = str(candidate.resolve())
+                normalized = matched or value
+                if normalized not in canonical_values:
+                    canonical_values.append(normalized)
+            return tuple(canonical_values)
+
+        def _refresh_button() -> None:
+            selected = _selected_reactive_rotation_profiles()
+            labels_by_value = {
+                str(entry.path): entry.name
+                for entry in _entries()
+            }
+            labels = tuple(
+                labels_by_value.get(value, f"{Path(value).stem} (missing)")
+                for value in selected
+            )
+            if not labels:
+                display = "Choose profiles\u2026"
+            elif len(labels) <= 2:
+                display = " \u2192 ".join(labels)
+            else:
+                display = (
+                    f"{labels[0]} \u2192 {labels[1]} "
+                    f"+{len(labels) - 2}"
+                )
+            button.setText(display)
+            button.setToolTip(
+                "\n".join(
+                    f"{label}: {value}"
+                    for label, value in zip(labels, selected)
+                )
+                or "Choose the behavior profiles to rotate."
+            )
+
+        def _set_values(
+            values: tuple[str, ...],
+            *,
+            notify: bool,
+        ) -> None:
+            normalized = _canonical_values(values)
+            button.setProperty("selectedProfiles", list(normalized))
+            _refresh_button()
+            if notify:
+                _update_reactive_configuration_warning()
+                _refresh_reactive_palette_source_controls()
+                _on_runtime_settings_changed()
+
+        def _toggle(value: str, checked: bool) -> None:
+            selected = list(_selected_reactive_rotation_profiles())
+            if checked and value not in selected:
+                selected.append(value)
+            elif not checked and value in selected:
+                selected.remove(value)
+            _set_values(tuple(selected), notify=True)
+
+        def _rebuild_menu() -> None:
+            menu.clear()
+            entries = _entries()
+            selected = _selected_reactive_rotation_profiles()
+            known_values = {str(entry.path) for entry in entries}
+            if not entries:
+                empty_action = menu.addAction(
+                    "No profiles found in the configured profile folders"
+                )
+                empty_action.setEnabled(False)
+            for entry in entries:
+                value = str(entry.path)
+                checkbox = QtWidgets.QCheckBox(entry.name)
+                checkbox.setObjectName(
+                    "reactiveRotationProfilesPickerOption"
+                )
+                checkbox.setProperty("profilePath", value)
+                checkbox.setToolTip(value)
+                checkbox.setChecked(value in selected)
+                checkbox.toggled.connect(
+                    lambda checked, profile_value=value: _toggle(
+                        profile_value,
+                        bool(checked),
+                    )
+                )
+                action = QtWidgets.QWidgetAction(menu)
+                action.setDefaultWidget(checkbox)
+                menu.addAction(action)
+            for missing_value in (
+                value for value in selected if value not in known_values
+            ):
+                checkbox = QtWidgets.QCheckBox(
+                    f"{Path(missing_value).stem} (missing)"
+                )
+                checkbox.setObjectName(
+                    "reactiveRotationProfilesPickerOption"
+                )
+                checkbox.setProperty("profilePath", missing_value)
+                checkbox.setToolTip(missing_value)
+                checkbox.setChecked(True)
+                checkbox.toggled.connect(
+                    lambda checked, profile_value=missing_value: _toggle(
+                        profile_value,
+                        bool(checked),
+                    )
+                )
+                action = QtWidgets.QWidgetAction(menu)
+                action.setDefaultWidget(checkbox)
+                menu.addAction(action)
+            menu.addSeparator()
+            clear_button = QtWidgets.QPushButton("Clear selection")
+            clear_button.setObjectName(
+                "reactiveRotationProfilesPickerClearButton"
+            )
+            clear_button.setEnabled(bool(selected))
+            clear_button.clicked.connect(
+                lambda: _set_values((), notify=True)
+            )
+            clear_action = QtWidgets.QWidgetAction(menu)
+            clear_action.setDefaultWidget(clear_button)
+            menu.addAction(clear_action)
+
+        button._dreamsync_set_selected_profiles = lambda values: _set_values(
+            tuple(str(value) for value in values),
+            notify=False,
+        )
+        button._dreamsync_refresh_profiles = _rebuild_menu
+        menu.aboutToShow.connect(_rebuild_menu)
+        _set_values((), notify=False)
+        _rebuild_menu()
+
+    _configure_reactive_rotation_profiles_picker()
+
     def _reactive_palette_source_profile():
         strategy = str(
             queue_panel.reactive_profile_strategy_combo.currentData()
@@ -1788,13 +1966,7 @@ def create_main_window(
             "smart_rotation",
         }:
             candidate = next(
-                (
-                    value.strip()
-                    for value in queue_panel.reactive_rotation_profiles_edit.text().split(
-                        ","
-                    )
-                    if value.strip()
-                ),
+                iter(_selected_reactive_rotation_profiles()),
                 "",
             )
         if not candidate:
@@ -1839,11 +2011,8 @@ def create_main_window(
                 members = "generated pool"
             else:
                 profile_names = tuple(
-                    Path(value.strip()).stem
-                    for value in queue_panel.reactive_rotation_profiles_edit.text().split(
-                        ","
-                    )
-                    if value.strip()
+                    Path(value).stem
+                    for value in _selected_reactive_rotation_profiles()
                 )
                 members = (
                     " \u2192 ".join(profile_names)
@@ -1970,7 +2139,7 @@ def create_main_window(
         )
         if rotation_label is not None:
             rotation_label.setVisible(rotating and not generated)
-        queue_panel.reactive_rotation_profiles_edit.setVisible(
+        queue_panel.reactive_rotation_profiles_picker.setVisible(
             rotating and not generated
         )
 
@@ -2029,11 +2198,7 @@ def create_main_window(
             )
 
     def _reactive_settings_from_form() -> ReactiveSettings:
-        profiles = tuple(
-            value.strip()
-            for value in queue_panel.reactive_rotation_profiles_edit.text().split(",")
-            if value.strip()
-        )
+        profiles = _selected_reactive_rotation_profiles()
         return ReactiveSettings(
             # Renderer selection belongs to the Live effect controls. These
             # legacy fields remain in the settings schema for compatibility,
@@ -2164,7 +2329,7 @@ def create_main_window(
         )
         queue_panel.reactive_profile_override_label.setEnabled(override_requested)
         queue_panel.browse_reactive_profile_button.setEnabled(override_requested)
-        queue_panel.reactive_rotation_profiles_edit.setStyleSheet(
+        queue_panel.reactive_rotation_profiles_picker.setStyleSheet(
             "border: 1px solid #dc2626;" if invalid_rotation else ""
         )
         return errors
@@ -2199,7 +2364,7 @@ def create_main_window(
             queue_panel.reactive_profile_override_label,
             queue_panel.browse_reactive_profile_button,
             queue_panel.reactive_show_palette_set_combo,
-            queue_panel.reactive_rotation_profiles_edit,
+            queue_panel.reactive_rotation_profiles_picker,
             queue_panel.reactive_rotation_interval_spin,
             queue_panel.reactive_auto_palette_check,
             queue_panel.reactive_smart_rotation_check,
@@ -2279,7 +2444,9 @@ def create_main_window(
                 settings_state.show_palette_set,
             )
         _select_combo_data(queue_panel.reactive_show_palette_set_combo, settings_state.show_palette_set)
-        queue_panel.reactive_rotation_profiles_edit.setText(", ".join(settings_state.rotation_profiles))
+        queue_panel.reactive_rotation_profiles_picker._dreamsync_set_selected_profiles(
+            settings_state.rotation_profiles
+        )
         queue_panel.reactive_rotation_interval_spin.setValue(settings_state.rotation_interval)
         queue_panel.reactive_auto_palette_check.setChecked(settings_state.auto_palette)
         queue_panel.reactive_smart_rotation_check.setChecked(settings_state.smart_rotation)
@@ -9957,15 +10124,6 @@ def create_main_window(
     queue_panel.reactive_show_palette_set_combo.currentIndexChanged.connect(
         lambda _index: (
             _update_reactive_palette_rotation_preview(),
-            _on_runtime_settings_changed(),
-        )
-    )
-    queue_panel.reactive_rotation_profiles_edit.textChanged.connect(
-        lambda _text: _update_reactive_configuration_warning()
-    )
-    queue_panel.reactive_rotation_profiles_edit.editingFinished.connect(
-        lambda: (
-            _refresh_reactive_palette_source_controls(),
             _on_runtime_settings_changed(),
         )
     )

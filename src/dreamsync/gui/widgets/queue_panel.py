@@ -125,7 +125,7 @@ class QueuePanelWidgets:
     browse_reactive_profile_button: object
     reactive_show_palette_set_combo: object
     reactive_palette_rotation_label: object
-    reactive_rotation_profiles_edit: object
+    reactive_rotation_profiles_picker: object
     reactive_configuration_warning_label: object
     reactive_rotation_interval_spin: object
     reactive_auto_palette_check: object
@@ -864,10 +864,22 @@ def build_queue_panel(qt_modules):
     )
     reactive_layout.addWidget(reactive_show_palette_set_combo, 15, 1)
     reactive_layout.addWidget(QtWidgets.QLabel("Profile cycle list"), 16, 0)
-    reactive_rotation_profiles_edit = QtWidgets.QLineEdit()
-    reactive_rotation_profiles_edit.setPlaceholderText("aurora, sunset, ./custom.yaml")
-    reactive_rotation_profiles_edit.setObjectName("reactiveRotationProfilesEdit")
-    reactive_layout.addWidget(reactive_rotation_profiles_edit, 16, 1)
+    reactive_rotation_profiles_picker = QtWidgets.QToolButton()
+    reactive_rotation_profiles_picker.setText("Choose profiles\u2026")
+    reactive_rotation_profiles_picker.setObjectName(
+        "reactiveRotationProfilesPicker"
+    )
+    reactive_rotation_profiles_picker.setPopupMode(
+        QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup
+    )
+    reactive_rotation_profiles_picker.setToolButtonStyle(
+        QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+    )
+    reactive_rotation_profiles_picker.setProperty("selectedProfiles", [])
+    reactive_rotation_profiles_picker.setMenu(
+        QtWidgets.QMenu(reactive_rotation_profiles_picker)
+    )
+    reactive_layout.addWidget(reactive_rotation_profiles_picker, 16, 1)
     reactive_configuration_warning_label = QtWidgets.QLabel()
     reactive_configuration_warning_label.setObjectName("reactiveConfigurationWarningLabel")
     reactive_configuration_warning_label.setStyleSheet("color: #dc2626; font-weight: 600;")
@@ -1667,7 +1679,7 @@ def build_queue_panel(qt_modules):
         0,
     )
     reactive_profile_automation_layout.addWidget(
-        reactive_rotation_profiles_edit,
+        reactive_rotation_profiles_picker,
         2,
         1,
     )
@@ -2766,7 +2778,7 @@ def build_queue_panel(qt_modules):
         browse_reactive_profile_button=browse_reactive_profile_button,
         reactive_show_palette_set_combo=reactive_show_palette_set_combo,
         reactive_palette_rotation_label=reactive_palette_rotation_label,
-        reactive_rotation_profiles_edit=reactive_rotation_profiles_edit,
+        reactive_rotation_profiles_picker=reactive_rotation_profiles_picker,
         reactive_configuration_warning_label=reactive_configuration_warning_label,
         reactive_rotation_interval_spin=reactive_rotation_interval_spin,
         reactive_auto_palette_check=reactive_auto_palette_check,

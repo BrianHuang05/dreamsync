@@ -223,8 +223,8 @@ class ReactiveShortcutTests(unittest.TestCase):
             "reactiveProfileOverrideLabel",
         ).parentWidget()
         profiles = self.window.findChild(
-            QtWidgets.QLineEdit,
-            "reactiveRotationProfilesEdit",
+            QtWidgets.QToolButton,
+            "reactiveRotationProfilesPicker",
         )
         interval = self.window.findChild(
             QtWidgets.QDoubleSpinBox,
@@ -285,6 +285,59 @@ class ReactiveShortcutTests(unittest.TestCase):
                 "reactiveAutoPalettePoolSizeSpin",
             ).isVisible()
         )
+
+    def test_profile_automation_picker_multiselects_available_profiles(
+        self,
+    ) -> None:
+        self._tab("Live")
+        self.window.findChild(
+            QtWidgets.QPushButton,
+            "reactiveLiveModeButton",
+        ).click()
+        self.window.findChild(
+            QtWidgets.QToolButton,
+            "reactiveProfileAutomationPanelHeader",
+        ).click()
+        strategy = self.window.findChild(
+            QtWidgets.QComboBox,
+            "reactiveProfileStrategyCombo",
+        )
+        picker = self.window.findChild(
+            QtWidgets.QToolButton,
+            "reactiveRotationProfilesPicker",
+        )
+        strategy.setCurrentIndex(
+            strategy.findData("profile_rotation")
+        )
+        picker._dreamsync_refresh_profiles()
+        options = picker.menu().findChildren(QtWidgets.QCheckBox)
+
+        self.assertGreaterEqual(len(options), 2)
+        self.assertTrue(
+            all(option.property("profilePath") for option in options)
+        )
+        options[0].setChecked(True)
+        options[1].setChecked(True)
+        self.app.processEvents()
+
+        selected = picker.property("selectedProfiles")
+        self.assertEqual(
+            selected,
+            [
+                options[0].property("profilePath"),
+                options[1].property("profilePath"),
+            ],
+        )
+        self.assertIn("\u2192", picker.text())
+
+        self._tab("Config")
+        self.window.findChild(
+            QtWidgets.QPushButton,
+            "saveConfigurationButton",
+        ).click()
+        self.app.processEvents()
+        saved = GuiSettingsStore(self.settings_path).load().reactive_settings
+        self.assertEqual(saved.rotation_profiles, tuple(selected))
 
     def test_smart_profile_automation_persists_without_redundant_checkbox(
         self,
