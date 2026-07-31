@@ -1165,8 +1165,28 @@ def test_session_service_starts_raw_visualizer_without_tempo_features():
                 (9_000, "#9900ff"),
             ),
             raw_visualizer_origins={"192.0.2.20": 4},
+            raw_visualizer_palette_pool=(
+                ("warm", ("#ff0000", "#ffff00", "#ffffff")),
+                ("cool", ("#0000ff", "#00ffff", "#ffffff")),
+            ),
+            raw_visualizer_palette_name="cool",
+            raw_visualizer_auto_palette=True,
+            raw_visualizer_palette_interval=12.0,
         )
         assert ready.wait(timeout=2) is True
+        updated_control = handle.session_ref[
+            0
+        ].update_raw_visualizer_palette_control(
+            pool=(
+                ("warm", ("#ff0000", "#ffff00", "#ffffff")),
+                ("cool", ("#0000ff", "#00ffff", "#ffffff")),
+            ),
+            selected_name="warm",
+            auto_chain=False,
+            interval_seconds=20.0,
+        )
+        assert updated_control["revision"] == 1
+        assert updated_control["selected_name"] == "warm"
         release.set()
         handle.wait(timeout=2)
 
@@ -1185,6 +1205,16 @@ def test_session_service_starts_raw_visualizer_without_tempo_features():
         (9_000, "#9900ff"),
     )
     assert seen_kwargs["raw_visualizer_origins"] == {"192.0.2.20": 4}
+    palette_control = seen_kwargs[
+        "raw_visualizer_palette_control_getter"
+    ]()
+    assert palette_control["selected_name"] == "warm"
+    assert palette_control["auto_chain"] is False
+    assert palette_control["interval_seconds"] == 20.0
+    assert tuple(name for name, _colors in palette_control["pool"]) == (
+        "warm",
+        "cool",
+    )
 
 
 def test_reactive_session_queues_monotonic_downbeat_nudge_revisions():

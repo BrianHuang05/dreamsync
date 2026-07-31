@@ -389,7 +389,16 @@ def test_runtime_supervisor_uses_routing_and_runtime_settings_for_launches(tmp_p
 
     supervisor.start_local_playlist(tmp_path / "queue")
     supervisor.start_saved_show(tmp_path / "song.mp3", tmp_path / "song.show.json")
-    supervisor.start_reactive_live(config_path=tmp_path / "config.yaml")
+    supervisor.start_reactive_live(
+        config_path=tmp_path / "config.yaml",
+        effect_mode="raw_visualizer",
+        raw_visualizer_palette_pool=(
+            ("warm", ("#ff0000", "#ffff00", "#ffffff")),
+        ),
+        raw_visualizer_palette_name="warm",
+        raw_visualizer_auto_palette=True,
+        raw_visualizer_palette_interval=14.0,
+    )
 
     local_call = session_service.calls[0]
     saved_call = session_service.calls[1]
@@ -408,6 +417,9 @@ def test_runtime_supervisor_uses_routing_and_runtime_settings_for_launches(tmp_p
     assert reactive_call[2]["auto_palette_pool_size"] == 6
     assert reactive_call[2]["chain_min_dwell_seconds"] == 30.0
     assert reactive_call[2]["chain_max_dwell_seconds"] == 90.0
+    assert reactive_call[2]["raw_visualizer_palette_name"] == "warm"
+    assert reactive_call[2]["raw_visualizer_auto_palette"] is True
+    assert reactive_call[2]["raw_visualizer_palette_interval"] == 14.0
     structure = reactive_call[2]["structure_config"]
     assert structure.structure_similarity_enabled is True
     assert structure.structure_similarity_diagnostics is True

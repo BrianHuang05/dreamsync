@@ -51,6 +51,7 @@ from dreamsync.profile_overrides import (
     derive_profile_with_palette_assignment,
     track_key_for_path,
 )
+from dreamsync.raw_visualizer import sample_palette_colors
 from dreamsync.show.control_patch import apply_show_control_patch
 from dreamsync.show.baked_frames import default_baked_frame_path
 from dreamsync.show.models import Show, ShowCue, ShowTimeline, ShowTrack
@@ -935,6 +936,12 @@ def create_main_window(
             ),
         )
     )
+    queue_panel.raw_visualizer_auto_palette_check.setChecked(
+        settings.raw_visualizer_auto_palette
+    )
+    queue_panel.raw_visualizer_palette_interval_spin.setValue(
+        max(1.0, settings.raw_visualizer_palette_interval)
+    )
     for control, tooltip in (
         (queue_panel.load_saved_show_button, "Open a saved multi-track Show"),
         (queue_panel.load_saved_track_button, "Cue a precompiled single-track lightshow"),
@@ -1251,6 +1258,15 @@ def create_main_window(
     raw_visualizer_saved_origins = dict(
         settings.raw_visualizer_origins
     )
+    raw_palette_profile_state = {
+        "path": (
+            Path(settings.raw_visualizer_palette_profile_path)
+            if settings.raw_visualizer_palette_profile_path
+            else active_profile_ref["path"]
+        ),
+        "profile": None,
+        "loading": False,
+    }
     reactive_effect_tempo_state = {"multiplier": 1.0}
     reactive_cycle_tempo_state = {"multiplier": 1.0}
     queue_drag_state = {"active": False}
@@ -3465,6 +3481,455 @@ def create_main_window(
         spatial_canvas.set_nodes(nodes_snapshot)
         _render_preview_simulation()
         spatial_signal_block["value"] = False
+
+    def _checked_raw_palette_names() -> tuple[str, ...]:
+        names: list[str] = []
+        widget = queue_panel.raw_visualizer_palette_pool_list
+        for index in range(widget.count()):
+            item = widget.item(index)
+            if (
+                item.checkState()
+                == QtCore.Qt.CheckState.Checked
+            ):
+                name = str(
+                    item.data(QtCore.Qt.ItemDataRole.UserRole)
+                    or item.text()
+                ).strip()
+                if name:
+                    names.append(name)
+        return tuple(names)
+
+    def _raw_palette_entries() -> tuple[
+        tuple[str, tuple[str, ...]], ...
+    ]:
+        profile = raw_palette_profile_state["profile"]
+        if profile is None:
+            return ()
+        checked = _checked_raw_palette_names()
+        selected_set = str(
+            queue_panel.raw_visualizer_palette_set_combo.currentData()
+            or ""
+        )
+        ordered_names = (
+            tuple(profile.show_palette_sets.get(selected_set, ()))
+            if selected_set
+            else checked
+        )
+        return tuple(
+            (name, tuple(profile.palettes[name]))
+            for name in ordered_names
+            if name in checked and name in profile.palettes
+        )
+
+    def _render_raw_palette_preview(
+        colors: tuple[str, ...] | None = None,
+    ) -> None:
+        profile = raw_palette_profile_state["profile"]
+        palette_name = str(
+            queue_panel.raw_visualizer_palette_combo.currentData()
+            or ""
+        )
+        resolved = tuple(colors or ())
+        if (
+            not resolved
+            and profile is not None
+            and palette_name in profile.palettes
+        ):
+            resolved = sample_palette_colors(
+                profile.palettes[palette_name],
+                queue_panel.raw_visualizer_point_count_spin.value(),
+            )
+        _render_palette_swatches(
+            queue_panel.raw_visualizer_palette_preview_label,
+            resolved,
+            empty_text="No palette loaded",
+            tooltip_prefix=(
+                f"Raw palette: {palette_name}"
+                if palette_name
+                else "Raw palette preview"
+            ),
+        )
+
+    def _load_raw_palette_profile(
+        path: Path | None,
+        *,
+        selected_palette: str | None = None,
+        selected_set: str | None = None,
+        checked_names: tuple[str, ...] | None = None,
+    ) -> None:
+        raw_palette_profile_state["loading"] = True
+        try:
+            if path is None or not Path(path).exists():
+                raw_palette_profile_state["path"] = None
+                raw_palette_profile_state["profile"] = None
+                queue_panel.raw_visualizer_palette_profile_label.setText(
+                    "No color profile loaded"
+                )
+                queue_panel.raw_visualizer_palette_combo.clear()
+                queue_panel.raw_visualizer_palette_set_combo.clear()
+                queue_panel.raw_visualizer_palette_pool_list.clear()
+                _render_raw_palette_preview(())
+                return
+            resolved_path = Path(path)
+            profile = profile_service.load_profile(resolved_path)
+            raw_palette_profile_state["path"] = resolved_path
+            raw_palette_profile_state["profile"] = profile
+            queue_panel.raw_visualizer_palette_profile_label.setText(
+                f"{profile.name} · {resolved_path.name}"
+            )
+            queue_panel.raw_visualizer_palette_profile_label.setToolTip(
+                str(resolved_path)
+            )
+
+            palette_combo = queue_panel.raw_visualizer_palette_combo
+            remembered_palette = (
+                selected_palette
+                if selected_palette is not None
+                else str(palette_combo.currentData() or "")
+            )
+            palette_combo.clear()
+            palette_combo.addItem(
+                "Custom frequency colors",
+                "",
+            )
+            for name in profile.palettes:
+                palette_combo.addItem(name, name)
+            palette_index = palette_combo.findData(
+                remembered_palette
+                or settings.raw_visualizer_palette_name
+            )
+            palette_combo.setCurrentIndex(
+                palette_index if palette_index >= 0 else 0
+            )
+
+            set_combo = queue_panel.raw_visualizer_palette_set_combo
+            remembered_set = (
+                selected_set
+                if selected_set is not None
+                else str(set_combo.currentData() or "")
+            )
+            set_combo.clear()
+            set_combo.addItem("Custom checked pool", "")
+            for name in profile.show_palette_sets:
+                set_combo.addItem(name, name)
+            set_index = set_combo.findData(
+                remembered_set
+                or settings.raw_visualizer_palette_set
+            )
+            set_combo.setCurrentIndex(
+                set_index if set_index >= 0 else 0
+            )
+
+            requested_checks = set(
+                checked_names
+                if checked_names is not None
+                else settings.raw_visualizer_palette_pool
+            )
+            if not requested_checks:
+                active_set = str(set_combo.currentData() or "")
+                requested_checks.update(
+                    profile.show_palette_sets.get(active_set, ())
+                )
+            if not requested_checks:
+                requested_checks.update(profile.palettes)
+            pool_list = queue_panel.raw_visualizer_palette_pool_list
+            pool_list.clear()
+            for name, colors in profile.palettes.items():
+                item = QtWidgets.QListWidgetItem(name)
+                item.setData(
+                    QtCore.Qt.ItemDataRole.UserRole,
+                    name,
+                )
+                item.setFlags(
+                    item.flags()
+                    | QtCore.Qt.ItemFlag.ItemIsUserCheckable
+                )
+                item.setCheckState(
+                    QtCore.Qt.CheckState.Checked
+                    if name in requested_checks
+                    else QtCore.Qt.CheckState.Unchecked
+                )
+                item.setToolTip(", ".join(colors))
+                pool_list.addItem(item)
+            _render_raw_palette_preview()
+        except Exception as exc:
+            raw_palette_profile_state["profile"] = None
+            queue_panel.raw_visualizer_palette_profile_label.setText(
+                f"Color profile error: {exc}"
+            )
+            _render_raw_palette_preview(())
+        finally:
+            raw_palette_profile_state["loading"] = False
+
+    def _raw_palette_configuration_from_form() -> tuple[
+        tuple[tuple[str, tuple[str, ...]], ...],
+        str,
+        bool,
+        float,
+    ]:
+        return (
+            _raw_palette_entries(),
+            str(
+                queue_panel.raw_visualizer_palette_combo.currentData()
+                or ""
+            ),
+            bool(
+                queue_panel.raw_visualizer_auto_palette_check.isChecked()
+            ),
+            float(
+                queue_panel.raw_visualizer_palette_interval_spin.value()
+            ),
+        )
+
+    def _push_raw_palette_control() -> dict[str, object]:
+        pool, selected, auto_chain, interval = (
+            _raw_palette_configuration_from_form()
+        )
+        result = (
+            runtime_supervisor.update_raw_visualizer_palette_control(
+                pool=pool,
+                selected_name=selected,
+                auto_chain=auto_chain,
+                interval_seconds=interval,
+            )
+        )
+        return dict(result)
+
+    def _apply_raw_palette_to_gradient() -> None:
+        profile = raw_palette_profile_state["profile"]
+        name = str(
+            queue_panel.raw_visualizer_palette_combo.currentData()
+            or ""
+        )
+        if profile is None or name not in profile.palettes:
+            return
+        count = int(
+            queue_panel.raw_visualizer_point_count_spin.value()
+        )
+        colors = sample_palette_colors(
+            profile.palettes[name],
+            count,
+        )
+        for edit, color in zip(
+            queue_panel.raw_visualizer_color_edits,
+            colors,
+        ):
+            edit.setText(color)
+        _render_raw_palette_preview(tuple(profile.palettes[name]))
+
+    def _hot_swap_raw_palette() -> None:
+        _apply_raw_palette_to_gradient()
+        result = _push_raw_palette_control()
+        name = str(
+            queue_panel.raw_visualizer_palette_combo.currentData()
+            or "custom"
+        )
+        queue_panel.raw_visualizer_status_label.setText(
+            (
+                f"Raw palette hot-swapped to {name}."
+                if result
+                else f"Raw palette {name} is queued for the next start."
+            )
+        )
+
+    def _on_raw_palette_selected() -> None:
+        _render_raw_palette_preview()
+        if raw_palette_profile_state["loading"]:
+            return
+        runtime_state = runtime_supervisor.snapshot()
+        if (
+            runtime_state.active_output_mode
+            in {"reactive", "reactive_live"}
+            and runtime_state.reactive_effect_mode
+            == "raw_visualizer"
+        ):
+            _hot_swap_raw_palette()
+
+    def _select_raw_palette_set() -> None:
+        if raw_palette_profile_state["loading"]:
+            return
+        profile = raw_palette_profile_state["profile"]
+        if profile is None:
+            return
+        set_name = str(
+            queue_panel.raw_visualizer_palette_set_combo.currentData()
+            or ""
+        )
+        if not set_name:
+            return
+        members = set(profile.show_palette_sets.get(set_name, ()))
+        pool_list = queue_panel.raw_visualizer_palette_pool_list
+        raw_palette_profile_state["loading"] = True
+        try:
+            for index in range(pool_list.count()):
+                item = pool_list.item(index)
+                name = str(
+                    item.data(QtCore.Qt.ItemDataRole.UserRole)
+                    or item.text()
+                )
+                item.setCheckState(
+                    QtCore.Qt.CheckState.Checked
+                    if name in members
+                    else QtCore.Qt.CheckState.Unchecked
+                )
+        finally:
+            raw_palette_profile_state["loading"] = False
+        if members:
+            for name in profile.show_palette_sets[set_name]:
+                palette_index = (
+                    queue_panel.raw_visualizer_palette_combo.findData(name)
+                )
+                if palette_index >= 0:
+                    queue_panel.raw_visualizer_palette_combo.setCurrentIndex(
+                        palette_index
+                    )
+                    break
+        _push_raw_palette_control()
+
+    def _on_raw_palette_pool_changed() -> None:
+        if raw_palette_profile_state["loading"]:
+            return
+        set_combo = queue_panel.raw_visualizer_palette_set_combo
+        if str(set_combo.currentData() or ""):
+            blocker = QtCore.QSignalBlocker(set_combo)
+            set_combo.setCurrentIndex(0)
+            del blocker
+        _push_raw_palette_control()
+
+    def _browse_raw_palette_profile() -> None:
+        current = raw_palette_profile_state["path"]
+        selected, _filter = QtWidgets.QFileDialog.getOpenFileName(
+            window,
+            "Load Raw Visualizer Color Profile",
+            str(
+                Path(current).parent
+                if current is not None
+                else BUILTIN_PROFILES_DIR
+            ),
+            "DreamSync Profiles (*.yaml *.yml)",
+        )
+        if selected:
+            _load_raw_palette_profile(Path(selected))
+
+    def _save_raw_palette() -> None:
+        path = raw_palette_profile_state["path"]
+        if path is None:
+            queue_panel.raw_visualizer_status_label.setText(
+                "Load a writable color profile before saving."
+            )
+            return
+        name, accepted = QtWidgets.QInputDialog.getText(
+            window,
+            "Save Raw Palette",
+            "Palette name:",
+            text=str(
+                queue_panel.raw_visualizer_palette_combo.currentData()
+                or "raw_visualizer"
+            ),
+        )
+        if not accepted or not str(name).strip():
+            return
+        count = int(
+            queue_panel.raw_visualizer_point_count_spin.value()
+        )
+        colors = tuple(
+            str(edit.text()).strip()
+            for edit in queue_panel.raw_visualizer_color_edits[:count]
+        )
+        saved_colors = (
+            colors
+            if len(colors) >= 3
+            else sample_palette_colors(colors, 3)
+        )
+        try:
+            profile_service.update_palette(
+                Path(path),
+                str(name).strip(),
+                saved_colors,
+            )
+            _load_raw_palette_profile(
+                Path(path),
+                selected_palette=str(name).strip(),
+                checked_names=(
+                    *_checked_raw_palette_names(),
+                    str(name).strip(),
+                ),
+            )
+            _show_success(
+                f"Saved Raw palette '{str(name).strip()}'."
+            )
+        except Exception as exc:
+            _show_error(exc)
+
+    def _save_raw_palette_profile_as() -> None:
+        source = raw_palette_profile_state["path"]
+        if source is None:
+            queue_panel.raw_visualizer_status_label.setText(
+                "Load a color profile before saving a copy."
+            )
+            return
+        target, _filter = QtWidgets.QFileDialog.getSaveFileName(
+            window,
+            "Save Raw Visualizer Color Profile",
+            str(Path(source).with_name("raw-visualizer-profile.yaml")),
+            "DreamSync Profiles (*.yaml *.yml)",
+        )
+        if not target:
+            return
+        target_path = Path(target)
+        if not target_path.suffix:
+            target_path = target_path.with_suffix(".yaml")
+        try:
+            document = profile_service.load_profile_document(
+                Path(source)
+            )
+            document["name"] = target_path.stem.replace("-", " ").title()
+            profile_service.save_profile_document(
+                target_path,
+                document,
+            )
+            _load_raw_palette_profile(target_path)
+            _show_success(
+                f"Saved Raw color profile to {target_path.name}."
+            )
+        except Exception as exc:
+            _show_error(exc)
+
+    def _save_raw_palette_set() -> None:
+        path = raw_palette_profile_state["path"]
+        members = _checked_raw_palette_names()
+        if path is None or not members:
+            queue_panel.raw_visualizer_status_label.setText(
+                "Load a color profile and check at least one palette."
+            )
+            return
+        name, accepted = QtWidgets.QInputDialog.getText(
+            window,
+            "Save Raw Palette Set",
+            "Palette set name:",
+            text=str(
+                queue_panel.raw_visualizer_palette_set_combo.currentData()
+                or "raw_visualizer_set"
+            ),
+        )
+        if not accepted or not str(name).strip():
+            return
+        try:
+            profile_service.update_show_palette_set(
+                Path(path),
+                str(name).strip(),
+                members,
+            )
+            _load_raw_palette_profile(
+                Path(path),
+                selected_set=str(name).strip(),
+                checked_names=members,
+            )
+            _show_success(
+                f"Saved Raw palette set '{str(name).strip()}'."
+            )
+        except Exception as exc:
+            _show_error(exc)
 
     def _raw_visualizer_origins_from_table() -> dict[str, int]:
         origins: dict[str, int] = {}
@@ -6980,6 +7445,27 @@ def create_main_window(
         if _is_error_message(state.status_message):
             _show_error(state.status_message)
         _update_show_palette_import_affordance()
+        raw_profile_path = raw_palette_profile_state["path"]
+        if (
+            not state.unsaved_changes
+            and state.profile_path
+            and raw_profile_path is not None
+            and Path(state.profile_path).resolve()
+            == Path(raw_profile_path).resolve()
+            and not raw_palette_profile_state["loading"]
+        ):
+            _load_raw_palette_profile(
+                Path(state.profile_path),
+                selected_palette=str(
+                    queue_panel.raw_visualizer_palette_combo.currentData()
+                    or ""
+                ),
+                selected_set=str(
+                    queue_panel.raw_visualizer_palette_set_combo.currentData()
+                    or ""
+                ),
+                checked_names=_checked_raw_palette_names(),
+            )
 
     def _render_show_patch_state() -> None:
         state = show_patch_controller.state
@@ -7155,6 +7641,17 @@ def create_main_window(
         listening = bool(snapshot.get("listening", False))
         input_device = str(snapshot.get("input_device", "system default") or "system default")
         if raw_visualizer_mode:
+            active_raw_palette = str(
+                snapshot.get("active_palette_name", "") or ""
+            )
+            active_raw_colors = tuple(
+                snapshot.get("current_palette", ()) or ()
+            )
+            if active_raw_colors:
+                _render_raw_palette_preview(active_raw_colors)
+            next_raw_palette = snapshot.get(
+                "palette_seconds_until_next"
+            )
             queue_panel.raw_visualizer_status_label.setText(
                 (
                     f"● Listening · {input_device}"
@@ -7162,6 +7659,16 @@ def create_main_window(
                     else f"○ Waiting for input · {input_device}"
                 )
                 + " · frequency analysis only"
+                + (
+                    f" · palette {active_raw_palette}"
+                    if active_raw_palette
+                    else ""
+                )
+                + (
+                    f" · next in {float(next_raw_palette):.1f}s"
+                    if next_raw_palette is not None
+                    else ""
+                )
             )
             queue_panel.reactive_listening_label.setText(
                 (
@@ -10275,6 +10782,12 @@ def create_main_window(
                 raw_gradient_points,
                 raw_origins,
             ) = _raw_visualizer_configuration_from_form()
+            (
+                raw_palette_pool,
+                raw_palette_name,
+                raw_auto_palette,
+                raw_palette_interval,
+            ) = _raw_palette_configuration_from_form()
         except ValueError as exc:
             if selected_listening_mode == "raw_visualizer":
                 queue_panel.raw_visualizer_status_label.setText(
@@ -10286,6 +10799,10 @@ def create_main_window(
             raw_noise_threshold = 0.004
             raw_gradient_points = ()
             raw_origins = {}
+            raw_palette_pool = ()
+            raw_palette_name = ""
+            raw_auto_palette = False
+            raw_palette_interval = 16.0
         try:
             runtime_supervisor.start_reactive_live(
                 config_path=config_path,
@@ -10298,6 +10815,12 @@ def create_main_window(
                     raw_gradient_points
                 ),
                 raw_visualizer_origins=raw_origins,
+                raw_visualizer_palette_pool=raw_palette_pool,
+                raw_visualizer_palette_name=raw_palette_name,
+                raw_visualizer_auto_palette=raw_auto_palette,
+                raw_visualizer_palette_interval=(
+                    raw_palette_interval
+                ),
             )
         except Exception as exc:
             _render_session_status(None, running=False, error=exc)
@@ -11031,7 +11554,10 @@ def create_main_window(
         )
 
     queue_panel.raw_visualizer_point_count_spin.valueChanged.connect(
-        lambda _value: _sync_raw_visualizer_point_rows()
+        lambda _value: (
+            _sync_raw_visualizer_point_rows(),
+            _render_raw_palette_preview(),
+        )
     )
     for raw_color_index, raw_color_button in enumerate(
         queue_panel.raw_visualizer_color_buttons
@@ -11050,10 +11576,41 @@ def create_main_window(
     queue_panel.stop_raw_visualizer_button.clicked.connect(
         _stop_output_runtime
     )
+    queue_panel.raw_visualizer_load_palette_profile_button.clicked.connect(
+        _browse_raw_palette_profile
+    )
+    queue_panel.raw_visualizer_palette_combo.currentIndexChanged.connect(
+        lambda _index: _on_raw_palette_selected()
+    )
+    queue_panel.raw_visualizer_palette_set_combo.currentIndexChanged.connect(
+        lambda _index: _select_raw_palette_set()
+    )
+    queue_panel.raw_visualizer_palette_pool_list.itemChanged.connect(
+        lambda _item: _on_raw_palette_pool_changed()
+    )
+    queue_panel.raw_visualizer_auto_palette_check.toggled.connect(
+        lambda _checked: _push_raw_palette_control()
+    )
+    queue_panel.raw_visualizer_palette_interval_spin.valueChanged.connect(
+        lambda _value: _push_raw_palette_control()
+    )
+    queue_panel.raw_visualizer_hot_swap_button.clicked.connect(
+        _hot_swap_raw_palette
+    )
+    queue_panel.raw_visualizer_save_palette_profile_button.clicked.connect(
+        _save_raw_palette_profile_as
+    )
+    queue_panel.raw_visualizer_save_palette_button.clicked.connect(
+        _save_raw_palette
+    )
+    queue_panel.raw_visualizer_save_palette_set_button.clicked.connect(
+        _save_raw_palette_set
+    )
     _sync_raw_visualizer_point_rows()
     _update_raw_noise_label(
         queue_panel.raw_visualizer_noise_slider.value()
     )
+    _load_raw_palette_profile(raw_palette_profile_state["path"])
     queue_panel.reactive_cycle_tempo_half_button.clicked.connect(
         lambda: _set_reactive_cycle_tempo(0.5)
     )
@@ -11576,6 +12133,26 @@ def create_main_window(
             raw_visualizer_gradient_points=raw_gradient_points,
             raw_visualizer_origins=tuple(
                 sorted(raw_origins.items())
+            ),
+            raw_visualizer_palette_profile_path=(
+                str(raw_palette_profile_state["path"] or "")
+            ),
+            raw_visualizer_palette_name=str(
+                queue_panel.raw_visualizer_palette_combo.currentData()
+                or ""
+            ),
+            raw_visualizer_palette_set=str(
+                queue_panel.raw_visualizer_palette_set_combo.currentData()
+                or ""
+            ),
+            raw_visualizer_palette_pool=(
+                _checked_raw_palette_names()
+            ),
+            raw_visualizer_auto_palette=bool(
+                queue_panel.raw_visualizer_auto_palette_check.isChecked()
+            ),
+            raw_visualizer_palette_interval=float(
+                queue_panel.raw_visualizer_palette_interval_spin.value()
             ),
             show_compile_seed=(
                 int(queue_panel.compile_seed_spin.value())

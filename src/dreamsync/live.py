@@ -54,6 +54,7 @@ from dreamsync.raw_visualizer import (
     DEFAULT_RAW_VISUALIZER_GRADIENT,
     RAW_VISUALIZER_COLORS,
     RawFrequencyVisualizer,
+    RawPaletteRuntime,
 )
 from dreamsync.show.runtime_control import apply_runtime_control_to_intent_params
 
@@ -3799,6 +3800,7 @@ def run_live_to_govee(
         tuple[float, str], ...
     ] = (),
     raw_visualizer_origins: dict[str, int] | None = None,
+    raw_visualizer_palette_control_getter=None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Audio capture → beat detection → renderer → Govee UDP streaming.
 
@@ -3897,6 +3899,19 @@ def run_live_to_govee(
                 raw_visualizer_gradient_points
                 or DEFAULT_RAW_VISUALIZER_GRADIENT
             ),
+        )
+        if raw_visualizer
+        else None
+    )
+    raw_palette_runtime = (
+        RawPaletteRuntime(
+            tuple(
+                color
+                for _frequency, color in (
+                    raw_visualizer_gradient_points
+                    or DEFAULT_RAW_VISUALIZER_GRADIENT
+                )
+            )
         )
         if raw_visualizer
         else None
@@ -4081,9 +4096,23 @@ def run_live_to_govee(
 
     # Seed with an initial intent so we always have something to render
     if raw_frequency_visualizer is not None:
+        raw_palette_runtime.update(
+            0.0,
+            (
+                raw_visualizer_palette_control_getter()
+                if raw_visualizer_palette_control_getter is not None
+                else {}
+            ),
+        )
         initial_raw_frame = raw_frequency_visualizer.update(
             rms=0.0,
             band_ratios=(),
+        )
+        initial_raw_frame = dataclasses.replace(
+            initial_raw_frame,
+            colors=raw_palette_runtime.colors(
+                len(initial_raw_frame.levels)
+            ),
         )
         last_intent = raw_frequency_visualizer.intent(initial_raw_frame)
         current_params = initial_raw_frame.render_params()
@@ -5543,6 +5572,28 @@ def run_live_to_govee(
                         director.set_colors(fallback_palette)
                 runtime_palette_override_active = bool(runtime_palette_override)
 
+                if raw_palette_runtime is not None:
+                    raw_palette_runtime.update(
+                        stream_t,
+                        (
+                            raw_visualizer_palette_control_getter()
+                            if raw_visualizer_palette_control_getter
+                            is not None
+                            else {}
+                        ),
+                    )
+                    raw_colors = raw_palette_runtime.colors(
+                        len(
+                            (current_params or {}).get(
+                                "raw_visualizer_levels",
+                                RAW_VISUALIZER_COLORS,
+                            )
+                        )
+                    )
+                    current_params = dict(current_params or {})
+                    current_params["raw_visualizer_colors"] = raw_colors
+                    director.set_colors(raw_colors)
+
                 # A structural effect/palette commit happens after the
                 # analysis intent is captured. Refresh its color authority so
                 # this exact frame cannot combine stale intent with new params.
@@ -6330,7 +6381,7 @@ def run_live_to_govee(
                         effect_cycler.current_palette if effect_cycler is not None else None
                     )
                     if raw_frequency_visualizer is not None:
-                        active_palette_name = "raw_frequency_bands"
+                        active_palette_name = raw_palette_runtime.active_name
                         active_palette_colors = tuple(
                             (last_runtime_params or {}).get(
                                 "raw_visualizer_colors",
@@ -6351,21 +6402,39 @@ def run_live_to_govee(
                             else ()
                         )
                     palette_queue = (
-                        effect_cycler.show_palette_queue
-                        if effect_cycler is not None else ()
-                    )
-                    palette_cycle_mode = (
-                        "song_detection" if palette_queue
+                        raw_palette_runtime.queue
+                        if raw_palette_runtime is not None
                         else (
-                            "section_detection"
-                            if auto_cycle and effect_cycler is not None
-                            else "manual"
+                            effect_cycler.show_palette_queue
+                            if effect_cycler is not None else ()
                         )
                     )
+                    if raw_palette_runtime is not None:
+                        palette_cycle_mode = (
+                            "timed"
+                            if raw_palette_runtime.seconds_until_next(
+                                stream_t
+                            )
+                            is not None
+                            else "manual"
+                        )
+                    elif palette_queue:
+                        palette_cycle_mode = "song_detection"
+                    elif auto_cycle and effect_cycler is not None:
+                        palette_cycle_mode = "section_detection"
+                    else:
+                        palette_cycle_mode = "manual"
                     palette_seconds_until_next = (
-                        effect_cycler.seconds_until_next_cycle(stream_t)
-                        if palette_cycle_mode == "timed" and effect_cycler is not None
-                        else None
+                        raw_palette_runtime.seconds_until_next(stream_t)
+                        if raw_palette_runtime is not None
+                        else (
+                            effect_cycler.seconds_until_next_cycle(stream_t)
+                            if (
+                                palette_cycle_mode == "timed"
+                                and effect_cycler is not None
+                            )
+                            else None
+                        )
                     )
                     live_state = {
                         "stream_t": round(float(stream_t), 6),

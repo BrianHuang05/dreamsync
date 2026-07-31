@@ -61,6 +61,42 @@ def test_raw_visualizer_mode_hides_reactive_live_controls():
         QtWidgets.QSlider,
         "rawVisualizerNoiseThresholdSlider",
     ) is not None
+    raw_palette_combo = window.findChild(
+        QtWidgets.QComboBox,
+        "rawVisualizerPaletteCombo",
+    )
+    assert raw_palette_combo is not None
+    assert raw_palette_combo.count() > 1
+    assert window.findChild(
+        QtWidgets.QComboBox,
+        "rawVisualizerPaletteSetCombo",
+    ) is not None
+    raw_palette_pool = window.findChild(
+        QtWidgets.QListWidget,
+        "rawVisualizerPalettePoolList",
+    )
+    assert raw_palette_pool is not None
+    assert raw_palette_pool.count() > 0
+    assert window.findChild(
+        QtWidgets.QCheckBox,
+        "rawVisualizerAutoPaletteCheck",
+    ) is not None
+    assert window.findChild(
+        QtWidgets.QLabel,
+        "rawVisualizerPalettePreviewLabel",
+    ) is not None
+    assert window.findChild(
+        QtWidgets.QPushButton,
+        "rawVisualizerSavePaletteProfileButton",
+    ) is not None
+    assert window.findChild(
+        QtWidgets.QPushButton,
+        "rawVisualizerSavePaletteButton",
+    ) is not None
+    assert window.findChild(
+        QtWidgets.QPushButton,
+        "rawVisualizerSavePaletteSetButton",
+    ) is not None
     window.close()
 
 

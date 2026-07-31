@@ -552,6 +552,12 @@ class RuntimeSupervisor:
             tuple[float, str], ...
         ] = (),
         raw_visualizer_origins: dict[str, int] | None = None,
+        raw_visualizer_palette_pool: tuple[
+            tuple[str, tuple[str, ...]], ...
+        ] = (),
+        raw_visualizer_palette_name: str = "",
+        raw_visualizer_auto_palette: bool = False,
+        raw_visualizer_palette_interval: float = 16.0,
     ) -> SessionHandle:
         from dreamsync.live import LiveStructureConfig
 
@@ -579,6 +585,18 @@ class RuntimeSupervisor:
             ),
             raw_visualizer_origins=dict(
                 raw_visualizer_origins or {}
+            ),
+            raw_visualizer_palette_pool=(
+                raw_visualizer_palette_pool
+            ),
+            raw_visualizer_palette_name=(
+                raw_visualizer_palette_name
+            ),
+            raw_visualizer_auto_palette=(
+                raw_visualizer_auto_palette
+            ),
+            raw_visualizer_palette_interval=(
+                raw_visualizer_palette_interval
             ),
             render_mode=self._reactive_settings.render_mode,
             sample_rate=self._reactive_settings.sample_rate,
@@ -895,6 +913,31 @@ class RuntimeSupervisor:
         if session is not None and hasattr(session, "update_runtime_control"):
             result = session.update_runtime_control(**changes)
             self._record_event("Runtime control updated.")
+            return result
+        return {}
+
+    def update_raw_visualizer_palette_control(
+        self,
+        *,
+        pool: tuple[tuple[str, tuple[str, ...]], ...],
+        selected_name: str,
+        auto_chain: bool,
+        interval_seconds: float,
+    ) -> dict[str, Any]:
+        session = self.active_session()
+        if session is not None and hasattr(
+            session,
+            "update_raw_visualizer_palette_control",
+        ):
+            result = session.update_raw_visualizer_palette_control(
+                pool=pool,
+                selected_name=selected_name,
+                auto_chain=auto_chain,
+                interval_seconds=interval_seconds,
+            )
+            self._record_event(
+                "Raw Visualizer palette control updated."
+            )
             return result
         return {}
 

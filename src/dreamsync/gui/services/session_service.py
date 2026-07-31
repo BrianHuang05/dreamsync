@@ -371,6 +371,12 @@ class ReactiveLiveSession:
             tuple[float, str], ...
         ] = (),
         raw_visualizer_origins: dict[str, int] | None = None,
+        raw_visualizer_palette_pool: tuple[
+            tuple[str, tuple[str, ...]], ...
+        ] = (),
+        raw_visualizer_palette_name: str = "",
+        raw_visualizer_auto_palette: bool = False,
+        raw_visualizer_palette_interval: float = 16.0,
     ) -> None:
         self._multi_adapter = multi_adapter
         self._audio_device = audio_device
@@ -409,6 +415,17 @@ class ReactiveLiveSession:
         self._raw_visualizer_origins = dict(
             raw_visualizer_origins or {}
         )
+        self._raw_palette_lock = threading.RLock()
+        self._raw_palette_control_state = {
+            "revision": 0,
+            "pool": tuple(raw_visualizer_palette_pool),
+            "selected_name": str(raw_visualizer_palette_name),
+            "use_custom": not bool(raw_visualizer_palette_name),
+            "auto_chain": bool(raw_visualizer_auto_palette),
+            "interval_seconds": float(
+                raw_visualizer_palette_interval
+            ),
+        }
         self._predictive_cues_enabled = bool(
             getattr(structure_config, "predictive_cues_enabled", False)
             or getattr(structure_config, "structure_bar_actions_enabled", False)
@@ -487,6 +504,9 @@ class ReactiveLiveSession:
                 self._raw_visualizer_gradient_points
             ),
             raw_visualizer_origins=self._raw_visualizer_origins,
+            raw_visualizer_palette_control_getter=(
+                self.raw_visualizer_palette_control
+            ),
         )
         with self._status_lock:
             self._summary = dict(summary)
@@ -839,6 +859,32 @@ class ReactiveLiveSession:
         with self._status_lock:
             return dict(self._latest_runtime_state)
 
+    def raw_visualizer_palette_control(self) -> dict[str, Any]:
+        with self._raw_palette_lock:
+            return dict(self._raw_palette_control_state)
+
+    def update_raw_visualizer_palette_control(
+        self,
+        *,
+        pool: tuple[tuple[str, tuple[str, ...]], ...],
+        selected_name: str,
+        auto_chain: bool,
+        interval_seconds: float,
+    ) -> dict[str, Any]:
+        with self._raw_palette_lock:
+            revision = int(
+                self._raw_palette_control_state.get("revision", 0)
+            ) + 1
+            self._raw_palette_control_state = {
+                "revision": revision,
+                "pool": tuple(pool),
+                "selected_name": str(selected_name),
+                "use_custom": not bool(selected_name),
+                "auto_chain": bool(auto_chain),
+                "interval_seconds": float(interval_seconds),
+            }
+            return dict(self._raw_palette_control_state)
+
     def _update_runtime_state(self, state: dict[str, Any]) -> None:
         with self._status_lock:
             next_state = dict(self._latest_runtime_state)
@@ -1190,6 +1236,12 @@ class SessionService:
             tuple[float, str], ...
         ] = (),
         raw_visualizer_origins: dict[str, int] | None = None,
+        raw_visualizer_palette_pool: tuple[
+            tuple[str, tuple[str, ...]], ...
+        ] = (),
+        raw_visualizer_palette_name: str = "",
+        raw_visualizer_auto_palette: bool = False,
+        raw_visualizer_palette_interval: float = 16.0,
     ) -> SessionHandle:
         stop_event = threading.Event()
         session_ref: list[Any] = [None]
@@ -1305,6 +1357,12 @@ class SessionService:
                 raw_visualizer_gradient_points
             ),
             raw_visualizer_origins=raw_visualizer_origins,
+            raw_visualizer_palette_pool=raw_visualizer_palette_pool,
+            raw_visualizer_palette_name=raw_visualizer_palette_name,
+            raw_visualizer_auto_palette=raw_visualizer_auto_palette,
+            raw_visualizer_palette_interval=(
+                raw_visualizer_palette_interval
+            ),
         )
         session_ref[:] = [session]
 

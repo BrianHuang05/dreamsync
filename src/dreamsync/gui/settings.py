@@ -66,6 +66,12 @@ class GuiSettings:
         tuple[float, str], ...
     ] = DEFAULT_RAW_VISUALIZER_GRADIENT
     raw_visualizer_origins: tuple[tuple[str, int], ...] = ()
+    raw_visualizer_palette_profile_path: str = ""
+    raw_visualizer_palette_name: str = ""
+    raw_visualizer_palette_set: str = ""
+    raw_visualizer_palette_pool: tuple[str, ...] = ()
+    raw_visualizer_auto_palette: bool = False
+    raw_visualizer_palette_interval: float = 16.0
     show_compile_seed: int | None = None
     capture_settings: CaptureSettings = field(default_factory=CaptureSettings)
     reactive_settings: ReactiveSettings = field(default_factory=ReactiveSettings)
@@ -149,6 +155,29 @@ class GuiSettingsStore:
                 (str(point[0]), int(point[1]))
                 for point in raw.get("raw_visualizer_origins", ())
                 if isinstance(point, (list, tuple)) and len(point) == 2
+            ),
+            raw_visualizer_palette_profile_path=str(
+                raw.get("raw_visualizer_palette_profile_path", "")
+            ),
+            raw_visualizer_palette_name=str(
+                raw.get("raw_visualizer_palette_name", "")
+            ),
+            raw_visualizer_palette_set=str(
+                raw.get("raw_visualizer_palette_set", "")
+            ),
+            raw_visualizer_palette_pool=tuple(
+                str(name)
+                for name in raw.get(
+                    "raw_visualizer_palette_pool",
+                    (),
+                )
+                if str(name).strip()
+            ),
+            raw_visualizer_auto_palette=bool(
+                raw.get("raw_visualizer_auto_palette", False)
+            ),
+            raw_visualizer_palette_interval=float(
+                raw.get("raw_visualizer_palette_interval", 16.0)
             ),
             profile_directory=str(raw.get("profile_directory", "")),
             show_directory=str(raw.get("show_directory", "")),

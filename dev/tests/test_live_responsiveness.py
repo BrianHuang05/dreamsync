@@ -202,6 +202,61 @@ def test_raw_visualizer_runs_without_tempo_detection() -> None:
     assert "untargeted_behavior" not in adapter.params[-1]
 
 
+def test_raw_visualizer_applies_selected_saved_palette() -> None:
+    fake_sd = _CaptureOnlySoundDevice()
+    adapter = _RecordingAdapter()
+    states: list[dict] = []
+
+    with patch(
+        "dreamsync.live._require_sounddevice",
+        return_value=fake_sd,
+    ):
+        run_live_to_govee(
+            adapter,
+            duration_seconds=0.2,
+            sample_rate=44_100,
+            channels=1,
+            frame_size=64,
+            hop_size=16,
+            blocksize=64,
+            auto_cycle=False,
+            raw_visualizer=True,
+            raw_visualizer_palette_control_getter=lambda: {
+                "revision": 1,
+                "pool": (
+                    (
+                        "ocean",
+                        ("#0000ff", "#00ffff", "#ffffff"),
+                    ),
+                    (
+                        "sunset",
+                        ("#ff0000", "#ff8800", "#ffff00"),
+                    ),
+                ),
+                "selected_name": "ocean",
+                "auto_chain": True,
+                "interval_seconds": 8.0,
+            },
+            state_callback=states.append,
+        )
+
+    assert adapter.params
+    assert adapter.params[-1]["raw_visualizer_colors"] == (
+        "#0000ff",
+        "#00ffff",
+        "#ffffff",
+    )
+    assert states[-1]["active_palette_name"] == "ocean"
+    assert states[-1]["palette_cycle_mode"] == "timed"
+    assert states[-1]["palette_queue"] == ("ocean", "sunset")
+    assert states[-1]["palette_seconds_until_next"] is not None
+    assert states[-1]["current_palette"] == (
+        "#0000ff",
+        "#00ffff",
+        "#ffffff",
+    )
+
+
 def test_reactive_auto_cycle_keeps_timed_changes_enabled() -> None:
     fake_sd = _CaptureOnlySoundDevice()
     structure_controlled_values: list[bool] = []

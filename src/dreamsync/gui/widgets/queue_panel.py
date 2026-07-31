@@ -147,6 +147,18 @@ class QueuePanelWidgets:
     live_reactive_group: object
     live_raw_visualizer_group: object
     raw_visualizer_status_label: object
+    raw_visualizer_palette_profile_label: object
+    raw_visualizer_load_palette_profile_button: object
+    raw_visualizer_palette_combo: object
+    raw_visualizer_palette_set_combo: object
+    raw_visualizer_palette_pool_list: object
+    raw_visualizer_auto_palette_check: object
+    raw_visualizer_palette_interval_spin: object
+    raw_visualizer_palette_preview_label: object
+    raw_visualizer_hot_swap_button: object
+    raw_visualizer_save_palette_profile_button: object
+    raw_visualizer_save_palette_button: object
+    raw_visualizer_save_palette_set_button: object
     raw_visualizer_origin_table: object
     raw_visualizer_point_count_spin: object
     raw_visualizer_point_labels: tuple[object, ...]
@@ -2214,6 +2226,180 @@ def build_queue_panel(qt_modules):
     raw_visualizer_status_label.setWordWrap(True)
     raw_visualizer_layout.addWidget(raw_visualizer_status_label)
 
+    raw_palette_group = QtWidgets.QGroupBox("Color Palettes")
+    raw_palette_layout = QtWidgets.QGridLayout(raw_palette_group)
+    raw_palette_layout.addWidget(
+        QtWidgets.QLabel("Color profile"),
+        0,
+        0,
+    )
+    raw_visualizer_palette_profile_label = QtWidgets.QLabel(
+        "Active profile"
+    )
+    raw_visualizer_palette_profile_label.setObjectName(
+        "rawVisualizerPaletteProfileLabel"
+    )
+    raw_visualizer_palette_profile_label.setWordWrap(True)
+    raw_palette_layout.addWidget(
+        raw_visualizer_palette_profile_label,
+        0,
+        1,
+        1,
+        2,
+    )
+    raw_visualizer_load_palette_profile_button = (
+        QtWidgets.QPushButton("Load…")
+    )
+    raw_visualizer_load_palette_profile_button.setObjectName(
+        "rawVisualizerLoadPaletteProfileButton"
+    )
+    raw_palette_layout.addWidget(
+        raw_visualizer_load_palette_profile_button,
+        0,
+        3,
+    )
+    raw_palette_layout.addWidget(
+        QtWidgets.QLabel("Hot-swap palette"),
+        1,
+        0,
+    )
+    raw_visualizer_palette_combo = QtWidgets.QComboBox()
+    raw_visualizer_palette_combo.setObjectName(
+        "rawVisualizerPaletteCombo"
+    )
+    raw_palette_layout.addWidget(
+        raw_visualizer_palette_combo,
+        1,
+        1,
+        1,
+        2,
+    )
+    raw_visualizer_hot_swap_button = QtWidgets.QPushButton(
+        "Apply Now"
+    )
+    raw_visualizer_hot_swap_button.setObjectName(
+        "rawVisualizerHotSwapPaletteButton"
+    )
+    raw_palette_layout.addWidget(
+        raw_visualizer_hot_swap_button,
+        1,
+        3,
+    )
+    raw_palette_layout.addWidget(
+        QtWidgets.QLabel("Saved palette set"),
+        2,
+        0,
+    )
+    raw_visualizer_palette_set_combo = QtWidgets.QComboBox()
+    raw_visualizer_palette_set_combo.setObjectName(
+        "rawVisualizerPaletteSetCombo"
+    )
+    raw_palette_layout.addWidget(
+        raw_visualizer_palette_set_combo,
+        2,
+        1,
+        1,
+        3,
+    )
+    raw_palette_layout.addWidget(
+        QtWidgets.QLabel("Palette pool"),
+        3,
+        0,
+        alignment=QtCore.Qt.AlignmentFlag.AlignTop,
+    )
+    raw_visualizer_palette_pool_list = QtWidgets.QListWidget()
+    raw_visualizer_palette_pool_list.setObjectName(
+        "rawVisualizerPalettePoolList"
+    )
+    raw_visualizer_palette_pool_list.setMaximumHeight(120)
+    raw_palette_layout.addWidget(
+        raw_visualizer_palette_pool_list,
+        3,
+        1,
+        1,
+        3,
+    )
+    raw_visualizer_auto_palette_check = QtWidgets.QCheckBox(
+        "Auto-chain checked palettes"
+    )
+    raw_visualizer_auto_palette_check.setObjectName(
+        "rawVisualizerAutoPaletteCheck"
+    )
+    raw_palette_layout.addWidget(
+        raw_visualizer_auto_palette_check,
+        4,
+        0,
+        1,
+        2,
+    )
+    raw_palette_layout.addWidget(
+        QtWidgets.QLabel("Change every"),
+        4,
+        2,
+    )
+    raw_visualizer_palette_interval_spin = QtWidgets.QDoubleSpinBox()
+    raw_visualizer_palette_interval_spin.setObjectName(
+        "rawVisualizerPaletteIntervalSpin"
+    )
+    raw_visualizer_palette_interval_spin.setRange(1.0, 3600.0)
+    raw_visualizer_palette_interval_spin.setValue(16.0)
+    raw_visualizer_palette_interval_spin.setSuffix(" s")
+    raw_palette_layout.addWidget(
+        raw_visualizer_palette_interval_spin,
+        4,
+        3,
+    )
+    raw_visualizer_palette_preview_label = QtWidgets.QLabel(
+        "No palette loaded"
+    )
+    raw_visualizer_palette_preview_label.setObjectName(
+        "rawVisualizerPalettePreviewLabel"
+    )
+    raw_visualizer_palette_preview_label.setMinimumHeight(28)
+    raw_palette_layout.addWidget(
+        raw_visualizer_palette_preview_label,
+        5,
+        0,
+        1,
+        4,
+    )
+    raw_palette_actions = QtWidgets.QHBoxLayout()
+    raw_visualizer_save_palette_profile_button = QtWidgets.QPushButton(
+        "Save Profile As…"
+    )
+    raw_visualizer_save_palette_profile_button.setObjectName(
+        "rawVisualizerSavePaletteProfileButton"
+    )
+    raw_visualizer_save_palette_button = QtWidgets.QPushButton(
+        "Save Current Colors…"
+    )
+    raw_visualizer_save_palette_button.setObjectName(
+        "rawVisualizerSavePaletteButton"
+    )
+    raw_visualizer_save_palette_set_button = QtWidgets.QPushButton(
+        "Save Pool as Set…"
+    )
+    raw_visualizer_save_palette_set_button.setObjectName(
+        "rawVisualizerSavePaletteSetButton"
+    )
+    raw_palette_actions.addWidget(
+        raw_visualizer_save_palette_profile_button
+    )
+    raw_palette_actions.addWidget(
+        raw_visualizer_save_palette_button
+    )
+    raw_palette_actions.addWidget(
+        raw_visualizer_save_palette_set_button
+    )
+    raw_palette_layout.addLayout(
+        raw_palette_actions,
+        6,
+        0,
+        1,
+        4,
+    )
+    raw_visualizer_layout.addWidget(raw_palette_group)
+
     raw_origin_group = QtWidgets.QGroupBox(
         "Origin Node Per Strip"
     )
@@ -2975,6 +3161,42 @@ def build_queue_panel(qt_modules):
         live_reactive_group=reactive_live_group,
         live_raw_visualizer_group=raw_visualizer_group,
         raw_visualizer_status_label=raw_visualizer_status_label,
+        raw_visualizer_palette_profile_label=(
+            raw_visualizer_palette_profile_label
+        ),
+        raw_visualizer_load_palette_profile_button=(
+            raw_visualizer_load_palette_profile_button
+        ),
+        raw_visualizer_palette_combo=(
+            raw_visualizer_palette_combo
+        ),
+        raw_visualizer_palette_set_combo=(
+            raw_visualizer_palette_set_combo
+        ),
+        raw_visualizer_palette_pool_list=(
+            raw_visualizer_palette_pool_list
+        ),
+        raw_visualizer_auto_palette_check=(
+            raw_visualizer_auto_palette_check
+        ),
+        raw_visualizer_palette_interval_spin=(
+            raw_visualizer_palette_interval_spin
+        ),
+        raw_visualizer_palette_preview_label=(
+            raw_visualizer_palette_preview_label
+        ),
+        raw_visualizer_hot_swap_button=(
+            raw_visualizer_hot_swap_button
+        ),
+        raw_visualizer_save_palette_profile_button=(
+            raw_visualizer_save_palette_profile_button
+        ),
+        raw_visualizer_save_palette_button=(
+            raw_visualizer_save_palette_button
+        ),
+        raw_visualizer_save_palette_set_button=(
+            raw_visualizer_save_palette_set_button
+        ),
         raw_visualizer_origin_table=raw_visualizer_origin_table,
         raw_visualizer_point_count_spin=(
             raw_visualizer_point_count_spin

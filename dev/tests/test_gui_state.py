@@ -35,6 +35,12 @@ def test_settings_round_trip(tmp_path: Path):
             ("192.0.2.10", 2),
             ("192.0.2.11", 7),
         ),
+        raw_visualizer_palette_profile_path="profiles/raw-colors.yaml",
+        raw_visualizer_palette_name="aurora",
+        raw_visualizer_palette_set="late night",
+        raw_visualizer_palette_pool=("aurora", "violet"),
+        raw_visualizer_auto_palette=True,
+        raw_visualizer_palette_interval=24.0,
         recent_saved_show_paths=("a.show.json", "b.show.json"),
         capture_settings=CaptureSettings(
             capture_dir="captures",

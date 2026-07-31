@@ -6,6 +6,8 @@ from dreamsync.director import EffectMode, LightingIntent
 from dreamsync.raw_visualizer import (
     RAW_VISUALIZER_COLORS,
     RawFrequencyVisualizer,
+    RawPaletteRuntime,
+    sample_palette_colors,
 )
 from dreamsync.output.govee_lan import MultiGoveeLanAdapter
 from dreamsync.render import RenderMode, SegmentRenderer
@@ -158,6 +160,69 @@ def test_single_frequency_color_point_is_supported() -> None:
     assert frame.levels == (1.0,)
     assert frame.colors == ("#123456",)
     assert frame.frequencies == (440.0,)
+
+
+def test_saved_palette_is_sampled_across_frequency_points() -> None:
+    assert sample_palette_colors(
+        ("#ff0000", "#0000ff"),
+        3,
+    ) == ("#ff0000", "#800080", "#0000ff")
+
+
+def test_raw_palette_runtime_hot_swaps_and_auto_chains() -> None:
+    runtime = RawPaletteRuntime(("#101010", "#202020", "#303030"))
+    control = {
+        "revision": 1,
+        "pool": (
+            ("warm", ("#ff0000", "#ffff00", "#ffffff")),
+            ("cool", ("#0000ff", "#00ffff", "#ffffff")),
+        ),
+        "selected_name": "warm",
+        "auto_chain": True,
+        "interval_seconds": 2.0,
+    }
+
+    runtime.update(0.0, control)
+    assert runtime.active_name == "warm"
+    assert runtime.queue == ("warm", "cool")
+    assert runtime.colors(3)[0] == "#ff0000"
+    assert runtime.seconds_until_next(0.5) == 1.5
+
+    runtime.update(2.0, control)
+    assert runtime.active_name == "cool"
+    assert runtime.queue == ("cool", "warm")
+    assert runtime.colors(3)[0] == "#0000ff"
+
+    runtime.update(
+        2.1,
+        {
+            **control,
+            "revision": 2,
+            "selected_name": "warm",
+            "auto_chain": False,
+        },
+    )
+    assert runtime.active_name == "warm"
+    assert runtime.seconds_until_next(2.1) is None
+
+
+def test_raw_palette_pool_preserves_custom_gradient_until_selected() -> None:
+    runtime = RawPaletteRuntime(("#110000", "#001100", "#000011"))
+    runtime.update(
+        0.0,
+        {
+            "revision": 1,
+            "pool": (
+                ("saved", ("#abcdef", "#123456", "#654321")),
+            ),
+            "selected_name": "",
+            "use_custom": True,
+            "auto_chain": False,
+        },
+    )
+
+    assert runtime.active_name == "custom_frequency_gradient"
+    assert runtime.colors(3) == ("#110000", "#001100", "#000011")
 
 
 def test_higher_noise_threshold_reduces_sensitivity() -> None:
