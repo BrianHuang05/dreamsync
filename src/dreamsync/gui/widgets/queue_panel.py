@@ -1396,8 +1396,9 @@ def build_queue_panel(qt_modules):
             palette_name,
         )
     reactive_live_color_profile_combo.setToolTip(
-        "Hot-swap the live color palette. This affects Reactive output "
-        "only and does not alter saved or precompiled shows."
+        "Choose a fixed live color palette when Auto-cycle is off. With "
+        "Auto-cycle enabled, Reactive follows its automatically changing "
+        "profile palettes. This does not alter saved or precompiled shows."
     )
     reactive_live_look_layout.addWidget(
         reactive_live_color_profile_combo,

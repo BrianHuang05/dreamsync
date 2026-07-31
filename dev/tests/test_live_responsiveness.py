@@ -10,6 +10,7 @@ import numpy as np
 
 from dreamsync.dsp.harmonic import LiveHarmonicState
 from dreamsync.dsp.structure import LiveStructureEvent
+from dreamsync.effects import EffectCycler
 from dreamsync.live import (
     LiveStructureConfig,
     _advance_deadline,
@@ -166,10 +167,14 @@ def test_raw_visualizer_runs_without_tempo_detection() -> None:
     with (
         patch("dreamsync.live._require_sounddevice", return_value=fake_sd),
         patch(
+            "dreamsync.live.ReactiveGroupPolicy",
+        ) as group_policy_type,
+        patch(
             "dreamsync.live.LiveBpmEstimator.update",
             autospec=True,
         ) as bpm_update,
     ):
+        group_policy_type.return_value.descriptors = (object(),)
         logs, summary = run_live_to_govee(
             adapter,
             duration_seconds=0.08,
@@ -184,6 +189,7 @@ def test_raw_visualizer_runs_without_tempo_detection() -> None:
         )
 
     bpm_update.assert_not_called()
+    group_policy_type.return_value.update.assert_not_called()
     assert logs
     assert summary["raw_visualizer"] is True
     assert summary["beats"] == 0
@@ -192,6 +198,48 @@ def test_raw_visualizer_runs_without_tempo_detection() -> None:
     assert states[-1]["raw_visualizer_levels"]
     assert adapter.params
     assert adapter.params[-1]["raw_visualizer_levels"]
+    assert "target_groups" not in adapter.params[-1]
+    assert "untargeted_behavior" not in adapter.params[-1]
+
+
+def test_reactive_auto_cycle_keeps_timed_changes_enabled() -> None:
+    fake_sd = _CaptureOnlySoundDevice()
+    structure_controlled_values: list[bool] = []
+    original_update = EffectCycler.update
+
+    def recording_update(cycler, *args, **kwargs):
+        structure_controlled_values.append(
+            bool(kwargs.get("structure_controlled", False))
+        )
+        return original_update(cycler, *args, **kwargs)
+
+    with (
+        patch("dreamsync.live._require_sounddevice", return_value=fake_sd),
+        patch(
+            "dreamsync.live.EffectCycler.update",
+            autospec=True,
+            side_effect=recording_update,
+        ),
+    ):
+        run_live_to_govee(
+            NullMultiAdapter(),
+            duration_seconds=0.08,
+            sample_rate=44_100,
+            channels=1,
+            frame_size=64,
+            hop_size=16,
+            blocksize=64,
+            auto_cycle=True,
+            cycle_interval=0.01,
+            structure_config=LiveStructureConfig(
+                harmonic_frame_size=64,
+                structure_similarity_enabled=True,
+                structure_similarity_shadow_mode=False,
+            ),
+        )
+
+    assert structure_controlled_values
+    assert not any(structure_controlled_values)
 
 
 def test_manual_downbeat_nudge_applies_on_next_detected_beat() -> None:

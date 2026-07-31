@@ -434,6 +434,18 @@ def _format_spatial_node_label(node: SceneNode) -> str:
     return node.label
 
 
+def _reactive_live_palette_override(
+    palette_name: str,
+    *,
+    auto_cycle: bool,
+) -> tuple[str, ...]:
+    """Resolve a fixed live-look palette without defeating Auto-cycle."""
+
+    if auto_cycle:
+        return ()
+    return tuple(PALETTES.get(str(palette_name or ""), ()))
+
+
 def create_main_window(
     qt_modules: QtModules,
     settings: GuiSettings,
@@ -9317,8 +9329,20 @@ def create_main_window(
             _render_reactive_live_state(runtime_state)
             return
 
+        auto_cycle_enabled = bool(
+            runtime_supervisor.reactive_settings().auto_cycle
+        )
         result = runtime_supervisor.update_runtime_control(
-            palette_override=tuple(PALETTES.get(palette_name, ())),
+            # A fixed palette override is mutually exclusive with automatic
+            # palette cycling. When Auto-cycle is enabled, let EffectCycler
+            # remain authoritative instead of repainting every frame with the
+            # selected live-look palette.
+            palette_override=(
+                _reactive_live_palette_override(
+                    palette_name,
+                    auto_cycle=auto_cycle_enabled,
+                )
+            ),
             render_mode=active_effect,
             effect_bank=effect_bank,
             speed_multiplier=1.0,
@@ -9327,9 +9351,13 @@ def create_main_window(
         )
         if result:
             palette_label = (
-                palette_name.replace("_", " ").title()
-                if palette_name
-                else "active profile"
+                "automatic profile"
+                if auto_cycle_enabled
+                else (
+                    palette_name.replace("_", " ").title()
+                    if palette_name
+                    else "active profile"
+                )
             )
             effect_label = (
                 queue_panel.reactive_live_active_effect_combo.currentText()

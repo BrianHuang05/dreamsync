@@ -5,6 +5,7 @@ from pathlib import Path
 
 from dreamsync.gui.models.capture_settings import CaptureSettings
 from dreamsync.gui.models.reactive_settings import ReactiveSettings
+from dreamsync.gui.main_window import _reactive_live_palette_override
 from dreamsync.gui.settings import GuiSettings, GuiSettingsStore
 from dreamsync.gui.state import AppState
 from dreamsync.gui.workers import WorkerPool
@@ -62,6 +63,17 @@ def test_settings_round_trip(tmp_path: Path):
     loaded = store.load()
 
     assert loaded == settings
+
+
+def test_reactive_auto_cycle_does_not_install_fixed_palette_override():
+    assert _reactive_live_palette_override(
+        "neon",
+        auto_cycle=True,
+    ) == ()
+    assert _reactive_live_palette_override(
+        "neon",
+        auto_cycle=False,
+    )
 
 
 def test_settings_migrates_device_discovery_tab_name(tmp_path: Path):

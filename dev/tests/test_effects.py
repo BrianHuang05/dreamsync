@@ -74,12 +74,14 @@ class EffectCyclerTimingTests(unittest.TestCase):
         cycler = EffectCycler(config=config, seed=42)
         # Initial selection
         p1 = cycler.update(Mood.GROOVE, t=0.0, beat=False, bpm=120.0, energy=0.15)
+        first_palette = cycler.current_palette
         # Before interval: same effect
         p2 = cycler.update(Mood.GROOVE, t=5.0, beat=False, bpm=120.0, energy=0.15)
         self.assertEqual(p1.name, p2.name)
         # After interval: different effect (pool has >1 effects, so exclude works)
         p3 = cycler.update(Mood.GROOVE, t=11.0, beat=False, bpm=120.0, energy=0.15)
         self.assertNotEqual(p2.name, p3.name)
+        self.assertNotEqual(first_palette, cycler.current_palette)
 
     def test_no_cycle_within_interval(self) -> None:
         config = EffectCyclerConfig(cycle_interval=16.0)

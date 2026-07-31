@@ -5376,11 +5376,10 @@ def run_live_to_govee(
                         if effect_macro_transition
                         else None
                     ),
-                    structure_controlled=(
-                        auto_cycle
-                        or live_structure.harmonic_structure_enabled
-                        or structure_similarity_controls_output
-                    ),
+                    # Auto-cycle is an explicit request for timed changes.
+                    # Structural events can still request immediate macro
+                    # changes, but must not suppress the configured timer.
+                    structure_controlled=False,
                     allowed_render_modes=allowed_effect_modes,
                 )
                 if effect_macro_transition:
@@ -5582,7 +5581,8 @@ def run_live_to_govee(
                 )
                 runtime_params = dict(runtime_params or {})
                 if (
-                    reactive_group_policy.descriptors
+                    raw_frequency_visualizer is None
+                    and reactive_group_policy.descriptors
                     and not runtime_params.get("target_groups")
                 ):
                     group_runtime_state = GroupRuntimeState.from_mapping(

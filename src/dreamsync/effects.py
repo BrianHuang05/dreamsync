@@ -628,7 +628,10 @@ class EffectCycler:
                 exclude=self._current_effect,
                 allowed_render_modes=allowed_render_modes,
             )
-            self._palette_name = self._pick_palette(mood)
+            self._palette_name = self._pick_palette(
+                mood,
+                exclude=self._palette_name,
+            )
             self._effect_start_t = t
             return self._apply_palette(self._current_effect, self._palette_name, mood)
 
