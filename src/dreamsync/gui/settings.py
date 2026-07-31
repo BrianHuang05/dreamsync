@@ -10,6 +10,7 @@ from typing import Any
 
 from dreamsync.gui.models.capture_settings import CaptureSettings
 from dreamsync.gui.models.reactive_settings import ReactiveSettings
+from dreamsync.raw_visualizer import DEFAULT_RAW_VISUALIZER_GRADIENT
 
 
 def default_settings_path() -> Path:
@@ -60,6 +61,11 @@ class GuiSettings:
         "gradient",
         "solid",
     )
+    raw_visualizer_noise_threshold: float = 0.004
+    raw_visualizer_gradient_points: tuple[
+        tuple[float, str], ...
+    ] = DEFAULT_RAW_VISUALIZER_GRADIENT
+    raw_visualizer_origins: tuple[tuple[str, int], ...] = ()
     show_compile_seed: int | None = None
     capture_settings: CaptureSettings = field(default_factory=CaptureSettings)
     reactive_settings: ReactiveSettings = field(default_factory=ReactiveSettings)
@@ -127,6 +133,22 @@ class GuiSettingsStore:
                 if str(raw.get("live_start_mode", "queue"))
                 in {"queue", "reactive", "raw_visualizer"}
                 else "queue"
+            ),
+            raw_visualizer_noise_threshold=float(
+                raw.get("raw_visualizer_noise_threshold", 0.004)
+            ),
+            raw_visualizer_gradient_points=tuple(
+                (float(point[0]), str(point[1]))
+                for point in raw.get(
+                    "raw_visualizer_gradient_points",
+                    DEFAULT_RAW_VISUALIZER_GRADIENT,
+                )
+                if isinstance(point, (list, tuple)) and len(point) == 2
+            ),
+            raw_visualizer_origins=tuple(
+                (str(point[0]), int(point[1]))
+                for point in raw.get("raw_visualizer_origins", ())
+                if isinstance(point, (list, tuple)) and len(point) == 2
             ),
             profile_directory=str(raw.get("profile_directory", "")),
             show_directory=str(raw.get("show_directory", "")),

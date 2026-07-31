@@ -366,6 +366,11 @@ class ReactiveLiveSession:
         show_palette_cycle: tuple[str, ...] = (),
         runtime_control: RuntimeControlBus | None = None,
         structure_config=None,
+        raw_visualizer_noise_threshold: float = 0.004,
+        raw_visualizer_gradient_points: tuple[
+            tuple[float, str], ...
+        ] = (),
+        raw_visualizer_origins: dict[str, int] | None = None,
     ) -> None:
         self._multi_adapter = multi_adapter
         self._audio_device = audio_device
@@ -395,6 +400,15 @@ class ReactiveLiveSession:
         self._show_palette_cycle = show_palette_cycle
         self._runtime_control = runtime_control or RuntimeControlBus()
         self._structure_config = structure_config
+        self._raw_visualizer_noise_threshold = (
+            raw_visualizer_noise_threshold
+        )
+        self._raw_visualizer_gradient_points = tuple(
+            raw_visualizer_gradient_points
+        )
+        self._raw_visualizer_origins = dict(
+            raw_visualizer_origins or {}
+        )
         self._predictive_cues_enabled = bool(
             getattr(structure_config, "predictive_cues_enabled", False)
             or getattr(structure_config, "structure_bar_actions_enabled", False)
@@ -466,6 +480,13 @@ class ReactiveLiveSession:
             render_mode="solid" if raw_visualizer else self._render_mode,
             structure_config=(None if raw_visualizer else self._structure_config),
             raw_visualizer=raw_visualizer,
+            raw_visualizer_noise_threshold=(
+                self._raw_visualizer_noise_threshold
+            ),
+            raw_visualizer_gradient_points=(
+                self._raw_visualizer_gradient_points
+            ),
+            raw_visualizer_origins=self._raw_visualizer_origins,
         )
         with self._status_lock:
             self._summary = dict(summary)
@@ -1164,6 +1185,11 @@ class SessionService:
         routing_mode: str = "simulation",
         routing_status: str = "",
         structure_config=None,
+        raw_visualizer_noise_threshold: float = 0.004,
+        raw_visualizer_gradient_points: tuple[
+            tuple[float, str], ...
+        ] = (),
+        raw_visualizer_origins: dict[str, int] | None = None,
     ) -> SessionHandle:
         stop_event = threading.Event()
         session_ref: list[Any] = [None]
@@ -1182,8 +1208,8 @@ class SessionService:
         profile_chain = None
         profile_switch_on_song_change = False
         if raw_visualizer:
-            # Raw mode owns a fixed three-band palette and never rotates
-            # profiles or show palettes.
+            # Raw mode owns its frequency gradient and never rotates profiles
+            # or show palettes.
             profile_strategy = "active_profile"
             show_palette_set = ""
             rotation_profiles = ()
@@ -1272,6 +1298,13 @@ class SessionService:
             show_palette_cycle=show_palette_cycle,
             runtime_control=runtime_control,
             structure_config=structure_config,
+            raw_visualizer_noise_threshold=(
+                raw_visualizer_noise_threshold
+            ),
+            raw_visualizer_gradient_points=(
+                raw_visualizer_gradient_points
+            ),
+            raw_visualizer_origins=raw_visualizer_origins,
         )
         session_ref[:] = [session]
 

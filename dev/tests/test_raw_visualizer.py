@@ -7,6 +7,7 @@ from dreamsync.raw_visualizer import (
     RAW_VISUALIZER_COLORS,
     RawFrequencyVisualizer,
 )
+from dreamsync.output.govee_lan import MultiGoveeLanAdapter
 from dreamsync.render import RenderMode, SegmentRenderer
 
 
@@ -109,3 +110,116 @@ def test_segment_renderer_uses_frequency_band_colors() -> None:
 
     assert bass[2][0] > bass[2][1] == bass[2][2]
     assert highs[2][2] > highs[2][0] > highs[2][1]
+
+
+def test_custom_five_point_gradient_tracks_spectrum() -> None:
+    points = (
+        (60.0, "#110000"),
+        (250.0, "#221100"),
+        (1000.0, "#002200"),
+        (4000.0, "#001122"),
+        (12000.0, "#220044"),
+    )
+    visualizer = RawFrequencyVisualizer(
+        attack=1.0,
+        release=1.0,
+        gradient_points=points,
+    )
+
+    frame = visualizer.update(
+        rms=0.18,
+        band_ratios=(),
+        magnitude=(0.0, 0.0, 1.0, 0.0, 0.0),
+        frequencies=(60.0, 250.0, 1000.0, 4000.0, 12000.0),
+    )
+
+    assert len(frame.levels) == 5
+    assert frame.levels[2] == 1.0
+    assert frame.colors == tuple(color for _frequency, color in points)
+    assert frame.frequencies == tuple(
+        frequency for frequency, _color in points
+    )
+
+
+def test_single_frequency_color_point_is_supported() -> None:
+    visualizer = RawFrequencyVisualizer(
+        attack=1.0,
+        release=1.0,
+        gradient_points=((440.0, "#123456"),),
+    )
+
+    frame = visualizer.update(
+        rms=0.18,
+        band_ratios=(),
+        magnitude=(1.0,),
+        frequencies=(440.0,),
+    )
+
+    assert frame.levels == (1.0,)
+    assert frame.colors == ("#123456",)
+    assert frame.frequencies == (440.0,)
+
+
+def test_higher_noise_threshold_reduces_sensitivity() -> None:
+    sensitive = RawFrequencyVisualizer(
+        silence_rms=0.0,
+        attack=1.0,
+        release=1.0,
+    )
+    insensitive = RawFrequencyVisualizer(
+        silence_rms=0.04,
+        attack=1.0,
+        release=1.0,
+    )
+    ratios = (0.12, 0.12, 0.12, 0.2, 0.18, 0.13, 0.13)
+
+    sensitive_frame = sensitive.update(rms=0.05, band_ratios=ratios)
+    insensitive_frame = insensitive.update(rms=0.05, band_ratios=ratios)
+
+    assert sensitive_frame.intensity > insensitive_frame.intensity
+
+
+def test_renderer_uses_configured_origin_node() -> None:
+    renderer = SegmentRenderer(segments=7, mode=RenderMode.SOLID)
+    intent = LightingIntent(
+        mode=EffectMode.AMBIENT,
+        intensity=1.0,
+        speed=0.0,
+        bpm=0.0,
+        color="#ff0000",
+    )
+    colors = renderer.render(
+        0.0,
+        intent,
+        params={
+            "raw_visualizer_levels": (0.2,),
+            "raw_visualizer_colors": ("#ff0000",),
+            "raw_visualizer_origin_index": 5,
+        },
+    )
+
+    assert colors[5][0] > 0
+    assert colors[0] == (0, 0, 0)
+
+
+def test_device_origin_is_selected_by_strip_address() -> None:
+    params = {
+        "raw_visualizer_levels": (0.5, 0.25),
+        "raw_visualizer_origins": {
+            "192.0.2.10": 2,
+            "192.0.2.11": 7,
+        },
+    }
+
+    first = MultiGoveeLanAdapter._raw_visualizer_device_params(
+        params,
+        "192.0.2.10",
+    )
+    second = MultiGoveeLanAdapter._raw_visualizer_device_params(
+        params,
+        "192.0.2.11",
+    )
+
+    assert first["raw_visualizer_origin_index"] == 2
+    assert second["raw_visualizer_origin_index"] == 7
+    assert "raw_visualizer_origin_index" not in params

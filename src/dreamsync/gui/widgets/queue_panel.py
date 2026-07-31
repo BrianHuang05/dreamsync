@@ -145,6 +145,18 @@ class QueuePanelWidgets:
     raw_visualizer_mode_button: object
     live_queue_group: object
     live_reactive_group: object
+    live_raw_visualizer_group: object
+    raw_visualizer_status_label: object
+    raw_visualizer_origin_table: object
+    raw_visualizer_point_count_spin: object
+    raw_visualizer_point_labels: tuple[object, ...]
+    raw_visualizer_frequency_spins: tuple[object, ...]
+    raw_visualizer_color_edits: tuple[object, ...]
+    raw_visualizer_color_buttons: tuple[object, ...]
+    raw_visualizer_noise_slider: object
+    raw_visualizer_noise_value_label: object
+    start_raw_visualizer_button: object
+    stop_raw_visualizer_button: object
     reactive_mode_status_label: object
     reactive_profile_label: object
     reactive_active_palette_label: object
@@ -2186,6 +2198,171 @@ def build_queue_panel(qt_modules):
     reactive_live_layout.addLayout(reactive_actions)
     reactive_live_group.setVisible(False)
     queue_left_layout.addWidget(reactive_live_group, 3)
+
+    raw_visualizer_group = QtWidgets.QGroupBox("Raw Visualizer")
+    raw_visualizer_group.setObjectName("rawVisualizerLiveGroup")
+    raw_visualizer_layout = QtWidgets.QVBoxLayout(
+        raw_visualizer_group
+    )
+    raw_visualizer_status_label = QtWidgets.QLabel(
+        "Raw Visualizer is cued. Frequency analysis only; no Reactive Live detectors."
+    )
+    raw_visualizer_status_label.setObjectName(
+        "rawVisualizerStatusLabel"
+    )
+    raw_visualizer_status_label.setWordWrap(True)
+    raw_visualizer_layout.addWidget(raw_visualizer_status_label)
+
+    raw_origin_group = QtWidgets.QGroupBox(
+        "Origin Node Per Strip"
+    )
+    raw_origin_layout = QtWidgets.QVBoxLayout(raw_origin_group)
+    raw_origin_help = QtWidgets.QLabel(
+        "Choose the exact node where each strip begins filling."
+    )
+    raw_origin_help.setWordWrap(True)
+    raw_origin_layout.addWidget(raw_origin_help)
+    raw_visualizer_origin_table = QtWidgets.QTableWidget(0, 2)
+    raw_visualizer_origin_table.setObjectName(
+        "rawVisualizerOriginTable"
+    )
+    raw_visualizer_origin_table.setHorizontalHeaderLabels(
+        ("Strip", "Origin node")
+    )
+    raw_visualizer_origin_table.horizontalHeader().setStretchLastSection(
+        True
+    )
+    raw_visualizer_origin_table.verticalHeader().setVisible(False)
+    raw_visualizer_origin_table.setEditTriggers(
+        QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
+    )
+    raw_visualizer_origin_table.setMaximumHeight(190)
+    raw_origin_layout.addWidget(raw_visualizer_origin_table)
+    raw_visualizer_layout.addWidget(raw_origin_group)
+
+    raw_gradient_group = QtWidgets.QGroupBox(
+        "Frequency Color Gradient"
+    )
+    raw_gradient_layout = QtWidgets.QGridLayout(raw_gradient_group)
+    raw_gradient_layout.addWidget(
+        QtWidgets.QLabel("Gradient points"),
+        0,
+        0,
+    )
+    raw_visualizer_point_count_spin = QtWidgets.QSpinBox()
+    raw_visualizer_point_count_spin.setObjectName(
+        "rawVisualizerPointCountSpin"
+    )
+    raw_visualizer_point_count_spin.setRange(1, 5)
+    raw_visualizer_point_count_spin.setValue(3)
+    raw_gradient_layout.addWidget(
+        raw_visualizer_point_count_spin,
+        0,
+        1,
+    )
+    raw_gradient_layout.addWidget(
+        QtWidgets.QLabel("Frequency"),
+        1,
+        1,
+    )
+    raw_gradient_layout.addWidget(
+        QtWidgets.QLabel("Color"),
+        1,
+        2,
+    )
+    raw_visualizer_point_labels = []
+    raw_visualizer_frequency_spins = []
+    raw_visualizer_color_edits = []
+    raw_visualizer_color_buttons = []
+    default_raw_points = (
+        (80, "#ff0000"),
+        (1000, "#00ff00"),
+        (8000, "#8f00ff"),
+        (12000, "#00ffff"),
+        (18000, "#ffffff"),
+    )
+    for raw_index, (frequency, color) in enumerate(
+        default_raw_points
+    ):
+        row = raw_index + 2
+        point_label = QtWidgets.QLabel(f"{raw_index + 1}")
+        raw_gradient_layout.addWidget(point_label, row, 0)
+        frequency_spin = QtWidgets.QSpinBox()
+        frequency_spin.setRange(20, 20_000)
+        frequency_spin.setSuffix(" Hz")
+        frequency_spin.setValue(frequency)
+        frequency_spin.setObjectName(
+            f"rawVisualizerFrequency{raw_index + 1}Spin"
+        )
+        raw_gradient_layout.addWidget(frequency_spin, row, 1)
+        color_edit = QtWidgets.QLineEdit(color)
+        color_edit.setMaxLength(7)
+        color_edit.setObjectName(
+            f"rawVisualizerColor{raw_index + 1}Edit"
+        )
+        raw_gradient_layout.addWidget(color_edit, row, 2)
+        color_button = QtWidgets.QPushButton("Choose…")
+        color_button.setObjectName(
+            f"rawVisualizerColor{raw_index + 1}Button"
+        )
+        raw_gradient_layout.addWidget(color_button, row, 3)
+        raw_visualizer_frequency_spins.append(frequency_spin)
+        raw_visualizer_color_edits.append(color_edit)
+        raw_visualizer_color_buttons.append(color_button)
+        raw_visualizer_point_labels.append(point_label)
+    raw_visualizer_layout.addWidget(raw_gradient_group)
+
+    raw_threshold_group = QtWidgets.QGroupBox(
+        "Noise Threshold"
+    )
+    raw_threshold_layout = QtWidgets.QHBoxLayout(
+        raw_threshold_group
+    )
+    raw_visualizer_noise_slider = QtWidgets.QSlider(
+        QtCore.Qt.Orientation.Horizontal
+    )
+    raw_visualizer_noise_slider.setObjectName(
+        "rawVisualizerNoiseThresholdSlider"
+    )
+    raw_visualizer_noise_slider.setRange(0, 100)
+    raw_visualizer_noise_slider.setValue(4)
+    raw_visualizer_noise_slider.setToolTip(
+        "Higher threshold lowers sensitivity and ignores louder background noise."
+    )
+    raw_visualizer_noise_value_label = QtWidgets.QLabel(
+        "0.004 RMS"
+    )
+    raw_visualizer_noise_value_label.setObjectName(
+        "rawVisualizerNoiseThresholdValueLabel"
+    )
+    raw_threshold_layout.addWidget(
+        raw_visualizer_noise_slider,
+        1,
+    )
+    raw_threshold_layout.addWidget(
+        raw_visualizer_noise_value_label
+    )
+    raw_visualizer_layout.addWidget(raw_threshold_group)
+
+    raw_actions = QtWidgets.QHBoxLayout()
+    start_raw_visualizer_button = QtWidgets.QPushButton(
+        "Start Raw Visualizer"
+    )
+    start_raw_visualizer_button.setObjectName(
+        "startRawVisualizerButton"
+    )
+    stop_raw_visualizer_button = QtWidgets.QPushButton(
+        "Stop Raw Visualizer"
+    )
+    stop_raw_visualizer_button.setObjectName(
+        "stopRawVisualizerButton"
+    )
+    raw_actions.addWidget(start_raw_visualizer_button)
+    raw_actions.addWidget(stop_raw_visualizer_button)
+    raw_visualizer_layout.addLayout(raw_actions)
+    raw_visualizer_group.setVisible(False)
+    queue_left_layout.addWidget(raw_visualizer_group, 3)
+
     local_group = QtWidgets.QGroupBox("Live Queue")
     local_group.setObjectName("liveQueueGroup")
     local_layout = QtWidgets.QVBoxLayout(local_group)
@@ -2795,6 +2972,30 @@ def build_queue_panel(qt_modules):
         raw_visualizer_mode_button=raw_visualizer_mode_button,
         live_queue_group=local_group,
         live_reactive_group=reactive_live_group,
+        live_raw_visualizer_group=raw_visualizer_group,
+        raw_visualizer_status_label=raw_visualizer_status_label,
+        raw_visualizer_origin_table=raw_visualizer_origin_table,
+        raw_visualizer_point_count_spin=(
+            raw_visualizer_point_count_spin
+        ),
+        raw_visualizer_point_labels=tuple(
+            raw_visualizer_point_labels
+        ),
+        raw_visualizer_frequency_spins=tuple(
+            raw_visualizer_frequency_spins
+        ),
+        raw_visualizer_color_edits=tuple(
+            raw_visualizer_color_edits
+        ),
+        raw_visualizer_color_buttons=tuple(
+            raw_visualizer_color_buttons
+        ),
+        raw_visualizer_noise_slider=raw_visualizer_noise_slider,
+        raw_visualizer_noise_value_label=(
+            raw_visualizer_noise_value_label
+        ),
+        start_raw_visualizer_button=start_raw_visualizer_button,
+        stop_raw_visualizer_button=stop_raw_visualizer_button,
         reactive_mode_status_label=reactive_mode_status_label,
         reactive_profile_label=reactive_profile_label,
         reactive_active_palette_label=reactive_active_palette_label,

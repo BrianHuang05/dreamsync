@@ -51,6 +51,7 @@ from dreamsync.mood import MoodClassifier
 from dreamsync.output.govee_lan import GoveeLanAdapter, MultiGoveeLanAdapter
 from dreamsync.render import RenderMode, SegmentRenderer
 from dreamsync.raw_visualizer import (
+    DEFAULT_RAW_VISUALIZER_GRADIENT,
     RAW_VISUALIZER_COLORS,
     RawFrequencyVisualizer,
 )
@@ -3793,6 +3794,11 @@ def run_live_to_govee(
     legacy_cyclic_downbeats: bool = False,
     structure_config: LiveStructureConfig | None = None,
     raw_visualizer: bool = False,
+    raw_visualizer_noise_threshold: float = 0.004,
+    raw_visualizer_gradient_points: tuple[
+        tuple[float, str], ...
+    ] = (),
+    raw_visualizer_origins: dict[str, int] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Audio capture → beat detection → renderer → Govee UDP streaming.
 
@@ -3885,7 +3891,15 @@ def run_live_to_govee(
     )
     director = Director(director_config)
     raw_frequency_visualizer = (
-        RawFrequencyVisualizer() if raw_visualizer else None
+        RawFrequencyVisualizer(
+            silence_rms=raw_visualizer_noise_threshold,
+            gradient_points=(
+                raw_visualizer_gradient_points
+                or DEFAULT_RAW_VISUALIZER_GRADIENT
+            ),
+        )
+        if raw_visualizer
+        else None
     )
     mood_classifier = MoodClassifier() if auto_cycle else None
     if effect_cycler_override is not None:
@@ -4073,6 +4087,9 @@ def run_live_to_govee(
         )
         last_intent = raw_frequency_visualizer.intent(initial_raw_frame)
         current_params = initial_raw_frame.render_params()
+        current_params["raw_visualizer_origins"] = dict(
+            raw_visualizer_origins or {}
+        )
     else:
         last_intent = director.update({"t": 0.0, "rms": 0.0, "zcr": 0.0, "bpm": 120.0, "beat": False, "bass": 0.0})
     structural_render_mode: RenderMode | None = None
@@ -5069,9 +5086,14 @@ def run_live_to_govee(
                     raw_frame = raw_frequency_visualizer.update(
                         rms=rms,
                         band_ratios=sf.band_ratios,
+                        magnitude=sf.mag,
+                        frequencies=freqs,
                     )
                     last_intent = raw_frequency_visualizer.intent(raw_frame)
                     current_params = raw_frame.render_params()
+                    current_params["raw_visualizer_origins"] = dict(
+                        raw_visualizer_origins or {}
+                    )
                 else:
                     last_intent = director.update(last_features)
                 if pending_macro_transition:
@@ -6309,7 +6331,12 @@ def run_live_to_govee(
                     )
                     if raw_frequency_visualizer is not None:
                         active_palette_name = "raw_frequency_bands"
-                        active_palette_colors = RAW_VISUALIZER_COLORS
+                        active_palette_colors = tuple(
+                            (last_runtime_params or {}).get(
+                                "raw_visualizer_colors",
+                                RAW_VISUALIZER_COLORS,
+                            )
+                        )
                     elif runtime_palette_override:
                         active_palette_colors = runtime_palette_override
                     elif (

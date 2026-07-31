@@ -173,12 +173,28 @@ class SegmentRenderer:
             else 0.0
         )
         result: list[tuple[int, int, int]] = []
-        for index in range(self.segments):
-            distance = (
-                0.0
-                if self.segments == 1
-                else abs((2.0 * index / (self.segments - 1)) - 1.0)
+        try:
+            origin_index = max(
+                0,
+                min(
+                    self.segments - 1,
+                    int(
+                        params.get(
+                            "raw_visualizer_origin_index",
+                            (self.segments - 1) // 2,
+                        )
+                    ),
+                ),
             )
+        except (TypeError, ValueError):
+            origin_index = 0
+        maximum_distance = max(
+            1,
+            origin_index,
+            self.segments - 1 - origin_index,
+        )
+        for index in range(self.segments):
+            distance = abs(index - origin_index) / maximum_distance
             softness = max(0.04, 1.0 / max(1, self.segments))
             strengths = tuple(
                 0.0

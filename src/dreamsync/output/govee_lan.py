@@ -618,8 +618,17 @@ class MultiGoveeLanAdapter:
         for adapter, renderer, role, bs, _placement in self.devices:
             device_intent = transform_intent(intent, role, brightness_scale=bs)
             self._apply_render_mode_override(renderer, params)
-            colors = renderer.render(t, device_intent, beat=beat, params=render_params)
             address = str(adapter.config.device_ip)
+            device_render_params = self._raw_visualizer_device_params(
+                render_params,
+                address,
+            )
+            colors = renderer.render(
+                t,
+                device_intent,
+                beat=beat,
+                params=device_render_params,
+            )
             self._last_output_colors[address] = tuple(colors)
             diagnostic_devices.append({
                 "address": address,
@@ -655,7 +664,10 @@ class MultiGoveeLanAdapter:
                     t,
                     follower_intent,
                     beat=beat,
-                    params=render_params,
+                    params=self._raw_visualizer_device_params(
+                        render_params,
+                        address,
+                    ),
                     placement=follower_placement,
                 )
                 follower_adapter.send_segment_colors(
@@ -858,12 +870,16 @@ class MultiGoveeLanAdapter:
         for adapter, renderer, role, bs, placement in self.devices:
             device_intent = transform_intent(intent, role, brightness_scale=bs)
             self._apply_render_mode_override(renderer, params)
+            address = str(adapter.config.device_ip)
             pre_spatial_colors = self._render_with_orientation(
                 renderer,
                 t,
                 device_intent,
                 beat=beat,
-                params=render_params,
+                params=self._raw_visualizer_device_params(
+                    render_params,
+                    address,
+                ),
                 placement=placement,
             )
             colors = self._spatialize_colors(
@@ -875,7 +891,6 @@ class MultiGoveeLanAdapter:
                 layers=layers,
                 params=params,
             )
-            address = str(adapter.config.device_ip)
             self._last_output_colors[address] = tuple(colors)
             diagnostic_devices.append({
                 "address": address,
@@ -891,6 +906,7 @@ class MultiGoveeLanAdapter:
         for follower in self._ble_followers:
             follower_adapter, follower_role, follower_bs, follower_placement, follower_renderer = self._normalize_ble_follower(follower)
             follower_intent = transform_intent(intent, follower_role, brightness_scale=follower_bs)
+            address = self._ble_address(follower_adapter)
             if follower_renderer is not None:
                 self._apply_render_mode_override(follower_renderer, params)
                 pre_spatial_follower_colors = self._render_with_orientation(
@@ -898,7 +914,10 @@ class MultiGoveeLanAdapter:
                     t,
                     follower_intent,
                     beat=beat,
-                    params=render_params,
+                    params=self._raw_visualizer_device_params(
+                        render_params,
+                        address,
+                    ),
                     placement=follower_placement,
                 )
                 follower_colors = self._spatialize_colors(
@@ -1189,6 +1208,23 @@ class MultiGoveeLanAdapter:
             for key, value in params.items()
             if not str(key).startswith("_") and str(key) not in _SPATIAL_RENDER_PARAM_KEYS
         }
+
+    @staticmethod
+    def _raw_visualizer_device_params(
+        params: dict | None,
+        address: str,
+    ) -> dict | None:
+        if not params:
+            return params
+        origins = params.get("raw_visualizer_origins")
+        if not isinstance(origins, dict):
+            return params
+        raw_index = origins.get(address)
+        if raw_index is None:
+            return params
+        resolved = dict(params)
+        resolved["raw_visualizer_origin_index"] = raw_index
+        return resolved
 
     @staticmethod
     def _spatial_time(t: float, params: dict | None) -> float:

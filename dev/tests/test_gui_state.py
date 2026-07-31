@@ -23,6 +23,17 @@ def test_settings_round_trip(tmp_path: Path):
         selected_live_input_device_id=3,
         hardware_fallback_to_simulation=False,
         live_start_mode="raw_visualizer",
+        raw_visualizer_noise_threshold=0.027,
+        raw_visualizer_gradient_points=(
+            (60, "#110000"),
+            (700, "#001100"),
+            (4_000, "#000011"),
+            (12_000, "#ffffff"),
+        ),
+        raw_visualizer_origins=(
+            ("192.0.2.10", 2),
+            ("192.0.2.11", 7),
+        ),
         recent_saved_show_paths=("a.show.json", "b.show.json"),
         capture_settings=CaptureSettings(
             capture_dir="captures",

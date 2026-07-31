@@ -1158,6 +1158,13 @@ def test_session_service_starts_raw_visualizer_without_tempo_features():
             crossfade_detect=True,
             profile_strategy="smart_rotation",
             auto_palette=True,
+            raw_visualizer_noise_threshold=0.025,
+            raw_visualizer_gradient_points=(
+                (70, "#ff1100"),
+                (900, "#00ff22"),
+                (9_000, "#9900ff"),
+            ),
+            raw_visualizer_origins={"192.0.2.20": 4},
         )
         assert ready.wait(timeout=2) is True
         release.set()
@@ -1171,6 +1178,13 @@ def test_session_service_starts_raw_visualizer_without_tempo_features():
     assert seen_kwargs["render_mode_policy"] == "fixed"
     assert seen_kwargs["render_mode"] == "solid"
     assert seen_kwargs["structure_config"] is None
+    assert seen_kwargs["raw_visualizer_noise_threshold"] == 0.025
+    assert seen_kwargs["raw_visualizer_gradient_points"] == (
+        (70, "#ff1100"),
+        (900, "#00ff22"),
+        (9_000, "#9900ff"),
+    )
+    assert seen_kwargs["raw_visualizer_origins"] == {"192.0.2.20": 4}
 
 
 def test_reactive_session_queues_monotonic_downbeat_nudge_revisions():

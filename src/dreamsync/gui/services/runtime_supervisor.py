@@ -547,6 +547,11 @@ class RuntimeSupervisor:
         director_config=None,
         simulation_only: bool | None = None,
         effect_mode: str = "reactive",
+        raw_visualizer_noise_threshold: float = 0.004,
+        raw_visualizer_gradient_points: tuple[
+            tuple[float, str], ...
+        ] = (),
+        raw_visualizer_origins: dict[str, int] | None = None,
     ) -> SessionHandle:
         from dreamsync.live import LiveStructureConfig
 
@@ -566,6 +571,15 @@ class RuntimeSupervisor:
             routing_mode=self._routing_state.output_target.mode,
             routing_status=self._routing_state.routing_status,
             effect_mode=effect_mode,
+            raw_visualizer_noise_threshold=(
+                raw_visualizer_noise_threshold
+            ),
+            raw_visualizer_gradient_points=(
+                raw_visualizer_gradient_points
+            ),
+            raw_visualizer_origins=dict(
+                raw_visualizer_origins or {}
+            ),
             render_mode=self._reactive_settings.render_mode,
             sample_rate=self._reactive_settings.sample_rate,
             channels=self._reactive_settings.channels,

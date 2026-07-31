@@ -9,6 +9,61 @@ from dreamsync.gui.qt import require_qt
 from dreamsync.gui.settings import GuiSettings
 
 
+def test_raw_visualizer_mode_hides_reactive_live_controls():
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    window = create_main_window(
+        require_qt(),
+        GuiSettings(),
+        config_path=Path("dev/devices-dummy.yaml"),
+    )
+    raw_mode_button = window.findChild(
+        QtWidgets.QPushButton,
+        "rawVisualizerLiveModeButton",
+    )
+    queue_group = window.findChild(
+        QtWidgets.QGroupBox,
+        "liveQueueGroup",
+    )
+    reactive_group = window.findChild(
+        QtWidgets.QGroupBox,
+        "reactiveLiveGroup",
+    )
+    raw_group = window.findChild(
+        QtWidgets.QGroupBox,
+        "rawVisualizerLiveGroup",
+    )
+    point_count = window.findChild(
+        QtWidgets.QSpinBox,
+        "rawVisualizerPointCountSpin",
+    )
+    fourth_frequency = window.findChild(
+        QtWidgets.QSpinBox,
+        "rawVisualizerFrequency4Spin",
+    )
+
+    raw_mode_button.click()
+    app.processEvents()
+
+    assert queue_group.isHidden()
+    assert reactive_group.isHidden()
+    assert not raw_group.isHidden()
+    assert point_count.value() == 3
+    assert fourth_frequency.isHidden()
+    origin_table = window.findChild(
+        QtWidgets.QTableWidget,
+        "rawVisualizerOriginTable",
+    )
+    assert origin_table is not None
+    assert origin_table.rowCount() > 0
+    assert window.findChild(
+        QtWidgets.QSlider,
+        "rawVisualizerNoiseThresholdSlider",
+    ) is not None
+    window.close()
+
+
 def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
     QtWidgets = pytest.importorskip("PySide6.QtWidgets")
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])

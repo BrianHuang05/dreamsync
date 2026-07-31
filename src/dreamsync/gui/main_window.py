@@ -21,7 +21,11 @@ from dreamsync.gui.models.queue_state import QueueState
 from dreamsync.gui.models.reactive_settings import ReactiveSettings
 from dreamsync.gui.models.runtime_mode_state import RuntimeModeState
 from dreamsync.gui.models.runtime_routing_state import AudioDeviceOption
-from dreamsync.gui.models.spatial_scene import SPATIAL_STEP, SceneNode
+from dreamsync.gui.models.spatial_scene import (
+    SPATIAL_STEP,
+    SceneNode,
+    group_section_chains,
+)
 from dreamsync.gui.services.device_discovery_service import DeviceTestSpec
 from dreamsync.gui.qt import QtModules
 from dreamsync.gui.services import (
@@ -890,6 +894,35 @@ def create_main_window(
     queue_panel.startup_live_mode_combo.setCurrentIndex(
         startup_mode_index if startup_mode_index >= 0 else 0
     )
+    raw_points = tuple(settings.raw_visualizer_gradient_points)
+    queue_panel.raw_visualizer_point_count_spin.setValue(
+        max(1, min(5, len(raw_points) or 3))
+    )
+    for point_index, (
+        frequency_spin,
+        color_edit,
+    ) in enumerate(
+        zip(
+            queue_panel.raw_visualizer_frequency_spins,
+            queue_panel.raw_visualizer_color_edits,
+        )
+    ):
+        if point_index < len(raw_points):
+            frequency, color = raw_points[point_index]
+            frequency_spin.setValue(int(frequency))
+            color_edit.setText(str(color))
+    queue_panel.raw_visualizer_noise_slider.setValue(
+        max(
+            0,
+            min(
+                100,
+                round(
+                    settings.raw_visualizer_noise_threshold
+                    * 1000.0
+                ),
+            ),
+        )
+    )
     for control, tooltip in (
         (queue_panel.load_saved_show_button, "Open a saved multi-track Show"),
         (queue_panel.load_saved_track_button, "Cue a precompiled single-track lightshow"),
@@ -1203,6 +1236,9 @@ def create_main_window(
             else "queue"
         )
     }
+    raw_visualizer_saved_origins = dict(
+        settings.raw_visualizer_origins
+    )
     reactive_effect_tempo_state = {"multiplier": 1.0}
     reactive_cycle_tempo_state = {"multiplier": 1.0}
     queue_drag_state = {"active": False}
@@ -3418,8 +3454,114 @@ def create_main_window(
         _render_preview_simulation()
         spatial_signal_block["value"] = False
 
+    def _raw_visualizer_origins_from_table() -> dict[str, int]:
+        origins: dict[str, int] = {}
+        table = queue_panel.raw_visualizer_origin_table
+        for row in range(table.rowCount()):
+            item = table.item(row, 0)
+            combo = table.cellWidget(row, 1)
+            if item is None or combo is None:
+                continue
+            address = str(
+                item.data(QtCore.Qt.ItemDataRole.UserRole) or ""
+            )
+            if address:
+                origins[address] = int(combo.currentData() or 0)
+        return origins
+
+    def _refresh_raw_visualizer_origins() -> None:
+        previous = {
+            **raw_visualizer_saved_origins,
+            **_raw_visualizer_origins_from_table(),
+        }
+        chains = group_section_chains(
+            spatial_controller.snapshot()
+        )
+        table = queue_panel.raw_visualizer_origin_table
+        table.setRowCount(0)
+        for address, chain in sorted(
+            chains.items(),
+            key=lambda item: (
+                item[1][0].physical_name.lower(),
+                item[0],
+            ),
+        ):
+            if not chain:
+                continue
+            row = table.rowCount()
+            table.insertRow(row)
+            label = chain[0].physical_name or address
+            item = QtWidgets.QTableWidgetItem(label)
+            item.setData(
+                QtCore.Qt.ItemDataRole.UserRole,
+                address,
+            )
+            item.setToolTip(address)
+            table.setItem(row, 0, item)
+            combo = QtWidgets.QComboBox()
+            combo.setObjectName(
+                f"rawVisualizerOrigin_{address}"
+            )
+            for node in chain:
+                node_index = int(node.section_index or 0)
+                combo.addItem(
+                    f"Node {node_index + 1}",
+                    node_index,
+                )
+            selected = int(
+                previous.get(
+                    address,
+                    max(0, (len(chain) - 1) // 2),
+                )
+            )
+            selected_index = combo.findData(selected)
+            combo.setCurrentIndex(
+                selected_index if selected_index >= 0 else 0
+            )
+            table.setCellWidget(row, 1, combo)
+        table.resizeColumnsToContents()
+
+    def _raw_visualizer_configuration_from_form() -> tuple[
+        float,
+        tuple[tuple[float, str], ...],
+        dict[str, int],
+    ]:
+        point_count = int(
+            queue_panel.raw_visualizer_point_count_spin.value()
+        )
+        points: list[tuple[float, str]] = []
+        for frequency_spin, color_edit in zip(
+            queue_panel.raw_visualizer_frequency_spins[:point_count],
+            queue_panel.raw_visualizer_color_edits[:point_count],
+        ):
+            color = str(color_edit.text()).strip()
+            if not QtGui.QColor(color).isValid():
+                raise ValueError(
+                    f"Invalid Raw Visualizer color: {color or '(empty)'}"
+                )
+            points.append(
+                (float(frequency_spin.value()), color)
+            )
+        points.sort(key=lambda point: point[0])
+        if len({frequency for frequency, _color in points}) != len(
+            points
+        ):
+            raise ValueError(
+                "Raw Visualizer gradient frequencies must be unique."
+            )
+        threshold = (
+            queue_panel.raw_visualizer_noise_slider.value()
+            / 1000.0
+        )
+        return (
+            threshold,
+            tuple(points),
+            _raw_visualizer_origins_from_table(),
+        )
+
     def _reload_spatial_scene(*, status: str | None = None) -> None:
         if config_path is None or not config_path.exists():
+            queue_panel.raw_visualizer_origin_table.setRowCount(0)
             spatial_entries_state["entries"] = []
             spatial_summary_label.setText(_format_spatial_summary([], config_path))
             spatial_details.setPlainText(_format_spatial_details([]))
@@ -3429,6 +3571,7 @@ def create_main_window(
         entries = device_service.load_scene(config_path)
         spatial_entries_state["entries"] = entries
         spatial_controller.load(config_path)
+        _refresh_raw_visualizer_origins()
         spatial_summary_label.setText(_format_spatial_summary(entries, config_path))
         spatial_details.setPlainText(_format_spatial_details(entries))
         _refresh_spatial_controls()
@@ -7000,6 +7143,14 @@ def create_main_window(
         listening = bool(snapshot.get("listening", False))
         input_device = str(snapshot.get("input_device", "system default") or "system default")
         if raw_visualizer_mode:
+            queue_panel.raw_visualizer_status_label.setText(
+                (
+                    f"● Listening · {input_device}"
+                    if listening
+                    else f"○ Waiting for input · {input_device}"
+                )
+                + " · frequency analysis only"
+            )
             queue_panel.reactive_listening_label.setText(
                 (
                     f"● Frequency input active · {input_device}"
@@ -7028,20 +7179,25 @@ def create_main_window(
                 "Tempo detection is disabled in Raw Visualizer mode."
             )
             queue_panel.reactive_effect_tempo_label.setText(
-                "Fill origin: center"
+                "Fill origin: configured per strip"
             )
             queue_panel.reactive_cycle_tempo_label.setText(
                 "Loudness controls strip coverage"
             )
             queue_panel.reactive_active_palette_label.setText(
-                "Fixed frequency palette: bass / mids / highs"
+                "Configured frequency color gradient"
             )
             _render_palette_swatches(
                 queue_panel.reactive_active_palette_preview_label,
-                ("#ff0000", "#00ff00", "#8f00ff"),
+                tuple(
+                    snapshot.get(
+                        "active_palette_colors",
+                        ("#ff0000", "#00ff00", "#8f00ff"),
+                    )
+                ),
                 empty_text="No active colors",
                 tooltip_prefix=(
-                    "Bass red, mids green, highs violet"
+                    "Colors assigned to increasing frequency points"
                 ),
             )
             queue_panel.reactive_palette_next_label.setText(
@@ -7518,20 +7674,24 @@ def create_main_window(
         queue_panel.live_queue_group.setVisible(queue_visible)
         queue_panel.live_palette_group.setVisible(queue_visible)
         queue_panel.show_override_group.setVisible(queue_visible)
-        queue_panel.live_reactive_group.setVisible(not queue_visible)
+        queue_panel.live_reactive_group.setVisible(
+            selected_mode == "reactive"
+        )
+        queue_panel.live_raw_visualizer_group.setVisible(
+            selected_mode == "raw_visualizer"
+        )
         if queue_visible:
             queue_panel.reactive_mode_status_label.setText(
                 "Reactive settings are ready in Config. Choose Reactive Mode to cue them."
             )
         else:
             raw_mode = selected_mode == "raw_visualizer"
-            queue_panel.start_reactive_button.setText(
-                "Start Raw Visualizer" if raw_mode else "Start Reactive"
-            )
-            queue_panel.stop_reactive_button.setText(
-                "Stop Raw Visualizer" if raw_mode else "Stop Reactive"
-            )
-            _render_reactive_live_state()
+            if raw_mode:
+                queue_panel.raw_visualizer_status_label.setText(
+                    "Raw Visualizer is cued. Configure origins, gradient, and threshold, then start."
+                )
+            else:
+                _render_reactive_live_state()
         if announce:
             queue_controller.set_status(
                 (
@@ -10065,7 +10225,11 @@ def create_main_window(
         )
         _set_live_mode(selected_listening_mode, announce=False)
         _capture_settings, reactive_settings = _sync_runtime_settings_from_form()
-        validation_errors = _validate_reactive_configuration(reactive_settings)
+        validation_errors = (
+            ()
+            if selected_listening_mode == "raw_visualizer"
+            else _validate_reactive_configuration(reactive_settings)
+        )
         if validation_errors:
             _update_reactive_configuration_warning()
             QtWidgets.QMessageBox.warning(
@@ -10078,10 +10242,34 @@ def create_main_window(
             _render_queue_state(queue_controller.state)
             return
         try:
+            (
+                raw_noise_threshold,
+                raw_gradient_points,
+                raw_origins,
+            ) = _raw_visualizer_configuration_from_form()
+        except ValueError as exc:
+            if selected_listening_mode == "raw_visualizer":
+                queue_panel.raw_visualizer_status_label.setText(
+                    str(exc)
+                )
+                queue_controller.set_status(str(exc))
+                _render_queue_state(queue_controller.state)
+                return
+            raw_noise_threshold = 0.004
+            raw_gradient_points = ()
+            raw_origins = {}
+        try:
             runtime_supervisor.start_reactive_live(
                 config_path=config_path,
                 profile=_current_base_profile(),
                 effect_mode=selected_listening_mode,
+                raw_visualizer_noise_threshold=(
+                    raw_noise_threshold
+                ),
+                raw_visualizer_gradient_points=(
+                    raw_gradient_points
+                ),
+                raw_visualizer_origins=raw_origins,
             )
         except Exception as exc:
             _render_session_status(None, running=False, error=exc)
@@ -10097,6 +10285,10 @@ def create_main_window(
             if selected_listening_mode == "raw_visualizer"
             else "Reactive output started with the refined live detector."
         )
+        if selected_listening_mode == "raw_visualizer":
+            queue_panel.raw_visualizer_status_label.setText(
+                "Raw Visualizer listening · frequency analysis only"
+            )
         _render_queue_state(queue_controller.state)
         _render_runtime_state(runtime_state)
         _render_reactive_live_state(runtime_state)
@@ -10771,6 +10963,69 @@ def create_main_window(
     queue_panel.raw_visualizer_mode_button.clicked.connect(
         lambda: _set_live_mode("raw_visualizer")
     )
+    def _sync_raw_visualizer_point_rows() -> None:
+        count = int(
+            queue_panel.raw_visualizer_point_count_spin.value()
+        )
+        for index, (
+            point_label,
+            frequency_spin,
+            color_edit,
+            color_button,
+        ) in enumerate(
+            zip(
+                queue_panel.raw_visualizer_point_labels,
+                queue_panel.raw_visualizer_frequency_spins,
+                queue_panel.raw_visualizer_color_edits,
+                queue_panel.raw_visualizer_color_buttons,
+            )
+        ):
+            visible = index < count
+            point_label.setVisible(visible)
+            frequency_spin.setVisible(visible)
+            color_edit.setVisible(visible)
+            color_button.setVisible(visible)
+
+    def _choose_raw_visualizer_color(index: int) -> None:
+        edit = queue_panel.raw_visualizer_color_edits[index]
+        initial = QtGui.QColor(str(edit.text()).strip())
+        selected = QtWidgets.QColorDialog.getColor(
+            initial if initial.isValid() else QtGui.QColor("#ffffff"),
+            window,
+            f"Choose Raw Visualizer Gradient Color {index + 1}",
+        )
+        if selected.isValid():
+            edit.setText(selected.name())
+
+    def _update_raw_noise_label(value: int) -> None:
+        queue_panel.raw_visualizer_noise_value_label.setText(
+            f"{value / 1000.0:.3f} RMS"
+        )
+
+    queue_panel.raw_visualizer_point_count_spin.valueChanged.connect(
+        lambda _value: _sync_raw_visualizer_point_rows()
+    )
+    for raw_color_index, raw_color_button in enumerate(
+        queue_panel.raw_visualizer_color_buttons
+    ):
+        raw_color_button.clicked.connect(
+            lambda _checked=False, index=raw_color_index: (
+                _choose_raw_visualizer_color(index)
+            )
+        )
+    queue_panel.raw_visualizer_noise_slider.valueChanged.connect(
+        _update_raw_noise_label
+    )
+    queue_panel.start_raw_visualizer_button.clicked.connect(
+        _start_reactive_output
+    )
+    queue_panel.stop_raw_visualizer_button.clicked.connect(
+        _stop_output_runtime
+    )
+    _sync_raw_visualizer_point_rows()
+    _update_raw_noise_label(
+        queue_panel.raw_visualizer_noise_slider.value()
+    )
     queue_panel.reactive_cycle_tempo_half_button.clicked.connect(
         lambda: _set_reactive_cycle_tempo(0.5)
     )
@@ -11222,6 +11477,11 @@ def create_main_window(
 
     def _current_gui_settings() -> GuiSettings:
         capture_settings, reactive_settings = _sync_runtime_settings_from_form()
+        (
+            raw_noise_threshold,
+            raw_gradient_points,
+            raw_origins,
+        ) = _raw_visualizer_configuration_from_form()
         window_geometry = bytes(
             window.saveGeometry().toBase64()
         ).decode("ascii")
@@ -11284,6 +11544,11 @@ def create_main_window(
                 or "auto"
             ),
             reactive_live_effect_bank=_current_reactive_effect_bank(),
+            raw_visualizer_noise_threshold=raw_noise_threshold,
+            raw_visualizer_gradient_points=raw_gradient_points,
+            raw_visualizer_origins=tuple(
+                sorted(raw_origins.items())
+            ),
             show_compile_seed=(
                 int(queue_panel.compile_seed_spin.value())
                 if queue_panel.compile_seed_check.isChecked()
@@ -11294,7 +11559,21 @@ def create_main_window(
         )
 
     def _save_configuration() -> bool:  # pragma: no cover - Qt only
-        snapshot = _current_gui_settings()
+        try:
+            snapshot = _current_gui_settings()
+        except ValueError as exc:
+            queue_panel.configuration_save_status_label.setText(
+                f"Not saved: {exc}"
+            )
+            queue_panel.configuration_save_status_label.setStyleSheet(
+                "color: #dc2626; font-weight: 600;"
+            )
+            QtWidgets.QMessageBox.warning(
+                window,
+                "Invalid Raw Visualizer Configuration",
+                str(exc),
+            )
+            return False
         validation_errors = _validate_reactive_configuration(
             snapshot.reactive_settings
         )
