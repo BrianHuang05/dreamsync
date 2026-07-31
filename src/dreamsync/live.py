@@ -50,6 +50,10 @@ from dreamsync.effects import (
 from dreamsync.mood import MoodClassifier
 from dreamsync.output.govee_lan import GoveeLanAdapter, MultiGoveeLanAdapter
 from dreamsync.render import RenderMode, SegmentRenderer
+from dreamsync.raw_visualizer import (
+    RAW_VISUALIZER_COLORS,
+    RawFrequencyVisualizer,
+)
 from dreamsync.show.runtime_control import apply_runtime_control_to_intent_params
 
 
@@ -3788,6 +3792,7 @@ def run_live_to_govee(
     render_mode: str = "scroll",
     legacy_cyclic_downbeats: bool = False,
     structure_config: LiveStructureConfig | None = None,
+    raw_visualizer: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Audio capture → beat detection → renderer → Govee UDP streaming.
 
@@ -3832,11 +3837,14 @@ def run_live_to_govee(
 
     sd = _require_sounddevice()
     harmonic_analysis_enabled = bool(
+        not raw_visualizer
+        and (
         auto_cycle
         or live_structure.harmonic_structure_enabled
         or live_structure.debug_harmonics
         or live_structure.predictive_analysis_enabled
         or live_structure.structure_similarity_enabled
+        )
     )
     audio_ring = AudioBlockRing(
         capacity=8,
@@ -3873,9 +3881,12 @@ def run_live_to_govee(
     )
     crossfade_detector: CrossfadeBoundaryDetector | None = (
         CrossfadeBoundaryDetector(hop_size=hop_size, sample_rate=sample_rate)
-        if crossfade_detect else None
+        if crossfade_detect and not raw_visualizer else None
     )
     director = Director(director_config)
+    raw_frequency_visualizer = (
+        RawFrequencyVisualizer() if raw_visualizer else None
+    )
     mood_classifier = MoodClassifier() if auto_cycle else None
     if effect_cycler_override is not None:
         effect_cycler = effect_cycler_override
@@ -4055,7 +4066,15 @@ def run_live_to_govee(
     analysis_discontinuities = 0
 
     # Seed with an initial intent so we always have something to render
-    last_intent = director.update({"t": 0.0, "rms": 0.0, "zcr": 0.0, "bpm": 120.0, "beat": False, "bass": 0.0})
+    if raw_frequency_visualizer is not None:
+        initial_raw_frame = raw_frequency_visualizer.update(
+            rms=0.0,
+            band_ratios=(),
+        )
+        last_intent = raw_frequency_visualizer.intent(initial_raw_frame)
+        current_params = initial_raw_frame.render_params()
+    else:
+        last_intent = director.update({"t": 0.0, "rms": 0.0, "zcr": 0.0, "bpm": 120.0, "beat": False, "bass": 0.0})
     structural_render_mode: RenderMode | None = None
 
     def _runtime_params_for_frame(
@@ -4703,13 +4722,21 @@ def run_live_to_govee(
                 raw_mag = sf.raw_mag if sf.raw_mag is not None else sf.mag
                 noise_estimator.update(raw_mag)
                 prev_mag = sf.mag
-                wf, spectral_mean, prev_whitened_mag = _compute_whitened_flux(
-                    raw_mag, spectral_mean, prev_whitened_mag,
-                    energy_gate=1.0,
-                )
+                if raw_frequency_visualizer is not None:
+                    wf = 0.0
+                    perc = 0.0
+                else:
+                    wf, spectral_mean, prev_whitened_mag = (
+                        _compute_whitened_flux(
+                            raw_mag,
+                            spectral_mean,
+                            prev_whitened_mag,
+                            energy_gate=1.0,
+                        )
+                    )
+                    perc = percussive_tracker.update(raw_mag)
                 last_sf = sf
                 last_wf = wf
-                perc = percussive_tracker.update(raw_mag)
                 if stream_t - last_eq_diagnostic_t >= 1.0 / waveform_points_per_second:
                     for band_name in diagnostic_eq_bands:
                         points = eq_band_points[band_name]
@@ -4720,24 +4747,34 @@ def run_live_to_govee(
                         while points and points[0][0] < stream_t - waveform_window_seconds:
                             points.popleft()
                     last_eq_diagnostic_t = stream_t
-                detected_bpm, detected_beat = bpm_estimator.update(
-                    sf.bass, stream_t,
-                    spectral_flux=sf.spectral_flux,
-                    kick_spectral_flux=sf.kick_spectral_flux,
-                    whitened_flux=wf,
-                    percussive_onset=perc,
-                    eq_band_fluxes=sf.band_fluxes,
-                    mag=sf.mag,
-                )
-                if half_time and detected_bpm > 0:
-                    detected_bpm *= 0.5
-                current_detected_bpm = detected_bpm
-                bpm, beat = cycle_tempo.update(
-                    t=stream_t,
-                    detected_bpm=detected_bpm,
-                    detected_beat=detected_beat,
-                )
-                current_cycle_bpm = bpm
+                if raw_frequency_visualizer is not None:
+                    # Raw mode deliberately never invokes the tempo/onset
+                    # detector.  Its only musical inputs are RMS and FFT bands.
+                    detected_bpm = 0.0
+                    detected_beat = False
+                    current_detected_bpm = 0.0
+                    bpm = 0.0
+                    beat = False
+                    current_cycle_bpm = 0.0
+                else:
+                    detected_bpm, detected_beat = bpm_estimator.update(
+                        sf.bass, stream_t,
+                        spectral_flux=sf.spectral_flux,
+                        kick_spectral_flux=sf.kick_spectral_flux,
+                        whitened_flux=wf,
+                        percussive_onset=perc,
+                        eq_band_fluxes=sf.band_fluxes,
+                        mag=sf.mag,
+                    )
+                    if half_time and detected_bpm > 0:
+                        detected_bpm *= 0.5
+                    current_detected_bpm = detected_bpm
+                    bpm, beat = cycle_tempo.update(
+                        t=stream_t,
+                        detected_bpm=detected_bpm,
+                        detected_beat=detected_beat,
+                    )
+                    current_cycle_bpm = bpm
 
                 # Crossfade boundary detection (parallel to silence)
                 crossfade_boundary = False
@@ -5000,13 +5037,22 @@ def run_live_to_govee(
                     cycle_tempo.multiplier != 1.0
                 )
                 last_features["detected_bpm"] = detected_bpm
-                last_live_eq_state = live_eq_tracker.update(sf, stream_t)
-                last_live_instrument_state = live_instrument_tracker.update(
-                    sf,
-                    last_features,
-                    percussive_onset=perc,
-                    t=stream_t,
-                )
+                if raw_frequency_visualizer is not None:
+                    last_live_eq_state = None
+                    last_live_instrument_state = None
+                else:
+                    last_live_eq_state = live_eq_tracker.update(
+                        sf,
+                        stream_t,
+                    )
+                    last_live_instrument_state = (
+                        live_instrument_tracker.update(
+                            sf,
+                            last_features,
+                            percussive_onset=perc,
+                            t=stream_t,
+                        )
+                    )
                 if (
                     live_structure.harmonic_structure_enabled
                     or structure_similarity_controls_output
@@ -5015,7 +5061,15 @@ def run_live_to_govee(
                     last_features["structure_event"] = (
                         "macro_change" if pending_macro_transition else ""
                     )
-                last_intent = director.update(last_features)
+                if raw_frequency_visualizer is not None:
+                    raw_frame = raw_frequency_visualizer.update(
+                        rms=rms,
+                        band_ratios=sf.band_ratios,
+                    )
+                    last_intent = raw_frequency_visualizer.intent(raw_frame)
+                    current_params = raw_frame.render_params()
+                else:
+                    last_intent = director.update(last_features)
                 if pending_macro_transition:
                     pending_macro_transition = False
 
@@ -6249,7 +6303,10 @@ def run_live_to_govee(
                     active_palette_name = (
                         effect_cycler.current_palette if effect_cycler is not None else None
                     )
-                    if runtime_palette_override:
+                    if raw_frequency_visualizer is not None:
+                        active_palette_name = "raw_frequency_bands"
+                        active_palette_colors = RAW_VISUALIZER_COLORS
+                    elif runtime_palette_override:
                         active_palette_colors = runtime_palette_override
                     elif (
                         effect_cycler is not None
@@ -6506,6 +6563,15 @@ def run_live_to_govee(
                             + (crossfade_detector.boundary_count if crossfade_detector else 0)
                         ),
                         "render_mode": str((last_runtime_params or {}).get("_render_mode", "")),
+                        "raw_visualizer": bool(
+                            raw_frequency_visualizer is not None
+                        ),
+                        "raw_visualizer_levels": tuple(
+                            (last_runtime_params or {}).get(
+                                "raw_visualizer_levels",
+                                (),
+                            )
+                        ),
                         "current_palette": active_palette_colors,
                         "active_palette_name": active_palette_name or "",
                         "palette_queue": palette_queue,
@@ -6660,6 +6726,7 @@ def run_live_to_govee(
     ble_count = len(getattr(multi_adapter, "_ble_followers", []))
     ring_stats = audio_ring.snapshot()
     summary = {
+        "raw_visualizer": bool(raw_frequency_visualizer is not None),
         "duration_seconds": float(duration_seconds) if duration_seconds is not None else round(actual_duration, 3),
         "sample_rate": int(sample_rate),
         "channels": int(channels),

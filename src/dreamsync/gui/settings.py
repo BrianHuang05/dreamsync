@@ -123,7 +123,10 @@ class GuiSettingsStore:
             baked_playback_mode=str(raw.get("baked_playback_mode", "auto")),
             live_loopback_enabled=bool(raw.get("live_loopback_enabled", False)),
             live_start_mode=(
-                "reactive" if str(raw.get("live_start_mode", "queue")) == "reactive" else "queue"
+                str(raw.get("live_start_mode", "queue"))
+                if str(raw.get("live_start_mode", "queue"))
+                in {"queue", "reactive", "raw_visualizer"}
+                else "queue"
             ),
             profile_directory=str(raw.get("profile_directory", "")),
             show_directory=str(raw.get("show_directory", "")),

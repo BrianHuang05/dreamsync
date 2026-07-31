@@ -1196,7 +1196,12 @@ def create_main_window(
     playlist_state = {"playlist": None}
     precompiled_queue_state = {"timelines": {}, "sources": {}}
     live_mode_state = {
-        "value": "reactive" if settings.live_start_mode == "reactive" else "queue"
+        "value": (
+            settings.live_start_mode
+            if settings.live_start_mode
+            in {"queue", "reactive", "raw_visualizer"}
+            else "queue"
+        )
     }
     reactive_effect_tempo_state = {"multiplier": 1.0}
     reactive_cycle_tempo_state = {"multiplier": 1.0}
@@ -6874,9 +6879,27 @@ def create_main_window(
         """Render the real input/beat state from the refined reactive engine."""
         runtime_state = runtime_state or runtime_supervisor.snapshot()
         active_reactive = runtime_state.active_output_mode in {"reactive", "reactive_live"}
-        queue_panel.reactive_downbeat_nudge_button.setEnabled(
-            active_reactive
+        raw_visualizer_mode = (
+            runtime_state.reactive_effect_mode == "raw_visualizer"
+            or (
+                not active_reactive
+                and live_mode_state["value"] == "raw_visualizer"
+            )
         )
+        queue_panel.reactive_downbeat_nudge_button.setEnabled(
+            active_reactive and not raw_visualizer_mode
+        )
+        for tempo_control in (
+            queue_panel.reactive_cycle_tempo_half_button,
+            queue_panel.reactive_cycle_tempo_normal_button,
+            queue_panel.reactive_cycle_tempo_double_button,
+            queue_panel.reactive_effect_tempo_half_button,
+            queue_panel.reactive_effect_tempo_normal_button,
+            queue_panel.reactive_effect_tempo_double_button,
+        ):
+            tempo_control.setEnabled(
+                active_reactive and not raw_visualizer_mode
+            )
         queue_panel.reactive_chord_history_group.setVisible(
             queue_panel.reactive_chord_panel_check.isChecked()
         )
@@ -6964,14 +6987,70 @@ def create_main_window(
                 (),
                 (),
             )
-            if live_mode_state["value"] == "reactive":
+            if live_mode_state["value"] in {"reactive", "raw_visualizer"}:
                 queue_panel.reactive_mode_status_label.setText(
-                    "Reactive mode is cued. Start Reactive or press Space to begin listening."
+                    (
+                        "Raw Visualizer is cued. Start listening or press Space; tempo detection stays off."
+                        if live_mode_state["value"] == "raw_visualizer"
+                        else "Reactive mode is cued. Start Reactive or press Space to begin listening."
+                    )
                 )
             return
 
         listening = bool(snapshot.get("listening", False))
         input_device = str(snapshot.get("input_device", "system default") or "system default")
+        if raw_visualizer_mode:
+            queue_panel.reactive_listening_label.setText(
+                (
+                    f"● Frequency input active · {input_device}"
+                    if listening
+                    else f"○ Waiting for frequency input · {input_device}"
+                )
+            )
+            queue_panel.reactive_listening_label.setStyleSheet(
+                "color: #22c55e; font-weight: 700;"
+                if listening
+                else "color: #f59e0b; font-weight: 600;"
+            )
+            queue_panel.reactive_mode_status_label.setText(
+                "Raw Visualizer · center-out loudness · no tempo detection"
+            )
+            queue_panel.reactive_bpm_label.setText(
+                "Frequency bands: bass · mids · highs"
+            )
+            queue_panel.reactive_bpm_label.setToolTip(
+                "Raw mode analyzes FFT energy only. BPM, beats, meter, and song structure are disabled."
+            )
+            queue_panel.reactive_beat_indicator_label.setStyleSheet(
+                "color: #8b5cf6; font-size: 22px;"
+            )
+            queue_panel.reactive_beat_indicator_label.setToolTip(
+                "Tempo detection is disabled in Raw Visualizer mode."
+            )
+            queue_panel.reactive_effect_tempo_label.setText(
+                "Fill origin: center"
+            )
+            queue_panel.reactive_cycle_tempo_label.setText(
+                "Loudness controls strip coverage"
+            )
+            queue_panel.reactive_active_palette_label.setText(
+                "Fixed frequency palette: bass / mids / highs"
+            )
+            _render_palette_swatches(
+                queue_panel.reactive_active_palette_preview_label,
+                ("#ff0000", "#00ff00", "#8f00ff"),
+                empty_text="No active colors",
+                tooltip_prefix=(
+                    "Bass red, mids green, highs violet"
+                ),
+            )
+            queue_panel.reactive_palette_next_label.setText(
+                "Palette rotation: off"
+            )
+            queue_panel.reactive_palette_queue_label.setText(
+                "Band colors: fixed"
+            )
+            return
         bpm = float(snapshot.get("bpm", 0.0) or 0.0)
         detected_bpm = float(
             snapshot.get("detected_bpm", bpm) or bpm
@@ -7417,11 +7496,19 @@ def create_main_window(
         )
 
     def _set_live_mode(mode: str, *, announce: bool = True) -> None:  # pragma: no cover - Qt only
-        selected_mode = "reactive" if mode == "reactive" else "queue"
+        selected_mode = (
+            mode
+            if mode in {"queue", "reactive", "raw_visualizer"}
+            else "queue"
+        )
         live_mode_state["value"] = selected_mode
         for button, button_mode in (
             (queue_panel.queue_mode_button, "queue"),
             (queue_panel.reactive_mode_button, "reactive"),
+            (
+                queue_panel.raw_visualizer_mode_button,
+                "raw_visualizer",
+            ),
         ):
             blocker = QtCore.QSignalBlocker(button)
             button.setChecked(button_mode == selected_mode)
@@ -7437,11 +7524,22 @@ def create_main_window(
                 "Reactive settings are ready in Config. Choose Reactive Mode to cue them."
             )
         else:
+            raw_mode = selected_mode == "raw_visualizer"
+            queue_panel.start_reactive_button.setText(
+                "Start Raw Visualizer" if raw_mode else "Start Reactive"
+            )
+            queue_panel.stop_reactive_button.setText(
+                "Stop Raw Visualizer" if raw_mode else "Stop Reactive"
+            )
             _render_reactive_live_state()
         if announce:
             queue_controller.set_status(
-                "Reactive mode cued. Press Space to start listening."
-                if selected_mode == "reactive"
+                (
+                    "Raw Visualizer cued. Press Space to start frequency-only listening."
+                    if selected_mode == "raw_visualizer"
+                    else "Reactive mode cued. Press Space to start listening."
+                )
+                if selected_mode != "queue"
                 else "Queue mode selected. Local and Spotify queues are available."
             )
         _render_queue_state(queue_controller.state)
@@ -9960,7 +10058,12 @@ def create_main_window(
     def _start_reactive_output() -> None:  # pragma: no cover - Qt only
         # Selecting Reactive only cues its interface.  This handler is the
         # explicit point at which the microphone/input session is started.
-        _set_live_mode("reactive", announce=False)
+        selected_listening_mode = (
+            live_mode_state["value"]
+            if live_mode_state["value"] in {"reactive", "raw_visualizer"}
+            else "reactive"
+        )
+        _set_live_mode(selected_listening_mode, announce=False)
         _capture_settings, reactive_settings = _sync_runtime_settings_from_form()
         validation_errors = _validate_reactive_configuration(reactive_settings)
         if validation_errors:
@@ -9978,17 +10081,22 @@ def create_main_window(
             runtime_supervisor.start_reactive_live(
                 config_path=config_path,
                 profile=_current_base_profile(),
-                effect_mode="reactive",
+                effect_mode=selected_listening_mode,
             )
         except Exception as exc:
             _render_session_status(None, running=False, error=exc)
             queue_controller.set_status(str(exc))
             _render_queue_state(queue_controller.state)
             return
-        _apply_reactive_live_look()
+        if selected_listening_mode == "reactive":
+            _apply_reactive_live_look()
         runtime_state = runtime_supervisor.snapshot()
         _render_session_status(_pending_preview_snapshot(runtime_state), running=True)
-        queue_controller.set_status("Reactive output started with the refined live detector.")
+        queue_controller.set_status(
+            "Raw Visualizer started with frequency analysis only."
+            if selected_listening_mode == "raw_visualizer"
+            else "Reactive output started with the refined live detector."
+        )
         _render_queue_state(queue_controller.state)
         _render_runtime_state(runtime_state)
         _render_reactive_live_state(runtime_state)
@@ -10565,7 +10673,7 @@ def create_main_window(
 
     def _live_start_pause_shortcut() -> None:  # pragma: no cover - Qt only
         if not _show_text_input_has_focus():
-            if live_mode_state["value"] == "reactive":
+            if live_mode_state["value"] in {"reactive", "raw_visualizer"}:
                 active_mode = runtime_supervisor.snapshot().active_output_mode
                 if active_mode in {"reactive", "reactive_live"}:
                     _stop_output_runtime()
@@ -10573,7 +10681,7 @@ def create_main_window(
                     _start_reactive_output()
                 else:
                     queue_controller.set_status(
-                        "Stop the active output before starting Reactive listening."
+                        "Stop the active output before starting live listening."
                     )
                     _render_queue_state(queue_controller.state)
             else:
@@ -10581,7 +10689,9 @@ def create_main_window(
 
     def _toggle_live_mode_shortcut() -> None:  # pragma: no cover - Qt only
         if not _show_text_input_has_focus():
-            _set_live_mode("reactive" if live_mode_state["value"] == "queue" else "queue")
+            mode_cycle = ("queue", "reactive", "raw_visualizer")
+            current_index = mode_cycle.index(live_mode_state["value"])
+            _set_live_mode(mode_cycle[(current_index + 1) % len(mode_cycle)])
 
     def _live_stop_shortcut() -> None:  # pragma: no cover - Qt only
         active_mode = runtime_supervisor.snapshot().active_output_mode
@@ -10658,6 +10768,9 @@ def create_main_window(
     queue_panel.local_list.reordered.connect(_move_queue_item)
     queue_panel.queue_mode_button.clicked.connect(lambda: _set_live_mode("queue"))
     queue_panel.reactive_mode_button.clicked.connect(lambda: _set_live_mode("reactive"))
+    queue_panel.raw_visualizer_mode_button.clicked.connect(
+        lambda: _set_live_mode("raw_visualizer")
+    )
     queue_panel.reactive_cycle_tempo_half_button.clicked.connect(
         lambda: _set_reactive_cycle_tempo(0.5)
     )

@@ -22,6 +22,7 @@ def test_settings_round_trip(tmp_path: Path):
         selected_output_audio_device_id=7,
         selected_live_input_device_id=3,
         hardware_fallback_to_simulation=False,
+        live_start_mode="raw_visualizer",
         recent_saved_show_paths=("a.show.json", "b.show.json"),
         capture_settings=CaptureSettings(
             capture_dir="captures",

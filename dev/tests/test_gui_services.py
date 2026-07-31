@@ -1133,6 +1133,46 @@ def test_session_service_starts_reactive_live_session():
     assert callable(seen_kwargs["cycle_tempo_multiplier_getter"])
 
 
+def test_session_service_starts_raw_visualizer_without_tempo_features():
+    ready = threading.Event()
+    release = threading.Event()
+    seen_kwargs = {}
+
+    def fake_run_live_to_govee(*args, **kwargs):
+        seen_kwargs.update(kwargs)
+        ready.set()
+        release.wait(timeout=2)
+        return [], {"sent": 3, "beats": 0}
+
+    from unittest.mock import patch
+
+    service = SessionService()
+    with patch(
+        "dreamsync.live.run_live_to_govee",
+        side_effect=fake_run_live_to_govee,
+    ):
+        handle = service.start_reactive_live_session(
+            effect_mode="raw_visualizer",
+            render_mode="scroll",
+            auto_cycle=True,
+            crossfade_detect=True,
+            profile_strategy="smart_rotation",
+            auto_palette=True,
+        )
+        assert ready.wait(timeout=2) is True
+        release.set()
+        handle.wait(timeout=2)
+
+    assert handle.summary is not None
+    assert handle.summary["mode"] == "raw_visualizer_live"
+    assert seen_kwargs["raw_visualizer"] is True
+    assert seen_kwargs["auto_cycle"] is False
+    assert seen_kwargs["crossfade_detect"] is False
+    assert seen_kwargs["render_mode_policy"] == "fixed"
+    assert seen_kwargs["render_mode"] == "solid"
+    assert seen_kwargs["structure_config"] is None
+
+
 def test_reactive_session_queues_monotonic_downbeat_nudge_revisions():
     adapter = type("Adapter", (), {"devices": []})()
     session = ReactiveLiveSession(adapter)

@@ -142,6 +142,7 @@ class QueuePanelWidgets:
     live_queue_toolbar: object
     queue_mode_button: object
     reactive_mode_button: object
+    raw_visualizer_mode_button: object
     live_queue_group: object
     live_reactive_group: object
     reactive_mode_status_label: object
@@ -432,8 +433,15 @@ def build_queue_panel(qt_modules):
     reactive_mode_button = QtWidgets.QPushButton("Reactive Mode")
     reactive_mode_button.setObjectName("reactiveLiveModeButton")
     reactive_mode_button.setCheckable(True)
+    raw_visualizer_mode_button = QtWidgets.QPushButton("Raw Visualizer")
+    raw_visualizer_mode_button.setObjectName("rawVisualizerLiveModeButton")
+    raw_visualizer_mode_button.setCheckable(True)
+    raw_visualizer_mode_button.setToolTip(
+        "Frequency-only center visualizer: bass red, mids green, highs violet; no tempo detection."
+    )
     live_mode_row.addWidget(queue_mode_button)
     live_mode_row.addWidget(reactive_mode_button)
+    live_mode_row.addWidget(raw_visualizer_mode_button)
     live_mode_row.addStretch(1)
     queue_layout.addLayout(live_mode_row)
     live_queue_toolbar = QtWidgets.QWidget()
@@ -653,8 +661,9 @@ def build_queue_panel(qt_modules):
     startup_live_mode_combo.setObjectName("startupLiveModeCombo")
     startup_live_mode_combo.addItem("Queue", "queue")
     startup_live_mode_combo.addItem("Reactive (cued)", "reactive")
+    startup_live_mode_combo.addItem("Raw Visualizer (cued)", "raw_visualizer")
     startup_live_mode_combo.setToolTip(
-        "Chooses the Live screen shown when DreamSync opens. Reactive mode is cued but does not listen until Start Reactive or Space."
+        "Chooses the Live screen shown when DreamSync opens. Listening modes are cued but do not start until the action button or Space."
     )
     runtime_layout.addWidget(startup_live_mode_combo, 5, 1)
     runtime_layout.addWidget(QtWidgets.QLabel("Configured device health"), 6, 0)
@@ -2783,6 +2792,7 @@ def build_queue_panel(qt_modules):
         live_queue_toolbar=live_queue_toolbar,
         queue_mode_button=queue_mode_button,
         reactive_mode_button=reactive_mode_button,
+        raw_visualizer_mode_button=raw_visualizer_mode_button,
         live_queue_group=local_group,
         live_reactive_group=reactive_live_group,
         reactive_mode_status_label=reactive_mode_status_label,

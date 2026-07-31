@@ -687,7 +687,11 @@ class RuntimeSupervisor:
         )
         self._output_handle = handle
         self._update_routing_resolution(config_path=config_path, session_handle=handle)
-        self._status_message = "Reactive live mode started."
+        self._status_message = (
+            "Raw visualizer mode started."
+            if effect_mode == "raw_visualizer"
+            else "Reactive live mode started."
+        )
         self._error_message = ""
         self._record_event(self._status_message)
         return handle

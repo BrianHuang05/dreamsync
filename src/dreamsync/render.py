@@ -125,6 +125,8 @@ class SegmentRenderer:
         dt = max(0.0, t - self._last_t) if self._last_t > 0 else 0.0
         self._last_t = t
 
+        if params and "raw_visualizer_levels" in params:
+            return self._render_raw_visualizer(intent, params)
         if self.mode == RenderMode.SOLID:
             return self._render_solid(intent)
         elif self.mode == RenderMode.PULSE:
@@ -138,6 +140,75 @@ class SegmentRenderer:
         elif self.mode == RenderMode.GRADIENT:
             return self._render_gradient(intent, dt, params)
         return self._render_solid(intent)
+
+    def _render_raw_visualizer(
+        self,
+        intent: LightingIntent,
+        params: dict,
+    ) -> list[tuple[int, int, int]]:
+        raw_levels = params.get("raw_visualizer_levels", ())
+        raw_colors = params.get("raw_visualizer_colors", ())
+        if not isinstance(raw_levels, (list, tuple)) or not isinstance(
+            raw_colors,
+            (list, tuple),
+        ):
+            return self._render_solid(intent)
+        levels = tuple(
+            max(0.0, min(1.0, float(value)))
+            for value in raw_levels
+        )
+        colors: list[tuple[int, int, int]] = []
+        for value in raw_colors:
+            try:
+                colors.append(_parse_hex(str(value)))
+            except (ValueError, IndexError):
+                colors.append(_DEFAULT_COLOR)
+        if not levels or not colors:
+            return [(0, 0, 0)] * self.segments
+
+        peak_level = max(levels)
+        master_scale = (
+            max(0.0, min(1.0, intent.intensity / peak_level))
+            if peak_level > 0.0
+            else 0.0
+        )
+        result: list[tuple[int, int, int]] = []
+        for index in range(self.segments):
+            distance = (
+                0.0
+                if self.segments == 1
+                else abs((2.0 * index / (self.segments - 1)) - 1.0)
+            )
+            softness = max(0.04, 1.0 / max(1, self.segments))
+            strengths = tuple(
+                0.0
+                if level <= 0.0
+                else max(
+                    0.0,
+                    min(1.0, (level - distance + softness) / softness),
+                )
+                for level in levels
+            )
+            total = sum(strengths)
+            if total <= 0.0:
+                result.append((0, 0, 0))
+                continue
+            mixed = tuple(
+                sum(
+                    strength * color[channel]
+                    for strength, color in zip(strengths, colors)
+                )
+                / total
+                for channel in range(3)
+            )
+            result.append(
+                _scale_visible_rgb(
+                    mixed,
+                    max(strengths) * master_scale,
+                    allow_blackout=True,
+                )
+            )
+        return result
 
     def _synchronize_palette_state(
         self,

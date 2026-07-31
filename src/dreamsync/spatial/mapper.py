@@ -37,6 +37,7 @@ SpatialPreset = Literal[
     "flash_floor_only",
     "blend_left_to_right",
     "blend_front_to_back",
+    "raw_visualizer_center",
 ]
 
 
@@ -78,6 +79,12 @@ ALL_CELLS: tuple[GridCell, ...] = (
 )
 
 SPATIAL_PRESETS: dict[str, dict[str, object]] = {
+    "raw_visualizer_center": {
+        "layer_category": "static",
+        "spatial_mode": "wash",
+        "spatial_origin": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "spatial_blend": "radial",
+    },
     "ripple_left_to_right": {
         "layer_category": "slice",
         "spatial_mode": "wave",

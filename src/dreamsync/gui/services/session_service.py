@@ -426,6 +426,7 @@ class ReactiveLiveSession:
     def run(self, stop_event: threading.Event) -> dict[str, Any]:
         from dreamsync.live import run_live_to_govee
 
+        raw_visualizer = self._effect_mode == "raw_visualizer"
         with self._status_lock:
             self._playback_state = "starting"
             self._started_at = time.monotonic()
@@ -442,12 +443,12 @@ class ReactiveLiveSession:
             half_time=self._half_time,
             max_brightness=self._max_brightness,
             master_brightness=self._master_brightness,
-            auto_cycle=self._auto_cycle,
+            auto_cycle=self._auto_cycle and not raw_visualizer,
             cycle_interval=self._cycle_interval,
             debug_mood=self._debug_mood,
             stop_event=stop_event,
             telemetry_dir=self._telemetry_dir,
-            crossfade_detect=self._crossfade_detect,
+            crossfade_detect=self._crossfade_detect and not raw_visualizer,
             profile=self._profile,
             show_palette_cycle=self._show_palette_cycle,
             profile_rotation=self._profile_rotation,
@@ -461,14 +462,22 @@ class ReactiveLiveSession:
             downbeat_nudge_request_getter=self.downbeat_nudge_request,
             cycle_tempo_multiplier_getter=self.cycle_tempo_multiplier,
             state_callback=self._update_runtime_state,
-            render_mode_policy="adaptive",
-            render_mode=self._render_mode,
-            structure_config=self._structure_config,
+            render_mode_policy="fixed" if raw_visualizer else "adaptive",
+            render_mode="solid" if raw_visualizer else self._render_mode,
+            structure_config=(None if raw_visualizer else self._structure_config),
+            raw_visualizer=raw_visualizer,
         )
         with self._status_lock:
             self._summary = dict(summary)
             self._playback_state = "stopped" if stop_event.is_set() else "finished"
-        return {"mode": "reactive_live", **summary}
+        return {
+            "mode": (
+                "raw_visualizer_live"
+                if raw_visualizer
+                else "reactive_live"
+            ),
+            **summary,
+        }
 
     def predictive_cues_enabled(self) -> bool:
         with self._status_lock:
@@ -551,8 +560,16 @@ class ReactiveLiveSession:
             runtime_state = dict(self._latest_runtime_state)
         elapsed = 0.0 if started_at is None else max(0.0, time.monotonic() - started_at)
         return {
-            "mode": "reactive_live",
-            "current_track": "Reactive Live",
+            "mode": (
+                "raw_visualizer_live"
+                if self._effect_mode == "raw_visualizer"
+                else "reactive_live"
+            ),
+            "current_track": (
+                "Raw Visualizer"
+                if self._effect_mode == "raw_visualizer"
+                else "Reactive Live"
+            ),
             "current_index": -1,
             "tracks_played": 0,
             "tracks_skipped": 0,
@@ -1150,6 +1167,7 @@ class SessionService:
     ) -> SessionHandle:
         stop_event = threading.Event()
         session_ref: list[Any] = [None]
+        raw_visualizer = effect_mode == "raw_visualizer"
         adapter = self.build_output_adapter(
             config_path,
             simulation_only=simulation_only,
@@ -1163,6 +1181,13 @@ class SessionService:
         profile_rotation = None
         profile_chain = None
         profile_switch_on_song_change = False
+        if raw_visualizer:
+            # Raw mode owns a fixed three-band palette and never rotates
+            # profiles or show palettes.
+            profile_strategy = "active_profile"
+            show_palette_set = ""
+            rotation_profiles = ()
+            auto_palette = False
         if profile_strategy == "override_profile" and profile_override_path:
             resolved_profile = load_profile(resolve_profile_path(profile_override_path))
         elif profile_strategy == "auto_profile":
