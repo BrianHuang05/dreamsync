@@ -145,6 +145,7 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
     scan_lan_button = window.findChild(QtWidgets.QPushButton, "scanLanDevicesButton")
     scan_ble_button = window.findChild(QtWidgets.QPushButton, "scanBleDevicesButton")
     scan_all_button = window.findChild(QtWidgets.QPushButton, "scanAllDevicesButton")
+    add_device_button = window.findChild(QtWidgets.QPushButton, "addDeviceButton")
     identify_device_button = window.findChild(QtWidgets.QPushButton, "identifyDeviceButton")
     assign_device_button = window.findChild(QtWidgets.QPushButton, "assignDiscoveredDeviceButton")
     save_discovery_button = window.findChild(QtWidgets.QPushButton, "saveDiscoveredConfigButton")
@@ -161,7 +162,7 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
 
     assert isinstance(tabs, QtWidgets.QTabWidget)
     assert [tabs.tabText(index) for index in range(tabs.count())] == [
-        "Device Discovery",
+        "Devices",
         "Room Layout",
         "Palettes",
         "Shows",
@@ -232,18 +233,23 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
     assert show_timeline_fit_button is not None
     assert show_timeline_scroll_bar is not None
     assert show_cues_table is not None
-    assert show_cues_table.columnCount() == 31
+    assert show_cues_table.columnCount() == 19
+    assert {
+        index
+        for index in range(show_cues_table.columnCount())
+        if show_cues_table.isColumnHidden(index)
+    } == {8, 9, 13, 18}
     assert [
         show_cues_table.horizontalHeaderItem(index).text()
-        for index in range(20, show_cues_table.columnCount())
+        for index in range(8, show_cues_table.columnCount())
     ] == [
-        "Layer Category",
-        "Layer Target",
-        "Layer Trigger",
-        "Layer Falloff",
-        "Layer Thickness",
-        "Layer Speed",
-        "Layer Priority",
+        "Pan Follow",
+        "Int Boost",
+        "Origin",
+        "Direction",
+        "Color Bias",
+        "Intensity Start",
+        "Layers",
         "Target Groups",
         "Group Match",
         "Exclude Groups",
@@ -332,6 +338,8 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
     assert scan_lan_button is not None
     assert scan_ble_button is not None
     assert scan_all_button is not None
+    assert add_device_button is not None
+    assert add_device_button.text() == "Add Device"
     assert identify_device_button is not None
     assert assign_device_button is not None
     assert save_discovery_button is not None
@@ -350,6 +358,8 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
         "B",
         "S",
         "I",
+        "Ctrl+Enter",
+        "Ctrl+N",
         "A",
         "Ctrl+S",
         "Ctrl+Shift+S",

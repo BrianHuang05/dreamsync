@@ -52,6 +52,13 @@ def test_settings_round_trip(tmp_path: Path):
     assert loaded == settings
 
 
+def test_settings_migrates_device_discovery_tab_name(tmp_path: Path):
+    path = tmp_path / "gui-settings.json"
+    path.write_text('{"last_tab": "Device Discovery"}', encoding="utf-8")
+
+    assert GuiSettingsStore(path).load().last_tab == "Devices"
+
+
 def test_app_state_transitions():
     state = AppState()
     state = state.with_tab("Palettes").with_diagnostic("ready")

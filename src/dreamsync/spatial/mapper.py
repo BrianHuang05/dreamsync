@@ -400,7 +400,11 @@ class SpatialMapper:
         for layer in raw_layers:
             if not isinstance(layer, dict):
                 continue
-            spatial_params = self._layer_spatial_params(base_params, layer)
+            spatial_params = self._layer_spatial_params(
+                base_params,
+                layer,
+                base_spec=base_spec,
+            )
             if not self._has_explicit_spatial_metadata(spatial_params):
                 continue
             spec = self.resolve_spatial_spec(intent, params=spatial_params)
@@ -419,17 +423,41 @@ class SpatialMapper:
                         params=spatial_params,
                         target_groups=tuple(
                             str(value)
-                            for value in layer.get("target_groups", ())
+                            for value in layer.get(
+                                "target_groups",
+                                base_params.get("target_groups", ()),
+                            )
                         )
-                        if isinstance(layer.get("target_groups"), (list, tuple))
+                        if isinstance(
+                            layer.get(
+                                "target_groups",
+                                base_params.get("target_groups", ()),
+                            ),
+                            (list, tuple),
+                        )
                         else (),
                         exclude_groups=tuple(
                             str(value)
-                            for value in layer.get("exclude_groups", ())
+                            for value in layer.get(
+                                "exclude_groups",
+                                base_params.get("exclude_groups", ()),
+                            )
                         )
-                        if isinstance(layer.get("exclude_groups"), (list, tuple))
+                        if isinstance(
+                            layer.get(
+                                "exclude_groups",
+                                base_params.get("exclude_groups", ()),
+                            ),
+                            (list, tuple),
+                        )
                         else (),
-                        target_match=str(layer.get("target_match", "any") or "any"),
+                        target_match=str(
+                            layer.get(
+                                "target_match",
+                                base_params.get("target_match", "any"),
+                            )
+                            or "any"
+                        ),
                         untargeted_behavior=str(
                             layer.get("untargeted_behavior", "preserve_base")
                             or "preserve_base"
@@ -535,6 +563,17 @@ class SpatialMapper:
             extent=spec.extent,
             palette=spec.palette,
         )
+        local_t = float(t) - float(layer.time_offset_s)
+        if local_t < 0.0 or (
+            layer.duration_s > 0.0
+            and local_t >= layer.duration_s
+        ):
+            return SpatialActivation(
+                strength=0.0,
+                intensity_scale=0.0,
+                color_override=None,
+                effect_mode=layer.effect_mode,
+            )
         state = self.evaluate_effect_layer(t, layer)
         point = (placement.x, placement.y, placement.z)
         if spec.mode == "blend" and self._extent_factor(point, layer.extent) > 0.0:
@@ -1087,7 +1126,15 @@ class SpatialMapper:
         if preset is None:
             return
         for key, value in preset.items():
-            params.setdefault(key, self._copy_spatial_value(value))
+            copied = self._copy_spatial_value(value)
+            if key in {
+                "spatial_origin",
+                "spatial_origin_mode",
+                "spatial_direction",
+            }:
+                params[key] = copied
+            else:
+                params.setdefault(key, copied)
 
     def _apply_legacy_spatial_compatibility(self, params: dict[str, object]) -> None:
         axis = params.get("spatial_axis")
@@ -1326,8 +1373,23 @@ class SpatialMapper:
         self,
         base_params: dict[str, object],
         layer: dict[str, object],
+        *,
+        base_spec: SpatialSpec,
     ) -> dict[str, object]:
-        params: dict[str, object] = {}
+        params: dict[str, object] = {
+            "spatial_origin": {
+                "x": base_spec.origin[0],
+                "y": base_spec.origin[1],
+                "z": base_spec.origin[2],
+            },
+            "spatial_origin_mode": base_spec.origin_mode,
+        }
+        if base_spec.direction is not None:
+            params["spatial_direction"] = {
+                "x": base_spec.direction[0],
+                "y": base_spec.direction[1],
+                "z": base_spec.direction[2],
+            }
         if "_spatial_palette" in base_params:
             params["_spatial_palette"] = self._copy_spatial_value(base_params["_spatial_palette"])
         for key in (
@@ -1383,7 +1445,7 @@ class SpatialMapper:
     def _layer_weight(layer: dict[str, object]) -> float:
         raw = layer.get("layer_weight")
         if raw is None:
-            raw = 0.65 + float(layer.get("intensity_boost", 0.0) or 0.0)
+            raw = 1.0 + float(layer.get("intensity_boost", 0.0) or 0.0)
         try:
             return max(0.0, min(1.5, float(raw)))
         except (TypeError, ValueError):

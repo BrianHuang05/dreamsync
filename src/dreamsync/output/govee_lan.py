@@ -1405,7 +1405,9 @@ class MultiGoveeLanAdapter:
             alpha = max(0.0, min(1.0, layer.weight * layer_sample.intensity_scale))
             if alpha <= 0.0:
                 continue
-            layer_color = color
+            # A layer without its own color inherits the cue/base spatial
+            # color, including the cue's color bias.
+            layer_color = base_color
             if layer_sample.color_override:
                 layer_color = _parse_hex_color(layer_sample.color_override)
             elif layer.color_override:

@@ -748,7 +748,11 @@ def build_multi_adapter(
         ble_followers=ble_followers,
         spatial_mapper=spatial_mapper,
         group_definitions=next(
-            (cfg.group_definitions for cfg in configs if cfg.group_definitions),
+            (
+                device.config.group_definitions
+                for device in detected
+                if device.config.group_definitions
+            ),
             (),
         ),
     )

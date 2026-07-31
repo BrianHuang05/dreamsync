@@ -292,6 +292,72 @@ devices:
         colors = adapter.preview_snapshot()["node_colors"]
         self.assertEqual(colors["10.0.0.2#section:0"], "#000000")
 
+    def test_concurrent_scene_layers_target_independent_groups(self) -> None:
+        path = self._write(
+            """
+groups:
+  - id: odd
+    name: Odd
+  - id: even
+    name: Even
+devices:
+  - name: Strip
+    address: 10.0.0.8
+    type: lan
+    segments: 2
+    sections:
+      - index: 0
+        x: -0.5
+        y: 0
+        z: 0
+        groups: [odd]
+      - index: 1
+        x: 0.5
+        y: 0
+        z: 0
+        groups: [even]
+"""
+        )
+        adapter = SimulationMultiAdapter.from_configs(
+            load_device_config(path),
+            render_mode=RenderMode.SOLID,
+        )
+        adapter.send_frame(
+            0.0,
+            LightingIntent(
+                mode=EffectMode.AMBIENT,
+                intensity=1.0,
+                speed=0.0,
+                bpm=120.0,
+                color="#101010",
+            ),
+            params={
+                "_render_mode": "solid",
+                "target_groups": ["base-disabled"],
+                "untargeted_behavior": "blackout",
+                "scene_layers": [
+                    {
+                        "layer_category": "static",
+                        "spatial_mode": "wash",
+                        "target_groups": ["odd"],
+                        "color_bias": "#ff0000",
+                        "layer_weight": 1.0,
+                    },
+                    {
+                        "layer_category": "static",
+                        "spatial_mode": "wash",
+                        "target_groups": ["even"],
+                        "color_bias": "#0000ff",
+                        "layer_weight": 1.0,
+                    },
+                ],
+            },
+        )
+
+        colors = adapter.preview_snapshot()["node_colors"]
+        self.assertEqual(colors["10.0.0.8#section:0"], "#ff0000")
+        self.assertEqual(colors["10.0.0.8#section:1"], "#0000ff")
+
     def test_disabling_one_membership_keeps_overlapping_node_active(self) -> None:
         path = self._write(
             """
@@ -523,7 +589,7 @@ devices:
     assert disabled_groups is not None
     assert enabled_groups is not None
     assert solo_groups is not None
-    assert cue_table is not None and cue_table.columnCount() == 31
+    assert cue_table is not None and cue_table.columnCount() == 19
     headers = [
         cue_table.horizontalHeaderItem(index).text()
         for index in range(cue_table.columnCount())

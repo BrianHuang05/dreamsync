@@ -159,15 +159,41 @@ async def _scan_ble_devices_async(
     devices: list[GoveeBleDevice] = []
     seen: set[str] = set()
 
-    discovered = await scanner.discover(timeout=timeout)
-    for d in discovered:
+    try:
+        discovered_with_advertisements = await scanner.discover(
+            timeout=timeout,
+            return_adv=True,
+        )
+    except TypeError:
+        # Compatibility with older Bleak releases.
+        discovered_with_advertisements = None
+
+    if isinstance(discovered_with_advertisements, dict):
+        discovered = [
+            (device, advertisement)
+            for device, advertisement in discovered_with_advertisements.values()
+        ]
+    else:
+        legacy_devices = (
+            discovered_with_advertisements
+            if discovered_with_advertisements is not None
+            else await scanner.discover(timeout=timeout)
+        )
+        discovered = [(device, None) for device in legacy_devices]
+
+    for d, advertisement in discovered:
         name = d.name or ""
         if not any(name.startswith(p) for p in name_prefixes):
             continue
         if d.address in seen:
             continue
         seen.add(d.address)
-        rssi = getattr(d, "rssi", 0) or 0
+        rssi = (
+            getattr(advertisement, "rssi", None)
+            if advertisement is not None
+            else getattr(d, "rssi", None)
+        )
+        rssi = int(rssi or 0)
         devices.append(GoveeBleDevice(name=name, address=d.address, rssi=rssi))
         _logger.info("Discovered BLE device: %s (%s) RSSI=%d", name, d.address, rssi)
 
@@ -237,6 +263,7 @@ class GoveeBleAdapter:
         self._started = False
         self._state = _BleState()
         self._lock = threading.Lock()
+        self._ready_event = threading.Event()
         # Track last payload to avoid redundant writes
         self._last_payload: object | None = None
         self.paused: bool = False
@@ -251,6 +278,7 @@ class GoveeBleAdapter:
         """Start the background BLE thread."""
         if self._started:
             return
+        self._ready_event.clear()
         self._started = True
         self._thread = threading.Thread(
             target=self._run_loop,
@@ -277,6 +305,14 @@ class GoveeBleAdapter:
         if self._thread is not None:
             self._thread.join(timeout=5.0)
             self._thread = None
+        self._ready_event.clear()
+
+    def wait_until_connected(self, timeout: float | None = None) -> bool:
+        """Wait until GATT setup is complete and color commands can be written."""
+
+        return self._ready_event.wait(
+            self.config.connect_timeout if timeout is None else max(0.0, float(timeout))
+        )
 
     def send_color(self, r: int, g: int, b: int, brightness: int = 100) -> None:
         """Queue a color update for the BLE device.
@@ -427,6 +463,7 @@ class GoveeBleAdapter:
                 await asyncio.sleep(0.3)
                 await self._ble_write(client, build_ptreal_brightness_packet(100))
                 await asyncio.sleep(0.1)
+                self._ready_event.set()
 
                 # Process color updates
                 last_brightness = 100
@@ -501,6 +538,7 @@ class GoveeBleAdapter:
                     "BLE connection to %s failed: %s", self.config.address, exc
                 )
             finally:
+                self._ready_event.clear()
                 self._state.connected = False
                 try:
                     if client.is_connected:

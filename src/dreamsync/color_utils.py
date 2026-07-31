@@ -29,6 +29,35 @@ def rgb_to_hex(r: int, g: int, b: int) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
+def nearest_palette_color(color: str, palette: tuple[str, ...]) -> str:
+    """Return the palette member nearest to *color* in RGB space."""
+    if not palette:
+        return color
+    for candidate in palette:
+        if candidate.casefold() == color.casefold():
+            return candidate
+    try:
+        target = hex_to_rgb(color)
+    except (ValueError, IndexError):
+        return color
+
+    valid_candidates: list[tuple[str, tuple[int, int, int]]] = []
+    for candidate in palette:
+        try:
+            valid_candidates.append((candidate, hex_to_rgb(candidate)))
+        except (ValueError, IndexError):
+            continue
+    if not valid_candidates:
+        return color
+    return min(
+        valid_candidates,
+        key=lambda item: sum(
+            (channel - target_channel) ** 2
+            for channel, target_channel in zip(item[1], target)
+        ),
+    )[0]
+
+
 def hex_to_hsl(color: str) -> tuple[float, float, float]:
     """'#ff4400' -> (h: 0-360, s: 0-1, l: 0-1)"""
     r, g, b = hex_to_rgb(color)

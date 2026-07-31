@@ -321,7 +321,7 @@ def test_ctrl_tab_cycles_main_tabs_without_stepping_spatial_selection(tmp_path: 
     )
     app.processEvents()
     assert tabs.currentIndex() == 1
-    assert tabs.tabText(tabs.currentIndex()) == "Device Discovery"
+    assert tabs.tabText(tabs.currentIndex()) == "Devices"
     assert "Strip A" in selected_label.text()
 
     QtTest.QTest.keyClick(

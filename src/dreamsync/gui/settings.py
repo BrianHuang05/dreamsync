@@ -24,7 +24,7 @@ def default_settings_path() -> Path:
 class GuiSettings:
     last_config_path: str = ""
     last_profile_path: str = ""
-    last_tab: str = "Device Discovery"
+    last_tab: str = "Devices"
     window_geometry: str = ""
     splitter_sizes: tuple[int, ...] = field(default_factory=tuple)
     output_target_mode: str = "simulation"
@@ -39,7 +39,7 @@ class GuiSettings:
     show_directory: str = ""
     queue_directory: str = ""
     recent_saved_show_paths: tuple[str, ...] = field(default_factory=tuple)
-    show_editor_hidden_columns: tuple[int, ...] = field(default_factory=tuple)
+    show_editor_hidden_columns: tuple[int, ...] = (8, 9, 13, 18)
     show_editor_meta_hidden: bool = False
     show_editor_focus_mode: bool = False
     show_editor_splitter_sizes: tuple[int, ...] = field(default_factory=tuple)
@@ -100,7 +100,11 @@ class GuiSettingsStore:
         return GuiSettings(
             last_config_path=str(raw.get("last_config_path", "")),
             last_profile_path=str(raw.get("last_profile_path", "")),
-            last_tab=str(raw.get("last_tab", "Device Discovery")),
+            last_tab=(
+                "Devices"
+                if str(raw.get("last_tab", "Devices")) == "Device Discovery"
+                else str(raw.get("last_tab", "Devices"))
+            ),
             window_geometry=str(raw.get("window_geometry", "")),
             splitter_sizes=tuple(int(v) for v in raw.get("splitter_sizes", ())),
             output_target_mode=str(raw.get("output_target_mode", "simulation")),
@@ -126,7 +130,11 @@ class GuiSettingsStore:
             queue_directory=str(raw.get("queue_directory", "")),
             recent_saved_show_paths=tuple(str(v) for v in raw.get("recent_saved_show_paths", ())),
             show_editor_hidden_columns=tuple(
-                int(v) for v in raw.get("show_editor_hidden_columns", ())
+                int(v)
+                for v in raw.get(
+                    "show_editor_hidden_columns",
+                    GuiSettings().show_editor_hidden_columns,
+                )
             ),
             show_editor_meta_hidden=bool(raw.get("show_editor_meta_hidden", False)),
             show_editor_focus_mode=bool(raw.get("show_editor_focus_mode", False)),

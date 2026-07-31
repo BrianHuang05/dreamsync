@@ -1,3 +1,32 @@
+groups:
+- id: test-upper
+  name: Test Upper
+  color: '#038b2e'
+  enabled_by_default: true
+- id: underlights
+  name: Underlights
+  color: '#080a8b'
+  enabled_by_default: true
+- id: mid-level
+  name: Mid-level
+  color: '#6e058b'
+  enabled_by_default: true
+- id: odd-strip
+  name: Odd-strip
+  color: '#0b8b04'
+  enabled_by_default: true
+- id: even-strip
+  name: Even Strip
+  color: '#82058b'
+  enabled_by_default: true
+- id: strips
+  name: Strips
+  color: '#8b0580'
+  enabled_by_default: true
+- id: bulbs
+  name: bulbs
+  color: '#55ff7f'
+  enabled_by_default: true
 devices:
 - name: Couch strip (H612F)
   address: 10.126.166.180
@@ -6,7 +35,7 @@ devices:
   max_fps: 5.0
   transport: ptreal
   role: primary
-  x: -0.225
+  x: -0.021428571428571432
   y: -0.39999999999999997
   z: -0.7783333333333333
   orientation: left_to_right
@@ -14,77 +43,80 @@ devices:
   enabled: true
   sections:
   - index: 0
-    x: -0.5
+    x: -0.2964285714285714
     y: -0.39999999999999997
     z: -0.7783333333333333
     weight: 1.0
     enabled: true
   - index: 1
-    x: -0.45
+    x: -0.24642857142857144
     y: -0.39999999999999997
     z: -0.7783333333333333
     weight: 1.0
     enabled: true
   - index: 2
-    x: -0.4000000000000001
+    x: -0.1964285714285715
     y: -0.39999999999999997
     z: -0.7783333333333333
     weight: 1.0
     enabled: true
   - index: 3
-    x: -0.35000000000000003
+    x: -0.14642857142857146
     y: -0.39999999999999997
     z: -0.7783333333333333
     weight: 1.0
     enabled: true
   - index: 4
-    x: -0.3000000000000001
+    x: -0.0964285714285715
     y: -0.39999999999999997
     z: -0.7783333333333333
     weight: 1.0
     enabled: true
   - index: 5
-    x: -0.25000000000000006
+    x: -0.046428571428571444
     y: -0.39999999999999997
     z: -0.7783333333333333
     weight: 1.0
     enabled: true
   - index: 6
-    x: -0.20000000000000004
+    x: 0.0035714285714285726
     y: -0.39999999999999997
     z: -0.7783333333333333
     weight: 1.0
     enabled: true
   - index: 7
-    x: -0.15000000000000002
+    x: 0.05357142857142859
     y: -0.39999999999999997
     z: -0.7783333333333333
     weight: 1.0
     enabled: true
   - index: 8
-    x: -0.10000000000000009
+    x: 0.10357142857142852
     y: -0.39999999999999997
     z: -0.7783333333333333
     weight: 1.0
     enabled: true
   - index: 9
-    x: -0.04999999999999995
+    x: 0.15357142857142864
     y: -0.39999999999999997
     z: -0.7783333333333333
     weight: 1.0
     enabled: true
   - index: 10
-    x: -1.3877787807814457e-17
+    x: 0.20357142857142857
     y: -0.39999999999999997
     z: -0.7783333333333333
     weight: 1.0
     enabled: true
   - index: 11
-    x: 0.0500000000000001
+    x: 0.25357142857142867
     y: -0.39999999999999997
     z: -0.7783333333333333
     weight: 1.0
     enabled: true
+  groups:
+  - strips
+  - underlights
 - name: Blinds strip (H612F)
   address: 10.126.166.155
   type: lan
@@ -92,85 +124,101 @@ devices:
   max_fps: 5.0
   transport: ptreal
   role: primary
-  x: 0.9899999999999999
-  y: 0.64
+  brightness_scale: 1.0
+  x: 0.85
+  y: 0.49
   z: 0.0
   orientation: left_to_right
   weight: 1.0
   enabled: true
   sections:
   - index: 0
-    x: 0.99
-    y: 0.64
+    x: 0.847142857142857
+    y: 0.48999999999999994
     z: 0.275
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 1
-    x: 0.99
-    y: 0.64
+    x: 0.847142857142857
+    y: 0.48999999999999994
     z: 0.225
     weight: 1.0
     enabled: true
   - index: 2
-    x: 0.99
-    y: 0.64
+    x: 0.847142857142857
+    y: 0.48999999999999994
     z: 0.17500000000000002
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 3
-    x: 0.99
-    y: 0.64
+    x: 0.847142857142857
+    y: 0.48999999999999994
     z: 0.125
     weight: 1.0
     enabled: true
   - index: 4
-    x: 0.99
-    y: 0.64
+    x: 0.847142857142857
+    y: 0.48999999999999994
     z: 0.07500000000000001
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 5
-    x: 0.99
-    y: 0.64
+    x: 0.847142857142857
+    y: 0.48999999999999994
     z: 0.025
     weight: 1.0
     enabled: true
   - index: 6
-    x: 0.99
-    y: 0.64
+    x: 0.847142857142857
+    y: 0.48999999999999994
     z: -0.025
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 7
-    x: 0.99
-    y: 0.64
+    x: 0.847142857142857
+    y: 0.48999999999999994
     z: -0.07500000000000001
     weight: 1.0
     enabled: true
   - index: 8
-    x: 0.99
-    y: 0.64
+    x: 0.847142857142857
+    y: 0.48999999999999994
     z: -0.125
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 9
-    x: 0.99
-    y: 0.64
+    x: 0.847142857142857
+    y: 0.48999999999999994
     z: -0.17500000000000002
     weight: 1.0
     enabled: true
   - index: 10
-    x: 0.99
-    y: 0.64
+    x: 0.847142857142857
+    y: 0.48999999999999994
     z: -0.225
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 11
-    x: 0.99
-    y: 0.64
+    x: 0.847142857142857
+    y: 0.48999999999999994
     z: -0.275
     weight: 1.0
     enabled: true
+  groups:
+  - strips
+  - test-upper
 - name: Overhead strip (H808A)
   address: 10.126.166.156
   type: lan
@@ -178,163 +226,193 @@ devices:
   max_fps: 5.0
   transport: razer
   role: primary
-  x: 0.0014285714285721565
-  y: 0.9958333333333332
-  z: 0.8499999999999999
+  x: 0.007142857142857129
+  y: 1.0
+  z: 0.55
   orientation: left_to_right
   weight: 1.0
   enabled: true
   sections:
   - index: 0
-    x: 0.6014285714285729
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: -0.592857142857143
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
+    - test-upper
   - index: 1
-    x: 0.551428571428573
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: -0.5428571428571429
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
   - index: 2
-    x: 0.5014285714285728
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: -0.4928571428571429
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 3
-    x: 0.45142857142857307
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: -0.4428571428571429
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
   - index: 4
-    x: 0.401428571428573
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: -0.3928571428571429
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 5
-    x: 0.3514285714285731
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: -0.3428571428571429
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
   - index: 6
-    x: 0.30142857142857316
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: -0.2928571428571429
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 7
-    x: 0.251428571428573
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: -0.24285714285714285
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
   - index: 8
-    x: 0.20142857142857254
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: -0.19285714285714287
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 9
-    x: 0.15142857142857222
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: -0.14285714285714288
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
   - index: 10
-    x: 0.10142857142857183
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: -0.09285714285714286
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 11
-    x: 0.051428571428572045
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: -0.04285714285714286
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
   - index: 12
-    x: 0.0014285714285718703
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: 0.007142857142857143
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 13
-    x: -0.04857142857142813
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: 0.05714285714285715
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
   - index: 14
-    x: -0.09857142857142807
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: 0.10714285714285715
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 15
-    x: -0.14857142857142827
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: 0.15714285714285717
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
   - index: 16
-    x: -0.19857142857142815
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: 0.20714285714285716
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 17
-    x: -0.24857142857142864
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: 0.2571428571428571
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
   - index: 18
-    x: -0.2985714285714286
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: 0.30714285714285716
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 19
-    x: -0.3485714285714283
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: 0.35714285714285715
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
   - index: 20
-    x: -0.39857142857142847
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: 0.40714285714285714
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 21
-    x: -0.4485714285714285
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: 0.45714285714285713
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
   - index: 22
-    x: -0.4985714285714281
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: 0.5071428571428571
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 23
-    x: -0.5485714285714289
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: 0.5571428571428572
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
   - index: 24
-    x: -0.5985714285714284
-    y: 0.9958333333333333
-    z: 0.8499999999999999
+    x: 0.6071428571428572
+    y: 1.0
+    z: 0.55
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
+  groups:
+  - strips
+  - test-upper
 - name: Counter strip (H617A)
   address: C7:90:80:C6:44:74
   type: ble
@@ -342,103 +420,122 @@ devices:
   max_fps: 5.0
   protocol: segment
   role: accent
-  x: -0.8899999999999996
-  y: 0.17500000000000007
-  z: -0.08750000000000005
+  x: -0.8935714285714282
+  y: 0.025000000000000102
+  z: -0.3375000000000001
   orientation: left_to_right
   weight: 1.0
   enabled: true
   sections:
   - index: 0
-    x: -0.8899999999999997
-    y: 0.17500000000000004
-    z: -0.4375000000000001
+    x: -0.8935714285714282
+    y: 0.025000000000000105
+    z: -0.6875000000000002
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 1
-    x: -0.8899999999999997
-    y: 0.17500000000000004
-    z: -0.3875000000000002
+    x: -0.8935714285714282
+    y: 0.025000000000000105
+    z: -0.6375000000000002
     weight: 1.0
     enabled: true
   - index: 2
-    x: -0.8899999999999997
-    y: 0.17500000000000004
-    z: -0.33750000000000024
+    x: -0.8935714285714282
+    y: 0.025000000000000105
+    z: -0.5875000000000004
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 3
-    x: -0.8899999999999997
-    y: 0.17500000000000004
-    z: -0.2875000000000003
+    x: -0.8935714285714282
+    y: 0.025000000000000105
+    z: -0.5375000000000003
     weight: 1.0
     enabled: true
   - index: 4
-    x: -0.8899999999999997
-    y: 0.17500000000000004
-    z: -0.23750000000000027
+    x: -0.8935714285714282
+    y: 0.025000000000000105
+    z: -0.4875000000000003
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 5
-    x: -0.8899999999999997
-    y: 0.17500000000000004
-    z: -0.18750000000000017
+    x: -0.8935714285714282
+    y: 0.025000000000000105
+    z: -0.43750000000000017
     weight: 1.0
     enabled: true
   - index: 6
-    x: -0.8899999999999997
-    y: 0.17500000000000004
-    z: -0.13750000000000007
+    x: -0.8935714285714282
+    y: 0.025000000000000105
+    z: -0.3875000000000001
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 7
-    x: -0.8899999999999997
-    y: 0.17500000000000004
-    z: -0.08749999999999998
+    x: -0.8935714285714282
+    y: 0.025000000000000105
+    z: -0.33749999999999997
     weight: 1.0
     enabled: true
   - index: 8
-    x: -0.8899999999999997
-    y: 0.17500000000000004
-    z: -0.03750000000000005
+    x: -0.8935714285714282
+    y: 0.025000000000000105
+    z: -0.28750000000000003
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 9
-    x: -0.8899999999999997
-    y: 0.17500000000000004
-    z: 0.012500000000000178
+    x: -0.8935714285714282
+    y: 0.025000000000000105
+    z: -0.23749999999999982
     weight: 1.0
     enabled: true
   - index: 10
-    x: -0.8899999999999997
-    y: 0.17500000000000004
-    z: 0.06250000000000017
+    x: -0.8935714285714282
+    y: 0.025000000000000105
+    z: -0.18749999999999983
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 11
-    x: -0.8899999999999997
-    y: 0.17500000000000004
-    z: 0.1125000000000002
+    x: -0.8935714285714282
+    y: 0.025000000000000105
+    z: -0.1374999999999998
     weight: 1.0
     enabled: true
   - index: 12
-    x: -0.8899999999999997
-    y: 0.17500000000000004
-    z: 0.16250000000000014
+    x: -0.8935714285714282
+    y: 0.025000000000000105
+    z: -0.08749999999999986
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 13
-    x: -0.8899999999999997
-    y: 0.17500000000000004
-    z: 0.21249999999999997
+    x: -0.8935714285714282
+    y: 0.025000000000000105
+    z: -0.03750000000000003
     weight: 1.0
     enabled: true
   - index: 14
-    x: -0.8899999999999997
-    y: 0.17500000000000004
-    z: 0.2625
+    x: -0.8935714285714282
+    y: 0.025000000000000105
+    z: 0.012500000000000011
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
+  groups:
+  - strips
+  - underlights
 - name: TV backlight (H6097)
   address: D7:01:86:46:44:59
   type: ble
@@ -446,103 +543,123 @@ devices:
   max_fps: 5.0
   protocol: segment
   role: accent
-  x: -0.03214285714285701
-  y: 0.6124999999999997
-  z: 0.5166666666666669
+  brightness_scale: 1.0
+  x: -0.05
+  y: 0.61
+  z: 0.51
   orientation: left_to_right
   weight: 1.0
   enabled: true
   sections:
   - index: 0
-    x: -0.38214285714285684
-    y: 0.6124999999999998
-    z: 0.5166666666666669
+    x: -0.4
+    y: 0.61
+    z: 0.51
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 1
-    x: -0.3321428571428569
-    y: 0.6124999999999998
-    z: 0.5166666666666669
+    x: -0.35000000000000003
+    y: 0.61
+    z: 0.51
     weight: 1.0
     enabled: true
   - index: 2
-    x: -0.28214285714285686
-    y: 0.6124999999999998
-    z: 0.5166666666666669
+    x: -0.3
+    y: 0.61
+    z: 0.51
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 3
-    x: -0.23214285714285715
-    y: 0.6124999999999998
-    z: 0.5166666666666669
+    x: -0.25
+    y: 0.61
+    z: 0.51
     weight: 1.0
     enabled: true
   - index: 4
-    x: -0.18214285714285727
-    y: 0.6124999999999998
-    z: 0.5166666666666669
+    x: -0.2
+    y: 0.61
+    z: 0.51
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 5
-    x: -0.1321428571428574
-    y: 0.6124999999999998
-    z: 0.5166666666666669
+    x: -0.15000000000000002
+    y: 0.61
+    z: 0.51
     weight: 1.0
     enabled: true
   - index: 6
-    x: -0.08214285714285724
-    y: 0.6124999999999998
-    z: 0.5166666666666669
+    x: -0.1
+    y: 0.61
+    z: 0.51
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 7
-    x: -0.03214285714285724
-    y: 0.6124999999999998
-    z: 0.5166666666666669
+    x: -0.05
+    y: 0.61
+    z: 0.51
     weight: 1.0
     enabled: true
   - index: 8
-    x: 0.017857142857142745
-    y: 0.6124999999999998
-    z: 0.5166666666666669
+    x: 0.0
+    y: 0.61
+    z: 0.51
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 9
-    x: 0.06785714285714298
-    y: 0.6124999999999998
-    z: 0.5166666666666669
+    x: 0.05
+    y: 0.61
+    z: 0.51
     weight: 1.0
     enabled: true
   - index: 10
-    x: 0.11785714285714312
-    y: 0.6124999999999998
-    z: 0.5166666666666669
+    x: 0.10000000000000002
+    y: 0.61
+    z: 0.51
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 11
-    x: 0.16785714285714282
-    y: 0.6124999999999998
-    z: 0.5166666666666669
+    x: 0.15000000000000002
+    y: 0.61
+    z: 0.51
     weight: 1.0
     enabled: true
   - index: 12
-    x: 0.2178571428571432
-    y: 0.6124999999999998
-    z: 0.5166666666666669
+    x: 0.2
+    y: 0.61
+    z: 0.51
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
   - index: 13
-    x: 0.2678571428571434
-    y: 0.6124999999999998
-    z: 0.5166666666666669
+    x: 0.25000000000000006
+    y: 0.61
+    z: 0.51
     weight: 1.0
     enabled: true
   - index: 14
-    x: 0.31785714285714356
-    y: 0.6124999999999998
-    z: 0.5166666666666669
+    x: 0.30000000000000004
+    y: 0.61
+    z: 0.51
     weight: 1.0
     enabled: true
+    groups:
+    - odd-strip
+  groups:
+  - strips
+  - test-upper
 - name: Floor Lamp
   address: D0:C9:07:95:15:DB
   type: ble
@@ -551,12 +668,15 @@ devices:
   protocol: bulb
   role: accent
   brightness_scale: 1.0
-  x: 0.7635714285714286
-  y: 0.34999999999999987
+  x: 0.7385714285714287
+  y: -9.71445146547012e-17
   z: 0.4816666666666669
   orientation: left_to_right
   weight: 1.0
   enabled: true
+  groups:
+  - bulbs
+  - mid-level
 - name: Black Lamp
   address: 98:17:3C:09:7E:ED
   type: ble
@@ -565,12 +685,15 @@ devices:
   protocol: bulb
   role: accent
   brightness_scale: 1.0
-  x: -0.66
-  y: 0.19
+  x: -0.51
+  y: -0.16
   z: -0.55
   orientation: left_to_right
   weight: 1.0
   enabled: true
+  groups:
+  - bulbs
+  - mid-level
 - name: Overhead Lamp 1
   address: D0:C9:07:95:14:8B
   type: ble
@@ -579,12 +702,15 @@ devices:
   protocol: bulb
   role: accent
   brightness_scale: 1.0
-  x: -1.0
-  y: 0.9833333333333334
-  z: 0.7991666666666665
+  x: -0.9928571428571429
+  y: 0.7999999999999998
+  z: 0.5991666666666663
   orientation: left_to_right
   weight: 1.0
   enabled: true
+  groups:
+  - bulbs
+  - test-upper
 - name: Overhead Lamp 2
   address: D0:C9:07:C5:14:45
   type: ble
@@ -593,12 +719,15 @@ devices:
   protocol: bulb
   role: accent
   brightness_scale: 1.0
-  x: -0.9964285714285714
-  y: 0.9916666666666663
-  z: 0.81
+  x: -1.0
+  y: 0.8416666666666661
+  z: 0.6099999999999999
   orientation: left_to_right
   weight: 1.0
   enabled: true
+  groups:
+  - bulbs
+  - test-upper
 - name: Dining Room Light
   address: D0:C9:07:70:AD:A3
   type: ble
@@ -607,12 +736,15 @@ devices:
   protocol: bulb
   role: accent
   brightness_scale: 1.0
-  x: -0.6285714285714282
-  y: 0.9833333333333334
+  x: -0.6785714285714283
+  y: 0.8333333333333333
   z: 1.3357370765021415e-16
   orientation: left_to_right
   weight: 1.0
   enabled: true
+  groups:
+  - bulbs
+  - test-upper
 - name: Glass Lamp
   address: 98:17:3C:07:BA:47
   type: ble
@@ -621,9 +753,12 @@ devices:
   protocol: bulb
   role: accent
   brightness_scale: 1.0
-  x: 0.27
+  x: 0.47357142857142853
   y: -0.15
   z: -0.57
   orientation: left_to_right
   weight: 1.0
   enabled: true
+  groups:
+  - bulbs
+  - mid-level

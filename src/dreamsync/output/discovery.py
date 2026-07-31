@@ -120,3 +120,58 @@ def scan_devices(timeout: float = 5.0) -> list[GoveeDevice]:
         return devices
     finally:
         listener.close()
+
+
+def probe_devices(
+    ips: list[str],
+    timeout: float = 1.0,
+) -> list[GoveeDevice]:
+    """Directly query known LAN IPs that may not answer multicast discovery."""
+
+    unique_ips = list(dict.fromkeys(str(ip).strip() for ip in ips if str(ip).strip()))
+    if not unique_ips:
+        return []
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        listener.bind(("", LISTEN_PORT))
+        listener.settimeout(max(0.01, float(timeout)))
+        sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        try:
+            for ip in unique_ips:
+                sender.sendto(_SCAN_MSG, (ip, MCAST_PORT))
+        finally:
+            sender.close()
+
+        devices: list[GoveeDevice] = []
+        pending = set(unique_ips)
+        import time
+
+        deadline = time.monotonic() + max(0.01, float(timeout))
+        while pending and time.monotonic() < deadline:
+            listener.settimeout(max(0.01, deadline - time.monotonic()))
+            try:
+                data, addr = listener.recvfrom(4096)
+            except socket.timeout:
+                break
+            ip = addr[0]
+            if ip not in pending:
+                continue
+            try:
+                raw = json.loads(data.decode("utf-8", errors="replace"))
+            except json.JSONDecodeError:
+                continue
+            device_data = raw.get("msg", {}).get("data", {})
+            devices.append(
+                GoveeDevice(
+                    ip=ip,
+                    sku=str(device_data.get("sku", "")),
+                    device_id=str(device_data.get("device", "")),
+                    raw=raw,
+                )
+            )
+            pending.remove(ip)
+        return devices
+    finally:
+        listener.close()

@@ -8,6 +8,7 @@ import queue
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from dreamsync.director import EffectMode, LightingIntent
@@ -21,6 +22,7 @@ from dreamsync.output.govee_ble import (
     GoveeBleDevice,
     MultiBleAdapter,
     _SHUTDOWN,
+    _scan_ble_devices_async,
     build_ble_bulb_color_packet,
     build_ble_color_packet,
     build_ble_keepalive_packet,
@@ -230,6 +232,30 @@ class NamePrefixTests(unittest.TestCase):
         self.assertFalse(any("SomeOther_Device".startswith(p) for p in GOVEE_NAME_PREFIXES))
 
 
+class BleDiscoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_uses_advertisement_rssi_with_current_bleak_api(self) -> None:
+        scanner = MagicMock()
+        scanner.discover = AsyncMock(
+            return_value={
+                "AA:BB": (
+                    SimpleNamespace(name="Govee_H808A_3557", address="AA:BB"),
+                    SimpleNamespace(rssi=-57),
+                )
+            }
+        )
+        bleak = MagicMock()
+        bleak.BleakScanner.return_value = scanner
+
+        with patch(
+            "dreamsync.output.govee_ble._require_bleak",
+            return_value=bleak,
+        ):
+            devices = await _scan_ble_devices_async(timeout=0.1)
+
+        self.assertEqual(devices[0].rssi, -57)
+        scanner.discover.assert_awaited_once_with(timeout=0.1, return_adv=True)
+
+
 # ---------------------------------------------------------------------------
 # GoveeBleConfig tests
 # ---------------------------------------------------------------------------
@@ -287,6 +313,11 @@ class GoveeBleAdapterSendColorTests(unittest.TestCase):
 
     def test_connected_default_false(self) -> None:
         self.assertFalse(self.adapter.connected)
+
+    def test_wait_until_connected_tracks_gatt_readiness(self) -> None:
+        self.assertFalse(self.adapter.wait_until_connected(0.0))
+        self.adapter._ready_event.set()
+        self.assertTrue(self.adapter.wait_until_connected(0.0))
 
     def test_send_segment_colors_queues_segment_frame(self) -> None:
         self.adapter.send_segment_colors([(255, 0, 0), (0, 255, 0)], 85)

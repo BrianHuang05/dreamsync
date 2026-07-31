@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from dreamsync.groups.models import GroupDefinition
 from dreamsync.output.auto_detect import (
     DeviceConfig,
     DetectedDevice,
@@ -274,6 +275,28 @@ class LoadDeviceConfigTests(unittest.TestCase):
 
 
 class BuildMultiAdapterTests(unittest.TestCase):
+    def test_reachable_hardware_preserves_configured_group_definitions(self) -> None:
+        group = GroupDefinition(id="ceiling", name="Ceiling")
+        detected = [
+            DetectedDevice(
+                name="Grouped",
+                address="192.168.1.10",
+                connection_type="lan",
+                latency=LatencyStats(samples=[5.0]),
+                role="realtime",
+                config=DeviceConfig(
+                    name="Grouped",
+                    address="192.168.1.10",
+                    group_definitions=(group,),
+                ),
+                transport=TransportMode.PTREAL,
+            ),
+        ]
+
+        multi = build_multi_adapter(detected)
+
+        self.assertEqual(multi._group_definitions, (group,))
+
     def test_single_realtime_lan(self) -> None:
         detected = [
             DetectedDevice(

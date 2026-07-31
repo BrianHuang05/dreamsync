@@ -517,7 +517,8 @@ def test_bass_dominant_phrase_adds_eq_route_metadata():
     assert micro.params["eq_routes"][0]["band"] == "bass"
     assert micro.params["eq_routes"][0]["when"] == "dominant"
     assert micro.params["spatial_preset"] == "flash_floor_only"
-    assert micro.color_palette[0] == "#ff8a3d"
+    assert micro.color_palette[0] == "#abcdef"
+    assert micro.params["active_eq_routes"][0]["color_bias"] in micro.color_palette
 
 
 def test_profile_eq_route_overrides_default_micro_cue_route():
@@ -554,8 +555,8 @@ def test_profile_eq_route_overrides_default_micro_cue_route():
     micro = [c for c in tl.cues if c.t == 8.0][0]
     assert micro.render_mode == "wave"
     assert micro.params["spatial_preset"] == "wave_front_to_back"
-    assert micro.params["eq_routes"][0]["color_bias"] == "#00ffaa"
-    assert micro.color_palette[0] == "#00ffaa"
+    assert micro.params["eq_routes"][0]["color_bias"] == "#00ff00"
+    assert micro.color_palette[0] == "#00ff00"
 
 
 def test_multiple_active_eq_routes_emit_runtime_eq_layers():
@@ -616,11 +617,50 @@ def test_instrument_dominant_phrase_adds_instrument_route_metadata():
     assert micro.params["instrument_proxy"]["dominant_proxy"] == "vocals"
     assert micro.render_mode == "gradient"
     assert micro.params["spatial_preset"] == "blend_left_to_right"
-    assert micro.color_palette[0] == "#cceeff"
+    assert micro.color_palette[0] == "#abcdef"
+    assert (
+        micro.params["active_instrument_routes"][0]["color_bias"]
+        in micro.color_palette
+    )
     assert micro.params["active_instrument_routes"][0]["pan_follow"] == pytest.approx(0.72)
     assert micro.params["active_instrument_routes"][0]["width_scale"] == pytest.approx(1.35)
     assert micro.params["active_instrument_routes"][0]["spatial_origin"]["x"] > 0.4
     assert micro.params["active_instrument_routes"][0]["spatial_width"] > 0.55
+
+
+def test_default_percussive_bias_stays_inside_selected_palette():
+    sections = (make_section(start_t=0.0, end_t=16.0),)
+    phrases = (
+        Phrase(0.0, 8.0, 0, "steady", 0.0, True),
+        Phrase(8.0, 16.0, 0, "steady", 0.0, True),
+    )
+    proxies = (
+        InstrumentProxy(0.0, 8.0, 0, "harmonic", harmonic=0.52),
+        InstrumentProxy(8.0, 16.0, 0, "percussive", percussive=0.74),
+    )
+    selected_palette = ("#cc003f", "#5b00b8", "#1d00af")
+    structure = _make_structure_with_phrases(
+        sections,
+        phrases,
+        proxies=proxies,
+        duration=16.0,
+    )
+
+    timeline = TimelineAssembler().assemble(
+        structure,
+        [make_arc(0, 0.5)],
+        [make_treatment(render_mode="scroll", color_palette=selected_palette)],
+        [make_transition(0)],
+    )
+
+    micro = [cue for cue in timeline.cues if cue.t == 8.0][0]
+    assert "#ffd07a" not in micro.color_palette
+    assert (
+        micro.params["active_instrument_routes"][0]["color_bias"]
+        in selected_palette
+    )
+    assert micro.params["scene_layers"][0]["color_bias"] in selected_palette
+    assert set(micro.color_palette) == set(selected_palette)
 
 
 def test_profile_instrument_route_overrides_eq_route_on_micro_cue():
@@ -696,7 +736,11 @@ def test_profile_instrument_route_overrides_eq_route_on_micro_cue():
     assert micro.params["scene_layers"][0]["speed_units_per_second"] == 1.4
     assert micro.params["scene_layers"][0]["layer_priority"] == 6
     assert micro.params["falloff"] == "linear"
-    assert micro.color_palette[0] == "#ddeeff"
+    assert micro.color_palette[0] == "#00ff00"
+    assert (
+        micro.params["active_instrument_routes"][0]["color_bias"]
+        in micro.color_palette
+    )
     assert micro.params["active_instrument_routes"][0]["spatial_origin"]["x"] > 0.5
     assert micro.params["active_instrument_routes"][0]["spatial_width"] > 0.12
 

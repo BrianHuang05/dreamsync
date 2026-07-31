@@ -9,10 +9,13 @@ from dataclasses import dataclass
 class DeviceDiscoveryWidgets:
     widget: object
     status_label: object
+    add_device_button: object
     scan_lan_devices_button: object
     scan_ble_devices_button: object
     scan_all_devices_button: object
     identify_device_button: object
+    confirm_identify_protocol_button: object
+    try_next_identify_protocol_button: object
     advanced_test_device_button: object
     assign_discovered_device_button: object
     save_discovered_config_button: object
@@ -83,19 +86,27 @@ def build_device_discovery_panel(qt_modules):
     content = QtWidgets.QSplitter()
     root_layout.addWidget(content, 1)
 
-    discovery_group = QtWidgets.QGroupBox("Discovered Devices")
+    discovery_group = QtWidgets.QGroupBox("Devices")
     discovery_layout = QtWidgets.QVBoxLayout(discovery_group)
 
     scan_actions = QtWidgets.QHBoxLayout()
+    add_device_button = QtWidgets.QPushButton("Add Device")
+    add_device_button.setObjectName("addDeviceButton")
+    add_device_button.setToolTip(
+        "Scan LAN and Bluetooth for available Govee devices, then identify and add one"
+    )
+    add_device_button.setDefault(True)
     scan_lan_devices_button = QtWidgets.QPushButton("Scan LAN")
     scan_lan_devices_button.setObjectName("scanLanDevicesButton")
     scan_lan_devices_button.setToolTip("Scan the local network for devices (L)")
     scan_ble_devices_button = QtWidgets.QPushButton("Scan BLE")
     scan_ble_devices_button.setObjectName("scanBleDevicesButton")
     scan_ble_devices_button.setToolTip("Scan Bluetooth Low Energy for devices (B)")
-    scan_all_devices_button = QtWidgets.QPushButton("Scan All")
+    scan_all_devices_button = QtWidgets.QPushButton("Rescan All")
     scan_all_devices_button.setObjectName("scanAllDevicesButton")
     scan_all_devices_button.setToolTip("Scan both LAN and Bluetooth Low Energy (S)")
+    scan_actions.addWidget(add_device_button)
+    scan_actions.addSpacing(12)
     scan_actions.addWidget(scan_lan_devices_button)
     scan_actions.addWidget(scan_ble_devices_button)
     scan_actions.addWidget(scan_all_devices_button)
@@ -106,7 +117,7 @@ def build_device_discovery_panel(qt_modules):
     discovery_layout.addWidget(devices_table, 1)
     content.addWidget(discovery_group)
 
-    assignment_group = QtWidgets.QGroupBox("Assignment")
+    assignment_group = QtWidgets.QGroupBox("Selected Device")
     assignment_layout = QtWidgets.QVBoxLayout(assignment_group)
     form_layout = QtWidgets.QGridLayout()
     assignment_layout.addLayout(form_layout)
@@ -168,14 +179,19 @@ def build_device_discovery_panel(qt_modules):
     assignment_actions = QtWidgets.QHBoxLayout()
     identify_device_button = QtWidgets.QPushButton("Identify")
     identify_device_button.setObjectName("identifyDeviceButton")
-    identify_device_button.setToolTip("Flash the selected device blue (I)")
+    identify_device_button.setToolTip(
+        "Cycle supported transports/protocols by flashing the selected device blue (I)"
+    )
+    identify_device_button.setEnabled(False)
     advanced_test_device_button = QtWidgets.QPushButton("Advanced Test…")
     advanced_test_device_button.setObjectName("advancedTestDeviceButton")
     advanced_test_device_button.setToolTip("Run a bounded color or segment-pattern test")
-    assign_discovered_device_button = QtWidgets.QPushButton("Add / Update Assignment")
+    advanced_test_device_button.setEnabled(False)
+    assign_discovered_device_button = QtWidgets.QPushButton("Add to Config")
     assign_discovered_device_button.setObjectName("assignDiscoveredDeviceButton")
-    assign_discovered_device_button.setToolTip("Add or update the selected device assignment (A)")
-    save_discovered_config_button = QtWidgets.QPushButton("Save Config")
+    assign_discovered_device_button.setToolTip("Add the selected device to the loaded config (A)")
+    assign_discovered_device_button.setEnabled(False)
+    save_discovered_config_button = QtWidgets.QPushButton("Save Changes")
     save_discovered_config_button.setObjectName("saveDiscoveredConfigButton")
     save_discovered_config_button.setToolTip("Save the selected device assignment (Ctrl+S)")
     assignment_actions.addWidget(identify_device_button)
@@ -183,13 +199,34 @@ def build_device_discovery_panel(qt_modules):
     assignment_actions.addWidget(assign_discovered_device_button)
     assignment_actions.addWidget(save_discovered_config_button)
     assignment_layout.addLayout(assignment_actions)
+
+    identify_confirmation_actions = QtWidgets.QHBoxLayout()
+    confirm_identify_protocol_button = QtWidgets.QPushButton("Worked — Use This")
+    confirm_identify_protocol_button.setObjectName("confirmIdentifyProtocolButton")
+    confirm_identify_protocol_button.setToolTip(
+        "Keep the protocol that just flashed the device (Ctrl+Enter)"
+    )
+    confirm_identify_protocol_button.setVisible(False)
+    try_next_identify_protocol_button = QtWidgets.QPushButton("Try Next")
+    try_next_identify_protocol_button.setObjectName("tryNextIdentifyProtocolButton")
+    try_next_identify_protocol_button.setToolTip(
+        "Test the next supported transport or BLE protocol (Ctrl+N)"
+    )
+    try_next_identify_protocol_button.setVisible(False)
+    identify_confirmation_actions.addWidget(confirm_identify_protocol_button)
+    identify_confirmation_actions.addWidget(try_next_identify_protocol_button)
+    identify_confirmation_actions.addStretch(1)
+    assignment_layout.addLayout(identify_confirmation_actions)
     assignment_layout.addStretch(1)
     content.addWidget(assignment_group)
 
     content.setStretchFactor(0, 3)
     content.setStretchFactor(1, 2)
 
-    status_label = QtWidgets.QLabel("Ready")
+    status_label = QtWidgets.QLabel(
+        "Choose Add Device to scan both LAN and Bluetooth, then select a device "
+        "to identify it and add it to the loaded config."
+    )
     status_label.setWordWrap(True)
     status_label.setObjectName("deviceDiscoveryStatusLabel")
     root_layout.addWidget(status_label)
@@ -197,10 +234,13 @@ def build_device_discovery_panel(qt_modules):
     return DeviceDiscoveryWidgets(
         widget=widget,
         status_label=status_label,
+        add_device_button=add_device_button,
         scan_lan_devices_button=scan_lan_devices_button,
         scan_ble_devices_button=scan_ble_devices_button,
         scan_all_devices_button=scan_all_devices_button,
         identify_device_button=identify_device_button,
+        confirm_identify_protocol_button=confirm_identify_protocol_button,
+        try_next_identify_protocol_button=try_next_identify_protocol_button,
         advanced_test_device_button=advanced_test_device_button,
         assign_discovered_device_button=assign_discovered_device_button,
         save_discovered_config_button=save_discovered_config_button,

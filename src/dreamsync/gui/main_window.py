@@ -50,6 +50,7 @@ from dreamsync.profile_overrides import (
 from dreamsync.show.control_patch import apply_show_control_patch
 from dreamsync.show.baked_frames import default_baked_frame_path
 from dreamsync.show.models import Show, ShowCue, ShowTimeline, ShowTrack
+from dreamsync.spatial.mapper import SPATIAL_PRESETS
 from dreamsync.gui.widgets.color_picker import build_color_picker
 from dreamsync.gui.widgets.device_discovery_panel import build_device_discovery_panel
 from dreamsync.gui.widgets.palette_strip import build_palette_strip
@@ -270,13 +271,68 @@ def _format_structure_similarity(snapshot: dict[str, object]) -> str:
 
 PROFILE_SPATIAL_PRESET_OPTIONS = (
     "",
+    "ripple_left_to_right",
+    "ripple_right_to_left",
     "ripple_from_center",
+    "wave_top_to_bottom",
+    "wave_bottom_to_top",
+    "wave_front_to_back",
+    "wave_back_to_front",
     "flash_floor_only",
     "flash_top_only",
     "blend_left_to_right",
     "blend_front_to_back",
 )
 SHOW_CUE_LAYER_CATEGORY_OPTIONS = ("static", "slice", "expand")
+SHOW_CUE_LAYER_EFFECT_OPTIONS = (
+    "wave",
+    "ripple",
+    "flash",
+    "wash",
+    "blend",
+)
+SHOW_CUE_ORIGIN_OPTIONS = (
+    ("center", "Center"),
+    ("left", "Left"),
+    ("right", "Right"),
+    ("top", "Top"),
+    ("bottom", "Bottom"),
+    ("front", "Front"),
+    ("back", "Back"),
+    ("outer", "Outer edge"),
+)
+SHOW_CUE_LAYER_ORIGIN_OPTIONS = (
+    ("", "Inherit cue"),
+    *SHOW_CUE_ORIGIN_OPTIONS,
+)
+SHOW_CUE_LAYER_DIRECTION_OPTIONS = (
+    ("", "Preset/default"),
+    ("x+", "Left to right"),
+    ("x-", "Right to left"),
+    ("y+", "Bottom to top"),
+    ("y-", "Top to bottom"),
+    ("z+", "Front to back"),
+    ("z-", "Back to front"),
+    ("out", "Center outward"),
+)
+SHOW_CUE_DIRECTION_OPTIONS = (
+    ("", "Radial / none"),
+    *tuple(
+        option
+        for option in SHOW_CUE_LAYER_DIRECTION_OPTIONS
+        if option[0] and option[0] != "out"
+    ),
+)
+SHOW_CUE_LAYER_INHERITED_DIRECTION_OPTIONS = (
+    ("", "Inherit cue"),
+    *tuple(
+        option
+        for option in SHOW_CUE_LAYER_DIRECTION_OPTIONS
+        if option[0]
+    ),
+)
+# Legacy descriptor values remain accepted when older shows are loaded. They
+# are intentionally not exposed by the new layer-stack editor.
 SHOW_CUE_LAYER_TARGET_OPTIONS = (
     "whole_room",
     "top",
@@ -314,29 +370,17 @@ SHOW_CUE_COL_INTENSITY = 4
 SHOW_CUE_COL_SPEED = 5
 SHOW_CUE_COL_TRANSITION = 6
 SHOW_CUE_COL_TRANSITION_BEATS = 7
-SHOW_CUE_COL_WAVE_RATE = 8
-SHOW_CUE_COL_WIDTH_SCALE = 9
-SHOW_CUE_COL_WHEN = 10
-SHOW_CUE_COL_PAN_FOLLOW = 11
-SHOW_CUE_COL_INTENSITY_BOOST = 12
-SHOW_CUE_COL_INSTRUMENT = 13
-SHOW_CUE_COL_CONFIDENCE = 14
-SHOW_CUE_COL_EQ_BAND = 15
-SHOW_CUE_COL_SPATIAL = 16
-SHOW_CUE_COL_COLOR_BIAS = 17
-SHOW_CUE_COL_EXTRA = 18
-SHOW_CUE_COL_INTENSITY_START = 19
-SHOW_CUE_COL_LAYER_CATEGORY = 20
-SHOW_CUE_COL_LAYER_TARGET = 21
-SHOW_CUE_COL_LAYER_TRIGGER = 22
-SHOW_CUE_COL_LAYER_FALLOFF = 23
-SHOW_CUE_COL_LAYER_THICKNESS = 24
-SHOW_CUE_COL_LAYER_SPEED = 25
-SHOW_CUE_COL_LAYER_PRIORITY = 26
-SHOW_CUE_COL_TARGET_GROUPS = 27
-SHOW_CUE_COL_TARGET_MATCH = 28
-SHOW_CUE_COL_EXCLUDE_GROUPS = 29
-SHOW_CUE_COL_UNTARGETED_BEHAVIOR = 30
+SHOW_CUE_COL_PAN_FOLLOW = 8
+SHOW_CUE_COL_INTENSITY_BOOST = 9
+SHOW_CUE_COL_ORIGIN = 10
+SHOW_CUE_COL_DIRECTION = 11
+SHOW_CUE_COL_COLOR_BIAS = 12
+SHOW_CUE_COL_INTENSITY_START = 13
+SHOW_CUE_COL_LAYERS = 14
+SHOW_CUE_COL_TARGET_GROUPS = 15
+SHOW_CUE_COL_TARGET_MATCH = 16
+SHOW_CUE_COL_EXCLUDE_GROUPS = 17
+SHOW_CUE_COL_UNTARGETED_BEHAVIOR = 18
 
 
 def _format_spatial_summary(scene_entries: list[object], config_path: Path | None) -> str:
@@ -393,6 +437,7 @@ def create_main_window(
     config_path: Path | None = None,
     profile_path: Path | None = None,
     settings_store: GuiSettingsStore | None = None,
+    discovery_service: DeviceDiscoveryService | None = None,
 ) -> object:
     QtWidgets = qt_modules.QtWidgets
     QtCore = qt_modules.QtCore
@@ -433,7 +478,7 @@ def create_main_window(
         config_path = Path(settings.last_config_path)
 
     device_service = DeviceService()
-    device_discovery_service = DeviceDiscoveryService()
+    device_discovery_service = discovery_service or DeviceDiscoveryService()
     audio_device_service = AudioDeviceService()
     profile_service = ProfileService()
     queue_service = QueueService()
@@ -763,7 +808,7 @@ def create_main_window(
     spatial_splitter.setStretchFactor(0, 3)
     spatial_splitter.setStretchFactor(1, 2)
     device_discovery_panel = build_device_discovery_panel(qt_modules)
-    tabs.addTab(device_discovery_panel.widget, "Device Discovery")
+    tabs.addTab(device_discovery_panel.widget, "Devices")
     tabs.addTab(spatial_widget, "Room Layout")
 
     if active_profile_ref["path"] and active_profile_ref["path"].exists():
@@ -1163,6 +1208,12 @@ def create_main_window(
     discovery_scan_state = {"thread": None, "worker": None}
     discovery_seen_entries_state = {"by_address": {}}
     discovery_identify_state = {"thread": None, "worker": None, "key": None}
+    discovery_identify_cycle_state = {
+        "entry": None,
+        "candidates": [],
+        "index": -1,
+        "awaiting_confirmation": False,
+    }
     discovery_test_state = {"thread": None, "worker": None}
     spatial_signal_block = {"value": False}
     spatial_object_mode_state = {"value": "move_strip"}
@@ -1246,8 +1297,13 @@ def create_main_window(
                             f"BLE scan unavailable: {str(exc).strip() or type(exc).__name__}. "
                             "Ensure Bluetooth is enabled."
                         )
-                entries = device_discovery_service.measure_lan_latency(entries)
                 entries = device_discovery_service.merge_with_config(entries, config_path)
+                entries = device_discovery_service.probe_configured_lan(entries)
+                entries = device_discovery_service.collapse_transport_aliases(
+                    entries,
+                    config_path,
+                )
+                entries = device_discovery_service.measure_lan_latency(entries)
             except Exception as exc:
                 self.completed.emit(self._kind, [], "", str(exc).strip() or type(exc).__name__)
                 return
@@ -1375,7 +1431,7 @@ def create_main_window(
             configuration_issue = entry.assigned and not entry.connected
             identifying = entry.key == discovery_identify_state["key"]
             values = (
-                "Offline (configured)" if configuration_issue else ("Assigned" if entry.assigned else "Unassigned"),
+                "Not found (configured)" if configuration_issue else ("Configured" if entry.assigned else "Available"),
                 entry.source.upper(),
                 entry.existing_name or entry.name,
                 entry.address,
@@ -1406,6 +1462,12 @@ def create_main_window(
 
     def _populate_discovery_form(entry: object | None) -> None:
         if entry is None:
+            device_discovery_panel.identify_device_button.setEnabled(False)
+            device_discovery_panel.advanced_test_device_button.setEnabled(False)
+            device_discovery_panel.assign_discovered_device_button.setEnabled(False)
+            device_discovery_panel.type_combo.setEnabled(False)
+            device_discovery_panel.transport_combo.setEnabled(False)
+            device_discovery_panel.protocol_combo.setEnabled(False)
             return
         existing_config = _discovery_config_for_entry(entry)
         name = getattr(existing_config, "name", None) or entry.existing_name or entry.name
@@ -1427,6 +1489,37 @@ def create_main_window(
         device_discovery_panel.x_spin.setValue(float(getattr(placement, "x", 0.0)))
         device_discovery_panel.y_spin.setValue(float(getattr(placement, "y", 0.0)))
         device_discovery_panel.z_spin.setValue(float(getattr(placement, "z", 0.0)))
+        connection_type = str(entry.source)
+        device_discovery_panel.type_combo.setEnabled(False)
+        device_discovery_panel.type_combo.setToolTip(
+            "Connection type is determined by discovery. LAN devices must be "
+            "discovered by IPv4 address; a BLE MAC address cannot be converted to LAN."
+        )
+        device_discovery_panel.transport_combo.setEnabled(connection_type == "lan")
+        device_discovery_panel.transport_combo.setToolTip(
+            "LAN packet transport used by Identify and runtime output."
+            if connection_type == "lan"
+            else "Transport applies only to LAN devices."
+        )
+        device_discovery_panel.protocol_combo.setEnabled(connection_type == "ble")
+        device_discovery_panel.protocol_combo.setToolTip(
+            "BLE packet format used by Identify and runtime output."
+            if connection_type == "ble"
+            else "BLE protocol applies only to Bluetooth devices."
+        )
+        device_discovery_panel.identify_device_button.setEnabled(bool(entry.connected))
+        device_discovery_panel.advanced_test_device_button.setEnabled(bool(entry.connected))
+        device_discovery_panel.assign_discovered_device_button.setEnabled(True)
+        if entry.assigned:
+            device_discovery_panel.assign_discovered_device_button.setText("Update Config Entry")
+            device_discovery_panel.assign_discovered_device_button.setToolTip(
+                "Update this device in the loaded config (A)"
+            )
+        else:
+            device_discovery_panel.assign_discovered_device_button.setText("Add to Config")
+            device_discovery_panel.assign_discovered_device_button.setToolTip(
+                "Add this discovered device to the loaded config (A)"
+            )
 
     def _set_discovery_status(message: str) -> None:  # pragma: no cover - Qt only
         """Show the current discovery state in the persistent tab status area."""
@@ -1437,6 +1530,7 @@ def create_main_window(
 
     def _discovery_scan_buttons() -> tuple[object, ...]:  # pragma: no cover - Qt only
         return (
+            device_discovery_panel.add_device_button,
             device_discovery_panel.scan_lan_devices_button,
             device_discovery_panel.scan_ble_devices_button,
             device_discovery_panel.scan_all_devices_button,
@@ -1470,6 +1564,10 @@ def create_main_window(
             if entry.connected:
                 seen_by_address[entry.address] = entry
         entries = device_discovery_service.merge_with_config(seen_by_address.values(), config_path)
+        entries = device_discovery_service.collapse_transport_aliases(
+            entries,
+            config_path,
+        )
 
         label = {"lan": "LAN", "ble": "BLE"}.get(kind, "LAN/BLE")
         configured_count = sum(1 for entry in entries if entry.assigned)
@@ -1491,6 +1589,13 @@ def create_main_window(
     def _scan_discovery_devices(kind: str) -> None:  # pragma: no cover - Qt only
         if discovery_scan_state["thread"] is not None:
             return
+        seen_by_address = discovery_seen_entries_state["by_address"]
+        if kind == "all":
+            seen_by_address.clear()
+        else:
+            for address, entry in list(seen_by_address.items()):
+                if entry.source == kind:
+                    del seen_by_address[address]
         label = {"lan": "LAN", "ble": "BLE"}.get(kind, "LAN/BLE")
         for button in _discovery_scan_buttons():
             button.setEnabled(False)
@@ -1509,19 +1614,75 @@ def create_main_window(
         discovery_scan_state.update({"thread": thread, "worker": worker})
         thread.start()
 
-    def _identify_discovery_device() -> None:  # pragma: no cover - Qt only
+    def _add_discovery_device() -> None:  # pragma: no cover - Qt only
+        """Start a fresh combined scan for a device that can be added."""
+
+        if discovery_scan_state["thread"] is not None:
+            return
+        discovery_seen_entries_state["by_address"].clear()
+        discovery_entries_state["entries"] = []
+        device_discovery_panel.devices_table.setRowCount(0)
+        _populate_discovery_form(None)
+        _set_discovery_status(
+            "Scanning LAN and Bluetooth for available Govee devices…"
+        )
+        _scan_discovery_devices("all")
+
+    def _identify_candidate_label(kind: str, value: str) -> str:
+        return f"{'LAN transport' if kind == 'transport' else 'BLE protocol'} {value}"
+
+    def _identify_candidates(entry: object) -> list[tuple[str, str]]:
+        if entry.source == "lan":
+            kind = "transport"
+            current = str(
+                device_discovery_panel.transport_combo.currentData() or "ptreal"
+            )
+            supported = ("ptreal", "razer", "colorwc")
+        else:
+            kind = "protocol"
+            current = str(
+                device_discovery_panel.protocol_combo.currentData() or "segment"
+            )
+            supported = ("segment", "bulb")
+        candidates: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for value in (current, *supported):
+            if value and value not in seen:
+                candidates.append((kind, value))
+                seen.add(value)
+        return candidates
+
+    def _set_identify_confirmation_visible(visible: bool) -> None:
+        device_discovery_panel.confirm_identify_protocol_button.setVisible(visible)
+        device_discovery_panel.try_next_identify_protocol_button.setVisible(visible)
+
+    def _launch_identify_candidate(entry: object) -> None:  # pragma: no cover - Qt only
         if discovery_identify_state["thread"] is not None:
             return
-        entry = _current_discovery_entry()
-        if entry is None:
-            _set_discovery_status("Select a discovered device first.")
+        candidates = discovery_identify_cycle_state["candidates"]
+        index = int(discovery_identify_cycle_state["index"])
+        if index < 0 or index >= len(candidates):
+            _set_identify_confirmation_visible(False)
+            _set_discovery_status(
+                f"No working protocol was confirmed for {entry.address}."
+            )
             return
+        kind, candidate = candidates[index]
+        discovery_identify_cycle_state["awaiting_confirmation"] = False
+        _set_identify_confirmation_visible(False)
         discovery_identify_state["key"] = entry.key
         device_discovery_panel.identify_device_button.setEnabled(False)
         _set_discovery_entries(
             discovery_entries_state["entries"],
-            status=f"Identifying {entry.address}: hard flashing blue at maximum brightness for 5 seconds…",
+            status=(
+                f"Testing {_identify_candidate_label(kind, candidate)} on "
+                f"{entry.address}: flashing blue for 5 seconds…"
+            ),
         )
+        if kind == "transport":
+            _select_combo_data(device_discovery_panel.transport_combo, candidate)
+        else:
+            _select_combo_data(device_discovery_panel.protocol_combo, candidate)
         thread = QtCore.QThread()
         worker = _DiscoveryIdentifyWorker(
             entry,
@@ -1541,18 +1702,100 @@ def create_main_window(
         discovery_identify_state.update({"thread": thread, "worker": worker})
         thread.start()
 
+    def _identify_discovery_device() -> None:  # pragma: no cover - Qt only
+        if discovery_identify_state["thread"] is not None:
+            return
+        entry = _current_discovery_entry()
+        if entry is None:
+            _set_discovery_status("Select a discovered device first.")
+            return
+        discovery_identify_cycle_state.update(
+            {
+                "entry": entry,
+                "candidates": _identify_candidates(entry),
+                "index": 0,
+                "awaiting_confirmation": False,
+            }
+        )
+        _launch_identify_candidate(entry)
+
     def _finish_discovery_identify(entry: object, error: str) -> None:  # pragma: no cover - Qt only
         discovery_identify_state["key"] = None
         device_discovery_panel.identify_device_button.setEnabled(True)
         thread = discovery_identify_state["thread"]
         if thread is not None:
             thread.quit()
+        candidates = discovery_identify_cycle_state["candidates"]
+        index = int(discovery_identify_cycle_state["index"])
+        candidate = candidates[index] if 0 <= index < len(candidates) else None
+        if candidate is None:
+            _set_discovery_entries(
+                discovery_entries_state["entries"],
+                status=f"Identify finished for {entry.address}.",
+            )
+            return
+        kind, value = candidate
+        discovery_identify_cycle_state["awaiting_confirmation"] = True
+        has_next = index + 1 < len(candidates)
+        _set_identify_confirmation_visible(True)
+        device_discovery_panel.try_next_identify_protocol_button.setEnabled(has_next)
+        label = _identify_candidate_label(kind, value)
         status = (
-            f"Identify failed for {entry.address}: {error}"
+            f"{label} failed for {entry.address}: {error} "
+            f"{'The next candidate will start automatically; use Try Next to start it now.' if has_next else 'No candidates remain.'}"
             if error
-            else f"Finished flashing {entry.address} blue."
+            else (
+                f"Did {entry.name} flash blue using {label}? Choose Worked — Use "
+                f"This, or {'wait for the next candidate (or choose Try Next now).' if has_next else 'confirm it or restart Identify.'}"
+            )
         )
         _set_discovery_entries(discovery_entries_state["entries"], status=status)
+        if kind == "transport":
+            _select_combo_data(device_discovery_panel.transport_combo, value)
+        else:
+            _select_combo_data(device_discovery_panel.protocol_combo, value)
+        if has_next:
+            expected_index = index
+            QtCore.QTimer.singleShot(
+                5000,
+                lambda selected_index=expected_index: (
+                    _try_next_identify_protocol()
+                    if discovery_identify_cycle_state["awaiting_confirmation"]
+                    and int(discovery_identify_cycle_state["index"]) == selected_index
+                    else None
+                ),
+            )
+
+    def _confirm_identify_protocol() -> None:  # pragma: no cover - Qt only
+        if not discovery_identify_cycle_state["awaiting_confirmation"]:
+            return
+        entry = discovery_identify_cycle_state["entry"]
+        candidates = discovery_identify_cycle_state["candidates"]
+        index = int(discovery_identify_cycle_state["index"])
+        if entry is None or not (0 <= index < len(candidates)):
+            return
+        kind, value = candidates[index]
+        discovery_identify_cycle_state["awaiting_confirmation"] = False
+        _set_identify_confirmation_visible(False)
+        _set_discovery_status(
+            f"Using {_identify_candidate_label(kind, value)} for {entry.name}. "
+            "Press Save Changes or Ctrl+S to write it to the device config."
+        )
+
+    def _try_next_identify_protocol() -> None:  # pragma: no cover - Qt only
+        if not discovery_identify_cycle_state["awaiting_confirmation"]:
+            return
+        if discovery_identify_state["thread"] is not None:
+            QtCore.QTimer.singleShot(25, _try_next_identify_protocol)
+            return
+        entry = discovery_identify_cycle_state["entry"]
+        if entry is None:
+            return
+        discovery_identify_cycle_state["index"] = (
+            int(discovery_identify_cycle_state["index"]) + 1
+        )
+        discovery_identify_cycle_state["awaiting_confirmation"] = False
+        _launch_identify_candidate(entry)
 
     def _show_advanced_device_test() -> None:  # pragma: no cover - Qt only
         if discovery_test_state["thread"] is not None:
@@ -1665,7 +1908,10 @@ def create_main_window(
         try:
             device_discovery_service.upsert_device_config(config_path, config)
             merged = device_discovery_service.merge_with_config(discovery_entries_state["entries"], config_path)
-            _set_discovery_entries(merged, status=f"Saved assignment for {config.name} to {config_path.name}.")
+            _set_discovery_entries(
+                merged,
+                status=f"Added or updated {config.name} in {config_path.name}.",
+            )
             _reload_spatial_scene(status=f"Reloaded spatial layout after assigning {config.name}.")
         except Exception as exc:
             _set_page_error(device_discovery_panel.status_label, f"Could not save assignment: {exc}")
@@ -4072,6 +4318,519 @@ def create_main_window(
         _rebuild_menu()
         return button
 
+    def _scene_layer_direction(layer: dict[str, object]) -> str:
+        raw = layer.get("spatial_direction")
+        if isinstance(raw, str) and raw in {"x+", "x-", "y+", "y-", "z+", "z-"}:
+            return raw
+        descriptor = layer.get("effect_layer")
+        if not isinstance(descriptor, dict):
+            descriptor = layer
+        direction = raw if isinstance(raw, dict) else descriptor.get("direction")
+        if not isinstance(direction, dict):
+            return ""
+        try:
+            vector = (
+                float(direction.get("x", 0.0)),
+                float(direction.get("y", 0.0)),
+                float(direction.get("z", 0.0)),
+            )
+        except (TypeError, ValueError):
+            return ""
+        axis = max(range(3), key=lambda index: abs(vector[index]))
+        if abs(vector[axis]) <= 1e-9:
+            return ""
+        return (
+            ("x+", "x-"),
+            ("y+", "y-"),
+            ("z+", "z-"),
+        )[axis][0 if vector[axis] >= 0.0 else 1]
+
+    def _scene_layer_value(
+        layer: dict[str, object],
+        key: str,
+        default: object = None,
+    ) -> object:
+        if key in layer:
+            return layer[key]
+        descriptor = layer.get("effect_layer")
+        if isinstance(descriptor, dict) and key in descriptor:
+            return descriptor[key]
+        return default
+
+    def _scene_layers_from_button(button: object) -> list[dict[str, object]]:
+        raw = button.property("sceneLayersJson") if button is not None else "[]"
+        try:
+            parsed = json.loads(str(raw or "[]"))
+        except json.JSONDecodeError:
+            return []
+        return [
+            dict(layer)
+            for layer in parsed
+            if isinstance(layer, dict)
+        ] if isinstance(parsed, list) else []
+
+    def _set_scene_layers_button(
+        button: object,
+        layers: list[dict[str, object]],
+    ) -> None:
+        normalized = [dict(layer) for layer in layers if isinstance(layer, dict)]
+        button.setProperty("sceneLayersJson", json.dumps(normalized, sort_keys=True))
+        count = len(normalized)
+        button.setText(f"{count} layer{'s' if count != 1 else ''}")
+        button.setToolTip(
+            "Edit concurrent spatial effect layers."
+            if count
+            else "Add concurrent spatial effect layers."
+        )
+
+    def _scene_layer_groups(layer: dict[str, object], key: str) -> str:
+        raw = layer.get(key, ())
+        if not isinstance(raw, (list, tuple)):
+            return ""
+        return ", ".join(str(value) for value in raw)
+
+    def _origin_mapping(alias: str) -> tuple[dict[str, float], str]:
+        points = {
+            "center": (0.0, 0.0, 0.0),
+            "left": (-1.0, 0.0, 0.0),
+            "right": (1.0, 0.0, 0.0),
+            "top": (0.0, 1.0, 0.0),
+            "bottom": (0.0, -1.0, 0.0),
+            "front": (0.0, 0.0, -1.0),
+            "back": (0.0, 0.0, 1.0),
+            "outer": (0.0, 0.0, 0.0),
+        }
+        x, y, z = points.get(alias, points["center"])
+        return (
+            {"x": x, "y": y, "z": z},
+            "outer" if alias == "outer" else "point",
+        )
+
+    def _origin_alias(
+        raw_origin: object,
+        raw_mode: object = None,
+        *,
+        default: str,
+    ) -> str:
+        if str(raw_mode or "").strip().lower() == "outer":
+            return "outer"
+        if not isinstance(raw_origin, dict):
+            return default
+        try:
+            point = (
+                float(raw_origin.get("x", 0.0)),
+                float(raw_origin.get("y", 0.0)),
+                float(raw_origin.get("z", 0.0)),
+            )
+        except (TypeError, ValueError):
+            return default
+        aliases = {
+            (-1.0, 0.0, 0.0): "left",
+            (1.0, 0.0, 0.0): "right",
+            (0.0, 1.0, 0.0): "top",
+            (0.0, -1.0, 0.0): "bottom",
+            (0.0, 0.0, -1.0): "front",
+            (0.0, 0.0, 1.0): "back",
+            (0.0, 0.0, 0.0): "center",
+        }
+        rounded = tuple(round(value, 3) for value in point)
+        return aliases.get(rounded, default)
+
+    def _scene_layer_effect(layer: dict[str, object]) -> str:
+        effect = str(_scene_layer_value(layer, "effect_mode", "") or "").lower()
+        if effect in SHOW_CUE_LAYER_EFFECT_OPTIONS:
+            return effect
+        mode = str(layer.get("spatial_mode", "") or "").lower()
+        category = str(
+            _scene_layer_value(layer, "layer_category", "") or ""
+        ).lower()
+        if mode == "blend":
+            return "blend"
+        if mode == "emanation" or category == "expand":
+            return "ripple"
+        if mode == "wave" or category == "slice":
+            return "wave"
+        if category == "static":
+            return "flash"
+        return "wave"
+
+    def _apply_scene_layer_effect(
+        layer: dict[str, object],
+        effect: str,
+    ) -> None:
+        geometry = {
+            "wave": ("slice", "wave"),
+            "ripple": ("expand", "emanation"),
+            "flash": ("static", "wash"),
+            "wash": ("static", "wash"),
+            "blend": ("slice", "blend"),
+        }
+        category, mode = geometry.get(effect, geometry["wave"])
+        layer["effect_mode"] = effect
+        layer["layer_category"] = category
+        layer["spatial_mode"] = mode
+        layer.pop("spatial_preset", None)
+
+    def _migrate_scene_layer_descriptor(
+        layer: dict[str, object],
+    ) -> dict[str, object]:
+        """Flatten legacy nested descriptors while retaining advanced metadata."""
+
+        migrated = dict(layer)
+        descriptor = migrated.pop("effect_layer", None)
+        if not isinstance(descriptor, dict):
+            return migrated
+        compatibility = {
+            "layer_category": descriptor.get("layer_category"),
+            "trigger_mode": descriptor.get("trigger_mode"),
+            "falloff": descriptor.get("falloff"),
+            "spatial_origin": descriptor.get("origin"),
+            "spatial_origin_mode": descriptor.get("origin_mode"),
+            "spatial_direction": descriptor.get("direction"),
+            "spatial_extent": descriptor.get("extent"),
+            "spatial_width": descriptor.get("thickness"),
+            "radius": descriptor.get("radius"),
+            "speed_units_per_second": descriptor.get("speed_units_per_second"),
+            "intensity_scale": descriptor.get("intensity_scale"),
+            "duration_s": descriptor.get("duration_s"),
+            "color_bias": descriptor.get("color_bias"),
+        }
+        for key, value in compatibility.items():
+            if value is not None:
+                migrated.setdefault(key, value)
+        return migrated
+
+    def _scene_layers_from_dialog_table(table: object) -> list[dict[str, object]]:
+        layers: list[dict[str, object]] = []
+        for row in range(table.rowCount()):
+            original_raw = table.property(f"sceneLayerOriginal{row}")
+            try:
+                original = json.loads(str(original_raw or "{}"))
+            except json.JSONDecodeError:
+                original = {}
+            layer = _migrate_scene_layer_descriptor(
+                dict(original) if isinstance(original, dict) else {}
+            )
+            effect = str(_row_value(table, row, 0) or "wave")
+            origin = str(_row_value(table, row, 1) or "")
+            direction = str(_row_value(table, row, 2) or "")
+            duration = float(_row_value(table, row, 5) or 0.0)
+            intensity = float(_row_value(table, row, 6))
+            color_bias = _row_text_edit(table, row, 7)
+            target_groups = tuple(
+                value.strip().lower()
+                for value in _row_text_edit(table, row, 3).split(",")
+                if value.strip()
+            )
+            exclude_groups = tuple(
+                value.strip().lower()
+                for value in _row_text_edit(table, row, 4).split(",")
+                if value.strip()
+            )
+
+            _apply_scene_layer_effect(layer, effect)
+            if origin:
+                origin_mapping, origin_mode = _origin_mapping(origin)
+                layer["spatial_origin"] = origin_mapping
+                layer["spatial_origin_mode"] = origin_mode
+            else:
+                layer.pop("spatial_origin", None)
+                layer.pop("spatial_origin_mode", None)
+            if direction and direction != "out":
+                layer["spatial_direction"] = direction
+            else:
+                layer.pop("spatial_direction", None)
+            if direction == "out":
+                _apply_scene_layer_effect(layer, "ripple")
+            if target_groups:
+                layer["target_groups"] = list(target_groups)
+            else:
+                layer.pop("target_groups", None)
+            if exclude_groups:
+                layer["exclude_groups"] = list(exclude_groups)
+            else:
+                layer.pop("exclude_groups", None)
+            if duration > 0.0:
+                layer["duration_s"] = duration
+            else:
+                layer.pop("duration_s", None)
+            layer.pop("intensity_scale", None)
+            if intensity >= 0.0:
+                layer["layer_weight"] = max(0.0, min(1.5, intensity))
+            else:
+                layer.pop("layer_weight", None)
+            if color_bias:
+                layer["color_bias"] = color_bias
+            else:
+                layer.pop("color_bias", None)
+
+            # The simplified editor deliberately fixes these implementation
+            # details. List order supplies deterministic overlap precedence.
+            layer["trigger_mode"] = "continuous"
+            layer["layer_blend"] = "max"
+            layer["layer_priority"] = row
+            layer.pop("time_offset_s", None)
+            layers.append(layer)
+        return layers
+
+    def _populate_scene_layers_dialog_table(
+        table: object,
+        layers: list[dict[str, object]],
+    ) -> None:
+        table.setRowCount(0)
+        for layer in layers:
+            row = table.rowCount()
+            table.insertRow(row)
+            table.setProperty(
+                f"sceneLayerOriginal{row}",
+                json.dumps(layer, sort_keys=True),
+            )
+            effect = _scene_layer_effect(layer)
+            effect_combo = _combo_widget(
+                SHOW_CUE_LAYER_EFFECT_OPTIONS,
+                effect,
+                allow_blank=False,
+            )
+            table.setCellWidget(
+                row,
+                0,
+                effect_combo,
+            )
+            origin = _origin_alias(
+                layer.get("spatial_origin"),
+                layer.get("spatial_origin_mode"),
+                default="",
+            )
+            origin_combo = QtWidgets.QComboBox()
+            for value, label in SHOW_CUE_LAYER_ORIGIN_OPTIONS:
+                origin_combo.addItem(label, value)
+            _select_combo_data(origin_combo, origin)
+            table.setCellWidget(
+                row,
+                1,
+                origin_combo,
+            )
+            direction_combo = QtWidgets.QComboBox()
+            for value, label in SHOW_CUE_LAYER_INHERITED_DIRECTION_OPTIONS:
+                direction_combo.addItem(label, value)
+            direction = _scene_layer_direction(layer)
+            _select_combo_data(direction_combo, direction)
+            table.setCellWidget(row, 2, direction_combo)
+            table.setCellWidget(
+                row,
+                3,
+                _show_cue_group_picker(
+                    _scene_layer_groups(layer, "target_groups"),
+                    object_name="showSceneLayerTargetGroupsPicker",
+                    empty_label="All groups",
+                    on_change=lambda: None,
+                ),
+            )
+            table.setCellWidget(
+                row,
+                4,
+                _show_cue_group_picker(
+                    _scene_layer_groups(layer, "exclude_groups"),
+                    object_name="showSceneLayerExcludeGroupsPicker",
+                    empty_label="No exclusions",
+                    on_change=lambda: None,
+                ),
+            )
+            duration = float(
+                _scene_layer_value(layer, "duration_s", 0.0) or 0.0
+            )
+            duration_spin = _double_spin(
+                duration,
+                minimum=0.0,
+                maximum=7200.0,
+                step=0.1,
+                decimals=3,
+            )
+            duration_spin.setSpecialValueText("Cue end")
+            table.setCellWidget(row, 5, duration_spin)
+            raw_intensity = layer.get(
+                "layer_weight",
+                _scene_layer_value(layer, "intensity_scale", None),
+            )
+            intensity = (
+                -1.0
+                if raw_intensity is None
+                else float(raw_intensity)
+            )
+            intensity_spin = _double_spin(
+                intensity,
+                minimum=-1.0,
+                maximum=1.5,
+                step=0.05,
+                decimals=3,
+            )
+            intensity_spin.setSpecialValueText("Inherit")
+            table.setCellWidget(
+                row,
+                6,
+                intensity_spin,
+            )
+            table.setCellWidget(
+                row,
+                7,
+                _show_cue_text_edit(
+                    str(_scene_layer_value(layer, "color_bias", "") or ""),
+                    object_name="showSceneLayerColorBiasEdit",
+                ),
+            )
+
+    def _edit_scene_layers(button: object, on_change) -> None:  # pragma: no cover - Qt only
+        dialog = QtWidgets.QDialog(window)
+        dialog.setObjectName("showSceneLayersDialog")
+        dialog.setWindowTitle("Cue Layers")
+        dialog.resize(1180, 440)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        explanation = QtWidgets.QLabel(
+            "All layers start with the cue. A zero duration lasts until the cue ends. "
+            "Origin, direction, groups, intensity, and color inherit from the cue "
+            "unless overridden. Layers are composited in list order."
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        table = QtWidgets.QTableWidget(0, 8)
+        table.setObjectName("showSceneLayersTable")
+        table.setHorizontalHeaderLabels(
+            [
+                "Effect",
+                "Origin",
+                "Direction",
+                "Target groups",
+                "Exclude groups",
+                "Duration (s)",
+                "Intensity",
+                "Color bias",
+            ]
+        )
+        table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        table.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
+        )
+        table.horizontalHeader().setStretchLastSection(True)
+        table.setColumnHidden(6, True)
+        layout.addWidget(table, 1)
+        _populate_scene_layers_dialog_table(
+            table,
+            _scene_layers_from_button(button),
+        )
+
+        controls = QtWidgets.QHBoxLayout()
+        add_button = QtWidgets.QPushButton("Add Layer")
+        add_button.setObjectName("addShowSceneLayerButton")
+        remove_button = QtWidgets.QPushButton("Remove Layer")
+        remove_button.setObjectName("removeShowSceneLayerButton")
+        up_button = QtWidgets.QPushButton("Move Up")
+        up_button.setObjectName("moveShowSceneLayerUpButton")
+        down_button = QtWidgets.QPushButton("Move Down")
+        down_button.setObjectName("moveShowSceneLayerDownButton")
+        for control in (add_button, remove_button, up_button, down_button):
+            controls.addWidget(control)
+        columns_button = QtWidgets.QToolButton()
+        columns_button.setText("Columns")
+        columns_button.setPopupMode(
+            QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup
+        )
+        columns_menu = QtWidgets.QMenu(columns_button)
+        columns_button.setMenu(columns_menu)
+        for column in range(table.columnCount()):
+            header_item = table.horizontalHeaderItem(column)
+            label = (
+                header_item.text()
+                if header_item is not None
+                else f"Column {column + 1}"
+            )
+            action = columns_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(not table.isColumnHidden(column))
+            action.toggled.connect(
+                lambda checked, column_index=column: table.setColumnHidden(
+                    column_index,
+                    not checked,
+                )
+            )
+        controls.addWidget(columns_button)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
+        def _replace_dialog_layers(
+            layers: list[dict[str, object]],
+            selected_row: int,
+        ) -> None:
+            _populate_scene_layers_dialog_table(table, layers)
+            if 0 <= selected_row < table.rowCount():
+                table.selectRow(selected_row)
+
+        def _add_layer() -> None:
+            layers = _scene_layers_from_dialog_table(table)
+            layers.append(
+                {
+                    "effect_mode": "wave",
+                    "layer_category": "slice",
+                    "spatial_mode": "wave",
+                    "trigger_mode": "continuous",
+                    "layer_blend": "max",
+                }
+            )
+            _replace_dialog_layers(layers, len(layers) - 1)
+
+        def _remove_layer() -> None:
+            row = table.currentRow()
+            if row < 0:
+                return
+            layers = _scene_layers_from_dialog_table(table)
+            layers.pop(row)
+            _replace_dialog_layers(layers, min(row, len(layers) - 1))
+
+        def _move_layer(delta: int) -> None:
+            row = table.currentRow()
+            target = row + delta
+            if row < 0 or target < 0 or target >= table.rowCount():
+                return
+            layers = _scene_layers_from_dialog_table(table)
+            layers[row], layers[target] = layers[target], layers[row]
+            _replace_dialog_layers(layers, target)
+
+        add_button.clicked.connect(_add_layer)
+        remove_button.clicked.connect(_remove_layer)
+        up_button.clicked.connect(lambda: _move_layer(-1))
+        down_button.clicked.connect(lambda: _move_layer(1))
+        dialog_buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        dialog_buttons.accepted.connect(dialog.accept)
+        dialog_buttons.rejected.connect(dialog.reject)
+        layout.addWidget(dialog_buttons)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        _set_scene_layers_button(
+            button,
+            _scene_layers_from_dialog_table(table),
+        )
+        on_change()
+
+    def _scene_layers_button(
+        layers: list[dict[str, object]],
+        *,
+        on_change,
+    ) -> object:
+        button = QtWidgets.QPushButton()
+        button.setObjectName("showCueLayersButton")
+        _set_scene_layers_button(button, layers)
+        button.clicked.connect(
+            lambda _checked=False, target=button: _edit_scene_layers(
+                target,
+                on_change,
+            )
+        )
+        return button
+
     def _row_text_edit(table: object, row: int, column: int) -> str:
         widget = table.cellWidget(row, column)
         if widget is not None and widget.objectName() == "showCuePaletteEdit":
@@ -4290,38 +5049,25 @@ def create_main_window(
     def _show_cue_column_state(cue: ShowCue, *, show_palette: tuple[str, ...]) -> dict[str, object]:
         params = dict(cue.params)
         palette_override = bool(params.pop("palette_override", False))
-        eq_route, _eq_key = _take_primary_route(
-            params,
-            ("active_eq_routes", "eq_routes"),
-            lambda route: bool(str(route.get("band", "")).strip()),
-        )
-        instrument_route, _instrument_key = _take_primary_route(
-            params,
-            ("active_instrument_routes", "instrument_routes"),
-            lambda route: bool(str(route.get("instrument", "")).strip()),
-        )
-
-        known_layer_keys = {"effect_layer", "layer_priority"}
-        known_eq_keys = {"band", "when", "intensity_boost", "spatial_preset", "color_bias"} | known_layer_keys
-        known_instrument_keys = {
-            "instrument",
-            "when",
-            "pan_follow",
-            "width_scale",
-            "confidence",
-            "confidence_min",
-            "intensity_boost",
-            "spatial_preset",
-            "color_bias",
-        } | known_layer_keys
-        eq_route_extra = {key: value for key, value in eq_route.items() if key not in known_eq_keys}
-        instrument_route_extra = {
-            key: value for key, value in instrument_route.items() if key not in known_instrument_keys
-        }
-        if eq_route_extra:
-            params["eq_route_extra"] = eq_route_extra
-        if instrument_route_extra:
-            params["instrument_route_extra"] = instrument_route_extra
+        raw_scene_layers = params.pop("scene_layers", None)
+        legacy_scene_layers = params.pop("eq_layers", None)
+        if not isinstance(raw_scene_layers, list):
+            raw_scene_layers = (
+                legacy_scene_layers
+                if isinstance(legacy_scene_layers, list)
+                else []
+            )
+        scene_layers = [
+            dict(layer)
+            for layer in raw_scene_layers
+            if isinstance(layer, dict)
+        ]
+        descriptor = params.pop("effect_layer", None)
+        if isinstance(descriptor, dict):
+            for key, value in _migrate_scene_layer_descriptor(
+                {"effect_layer": descriptor}
+            ).items():
+                params.setdefault(key, value)
 
         def _float_value(raw: object, default: float) -> float:
             try:
@@ -4329,52 +5075,52 @@ def create_main_window(
             except (TypeError, ValueError):
                 return default
 
-        layer_state = _show_cue_layer_state_from_params(params, eq_route, instrument_route)
-        params.pop("effect_layer", None)
-        params.pop("layer_priority", None)
+        raw_origin = params.pop("spatial_origin", None)
+        raw_origin_mode = params.pop("spatial_origin_mode", None)
+        raw_direction = params.pop("spatial_direction", None)
+        preset_name = str(params.pop("spatial_preset", "") or "")
+        preset = SPATIAL_PRESETS.get(preset_name.strip().lower(), {})
+        for key, value in preset.items():
+            if key not in {
+                "spatial_origin",
+                "spatial_origin_mode",
+                "spatial_direction",
+            }:
+                params.setdefault(key, value)
+        if "spatial_origin" in preset:
+            raw_origin = preset["spatial_origin"]
+        if "spatial_direction" in preset:
+            raw_direction = preset["spatial_direction"]
+        if preset_name == "ripple_from_center":
+            raw_origin = {"x": 0.0, "y": 0.0, "z": 0.0}
+        resolved_direction = _scene_layer_direction(
+            {"spatial_direction": raw_direction}
+        )
+        if not resolved_direction:
+            resolved_direction = {
+                "scroll": "x+",
+                "wave": "x+",
+                "gradient": "z+",
+            }.get(cue.render_mode, "")
+        params.pop("wave_rate_mult", None)
 
         return {
             "palette_override": palette_override,
-            "wave_rate_mult": _float_value(params.pop("wave_rate_mult", 1.0), 1.0),
-            "width_scale": _float_value(
-                instrument_route.get("width_scale", params.pop("width_scale", 1.0)),
-                1.0,
-            ),
-            "when": str(instrument_route.get("when") or eq_route.get("when") or ""),
             "pan_follow": _float_value(
-                instrument_route.get("pan_follow", params.pop("pan_follow", 0.0)),
+                params.pop("pan_follow", 0.0),
                 0.0,
             ),
             "intensity_boost": _float_value(
-                instrument_route.get(
-                    "intensity_boost",
-                    eq_route.get("intensity_boost", params.pop("intensity_boost", 0.0)),
-                ),
+                params.pop("intensity_boost", 0.0),
                 0.0,
             ),
-            "instrument": str(instrument_route.get("instrument", "")),
-            "confidence": _float_value(
-                instrument_route.get(
-                    "confidence_min",
-                    instrument_route.get("confidence", params.pop("confidence", 0.0)),
-                ),
-                0.0,
+            "origin": _origin_alias(
+                raw_origin,
+                raw_origin_mode,
+                default="center",
             ),
-            "eq_band": str(eq_route.get("band", "")),
-            "spatial_preset": str(
-                instrument_route.get(
-                    "spatial_preset",
-                    eq_route.get("spatial_preset", params.pop("spatial_preset", "")),
-                )
-                or ""
-            ),
-            "color_bias": str(
-                instrument_route.get(
-                    "color_bias",
-                    eq_route.get("color_bias", params.pop("color_bias", "")),
-                )
-                or ""
-            ),
+            "direction": resolved_direction,
+            "color_bias": str(params.pop("color_bias", "") or ""),
             "target_groups": ", ".join(
                 str(value)
                 for value in params.pop("target_groups", ())
@@ -4387,8 +5133,8 @@ def create_main_window(
             "untargeted_behavior": str(
                 params.pop("untargeted_behavior", "blackout") or "blackout"
             ),
-            **layer_state,
-            "extra": json.dumps(params, sort_keys=True),
+            "scene_layers": scene_layers,
+            "preserved_params": params,
         }
 
     def _nearest_beat_index(beat_times: tuple[float, ...], cue_time: float) -> int:
@@ -5456,32 +6202,6 @@ def create_main_window(
         trans_beats.valueChanged.connect(refresh_timeline)
         table.setCellWidget(row, SHOW_CUE_COL_TRANSITION_BEATS, trans_beats)
 
-        wave_rate_spin = _double_spin(
-            float(cue_state["wave_rate_mult"]),
-            minimum=0.0,
-            maximum=12.0,
-            step=0.05,
-            decimals=3,
-        )
-        wave_rate_spin.setSpecialValueText("Auto")
-        wave_rate_spin.valueChanged.connect(refresh_timeline)
-        table.setCellWidget(row, SHOW_CUE_COL_WAVE_RATE, wave_rate_spin)
-
-        width_scale_spin = _double_spin(
-            float(cue_state["width_scale"]),
-            minimum=0.0,
-            maximum=6.0,
-            step=0.05,
-            decimals=3,
-        )
-        width_scale_spin.setSpecialValueText("Auto")
-        width_scale_spin.valueChanged.connect(refresh_timeline)
-        table.setCellWidget(row, SHOW_CUE_COL_WIDTH_SCALE, width_scale_spin)
-
-        when_combo = _combo_widget(SHOW_CUE_WHEN_OPTIONS, str(cue_state["when"]))
-        when_combo.currentIndexChanged.connect(refresh_timeline)
-        table.setCellWidget(row, SHOW_CUE_COL_WHEN, when_combo)
-
         pan_follow_spin = _double_spin(
             float(cue_state["pan_follow"]),
             minimum=0.0,
@@ -5503,36 +6223,23 @@ def create_main_window(
         intensity_boost_spin.valueChanged.connect(refresh_timeline)
         table.setCellWidget(row, SHOW_CUE_COL_INTENSITY_BOOST, intensity_boost_spin)
 
-        instrument_combo = _combo_widget(PROFILE_INSTRUMENT_OPTIONS, str(cue_state["instrument"]))
-        instrument_combo.currentIndexChanged.connect(refresh_timeline)
-        table.setCellWidget(row, SHOW_CUE_COL_INSTRUMENT, instrument_combo)
+        origin_combo = QtWidgets.QComboBox()
+        for value, label in SHOW_CUE_ORIGIN_OPTIONS:
+            origin_combo.addItem(label, value)
+        _select_combo_data(origin_combo, str(cue_state["origin"]))
+        origin_combo.currentIndexChanged.connect(refresh_timeline)
+        table.setCellWidget(row, SHOW_CUE_COL_ORIGIN, origin_combo)
 
-        confidence_spin = _double_spin(
-            float(cue_state["confidence"]),
-            minimum=0.0,
-            maximum=1.0,
-            step=0.05,
-            decimals=3,
-        )
-        confidence_spin.setSpecialValueText("Auto")
-        confidence_spin.valueChanged.connect(refresh_timeline)
-        table.setCellWidget(row, SHOW_CUE_COL_CONFIDENCE, confidence_spin)
-
-        eq_band_combo = _combo_widget(PROFILE_EQ_BAND_OPTIONS, str(cue_state["eq_band"]))
-        eq_band_combo.currentIndexChanged.connect(refresh_timeline)
-        table.setCellWidget(row, SHOW_CUE_COL_EQ_BAND, eq_band_combo)
-
-        spatial_combo = _combo_widget(PROFILE_SPATIAL_PRESET_OPTIONS, str(cue_state["spatial_preset"]))
-        spatial_combo.currentIndexChanged.connect(refresh_timeline)
-        table.setCellWidget(row, SHOW_CUE_COL_SPATIAL, spatial_combo)
+        direction_combo = QtWidgets.QComboBox()
+        for value, label in SHOW_CUE_DIRECTION_OPTIONS:
+            direction_combo.addItem(label, value)
+        _select_combo_data(direction_combo, str(cue_state["direction"]))
+        direction_combo.currentIndexChanged.connect(refresh_timeline)
+        table.setCellWidget(row, SHOW_CUE_COL_DIRECTION, direction_combo)
 
         color_bias_edit = _show_cue_text_edit(str(cue_state["color_bias"]), object_name="showCueColorBiasEdit")
         color_bias_edit.textChanged.connect(refresh_timeline)
         table.setCellWidget(row, SHOW_CUE_COL_COLOR_BIAS, color_bias_edit)
-
-        extra_edit = _show_cue_params_edit(json.loads(str(cue_state["extra"])))
-        extra_edit.textChanged.connect(refresh_timeline)
-        table.setCellWidget(row, SHOW_CUE_COL_EXTRA, extra_edit)
 
         intensity_start_spin = _double_spin(
             cue.intensity_start if cue.intensity_start is not None else 0.0,
@@ -5544,63 +6251,15 @@ def create_main_window(
         intensity_start_spin.valueChanged.connect(refresh_timeline)
         table.setCellWidget(row, SHOW_CUE_COL_INTENSITY_START, intensity_start_spin)
 
-        layer_category_combo = _combo_widget(
-            SHOW_CUE_LAYER_CATEGORY_OPTIONS,
-            str(cue_state["layer_category"]),
-            blank_label="Preset/default",
+        layers_button = _scene_layers_button(
+            list(cue_state["scene_layers"]),
+            on_change=refresh_timeline,
         )
-        layer_category_combo.currentIndexChanged.connect(refresh_timeline)
-        table.setCellWidget(row, SHOW_CUE_COL_LAYER_CATEGORY, layer_category_combo)
-
-        layer_target_combo = _combo_widget(
-            SHOW_CUE_LAYER_TARGET_OPTIONS,
-            str(cue_state["layer_target"]),
-            blank_label="Auto target",
+        layers_button.setProperty(
+            "preservedParamsJson",
+            json.dumps(cue_state["preserved_params"], sort_keys=True),
         )
-        layer_target_combo.currentIndexChanged.connect(refresh_timeline)
-        table.setCellWidget(row, SHOW_CUE_COL_LAYER_TARGET, layer_target_combo)
-
-        layer_trigger_combo = _combo_widget(
-            SHOW_CUE_LAYER_TRIGGER_OPTIONS,
-            str(cue_state["layer_trigger"]),
-            blank_label="Continuous",
-        )
-        layer_trigger_combo.currentIndexChanged.connect(refresh_timeline)
-        table.setCellWidget(row, SHOW_CUE_COL_LAYER_TRIGGER, layer_trigger_combo)
-
-        layer_falloff_combo = _combo_widget(
-            SHOW_CUE_LAYER_FALLOFF_OPTIONS,
-            str(cue_state["layer_falloff"]),
-            blank_label="Linear",
-        )
-        layer_falloff_combo.currentIndexChanged.connect(refresh_timeline)
-        table.setCellWidget(row, SHOW_CUE_COL_LAYER_FALLOFF, layer_falloff_combo)
-
-        layer_thickness_spin = _double_spin(
-            float(cue_state["layer_thickness"]),
-            minimum=0.01,
-            maximum=4.0,
-            step=0.05,
-            decimals=3,
-        )
-        layer_thickness_spin.valueChanged.connect(refresh_timeline)
-        table.setCellWidget(row, SHOW_CUE_COL_LAYER_THICKNESS, layer_thickness_spin)
-
-        layer_speed_spin = _double_spin(
-            float(cue_state["layer_speed"]),
-            minimum=0.0,
-            maximum=12.0,
-            step=0.05,
-            decimals=3,
-        )
-        layer_speed_spin.valueChanged.connect(refresh_timeline)
-        table.setCellWidget(row, SHOW_CUE_COL_LAYER_SPEED, layer_speed_spin)
-
-        layer_priority_spin = QtWidgets.QSpinBox()
-        layer_priority_spin.setRange(-100, 100)
-        layer_priority_spin.setValue(int(cue_state["layer_priority"]))
-        layer_priority_spin.valueChanged.connect(refresh_timeline)
-        table.setCellWidget(row, SHOW_CUE_COL_LAYER_PRIORITY, layer_priority_spin)
+        table.setCellWidget(row, SHOW_CUE_COL_LAYERS, layers_button)
         target_groups_edit = _show_cue_group_picker(
             str(cue_state["target_groups"]),
             object_name="showCueTargetGroupsPicker",
@@ -5660,7 +6319,6 @@ def create_main_window(
             cue_time = float(_row_value(queue_panel.show_cues_table, row, SHOW_CUE_COL_TIME))
             render_mode = str(_row_value(queue_panel.show_cues_table, row, SHOW_CUE_COL_RENDER))
             palette_text = _row_text_edit(queue_panel.show_cues_table, row, SHOW_CUE_COL_PALETTE)
-            params_text = _row_text_edit(queue_panel.show_cues_table, row, SHOW_CUE_COL_EXTRA)
             if not render_mode:
                 continue
             palette_widget = queue_panel.show_cues_table.cellWidget(row, SHOW_CUE_COL_PALETTE)
@@ -5670,50 +6328,52 @@ def create_main_window(
             palette = tuple(part.strip() for part in palette_text.split(",") if part.strip())
             if not palette:
                 palette = show_palette
+            layers_widget = queue_panel.show_cues_table.cellWidget(
+                row,
+                SHOW_CUE_COL_LAYERS,
+            )
             try:
-                params = json.loads(params_text) if params_text else {}
+                params = json.loads(
+                    str(
+                        layers_widget.property("preservedParamsJson")
+                        if layers_widget is not None
+                        else "{}"
+                    )
+                    or "{}"
+                )
             except json.JSONDecodeError as exc:
-                raise ValueError(f"Invalid cue params on row {row + 1}: {exc.msg}") from exc
+                raise ValueError(
+                    f"Invalid preserved cue params on row {row + 1}: {exc.msg}"
+                ) from exc
             if not isinstance(params, dict):
-                raise ValueError(f"Cue params on row {row + 1} must be a JSON object.")
-            eq_route_extra = params.pop("eq_route_extra", {})
-            instrument_route_extra = params.pop("instrument_route_extra", {})
-            if eq_route_extra and not isinstance(eq_route_extra, dict):
-                raise ValueError(f"eq_route_extra on row {row + 1} must be a JSON object.")
-            if instrument_route_extra and not isinstance(instrument_route_extra, dict):
-                raise ValueError(f"instrument_route_extra on row {row + 1} must be a JSON object.")
+                raise ValueError(
+                    f"Preserved cue params on row {row + 1} must be a JSON object."
+                )
 
-            wave_rate = float(_row_value(queue_panel.show_cues_table, row, SHOW_CUE_COL_WAVE_RATE))
-            width_scale = float(_row_value(queue_panel.show_cues_table, row, SHOW_CUE_COL_WIDTH_SCALE))
-            when = str(_row_value(queue_panel.show_cues_table, row, SHOW_CUE_COL_WHEN) or "").strip()
             pan_follow = float(_row_value(queue_panel.show_cues_table, row, SHOW_CUE_COL_PAN_FOLLOW))
             intensity_boost = float(
                 _row_value(queue_panel.show_cues_table, row, SHOW_CUE_COL_INTENSITY_BOOST)
             )
-            instrument = str(_row_value(queue_panel.show_cues_table, row, SHOW_CUE_COL_INSTRUMENT) or "").strip()
-            confidence = float(_row_value(queue_panel.show_cues_table, row, SHOW_CUE_COL_CONFIDENCE))
-            eq_band = str(_row_value(queue_panel.show_cues_table, row, SHOW_CUE_COL_EQ_BAND) or "").strip()
-            spatial_preset = str(
-                _row_value(queue_panel.show_cues_table, row, SHOW_CUE_COL_SPATIAL) or ""
-            ).strip()
-            color_bias = _row_text_edit(queue_panel.show_cues_table, row, SHOW_CUE_COL_COLOR_BIAS)
-            layer_category = str(
-                _row_value(queue_panel.show_cues_table, row, SHOW_CUE_COL_LAYER_CATEGORY) or ""
-            ).strip()
-            layer_target = str(
-                _row_value(queue_panel.show_cues_table, row, SHOW_CUE_COL_LAYER_TARGET) or ""
-            ).strip()
-            layer_trigger = str(
-                _row_value(queue_panel.show_cues_table, row, SHOW_CUE_COL_LAYER_TRIGGER) or ""
-            ).strip()
-            layer_falloff = str(
-                _row_value(queue_panel.show_cues_table, row, SHOW_CUE_COL_LAYER_FALLOFF) or ""
-            ).strip()
-            layer_thickness = float(
-                _row_value(queue_panel.show_cues_table, row, SHOW_CUE_COL_LAYER_THICKNESS)
+            origin = str(
+                _row_value(
+                    queue_panel.show_cues_table,
+                    row,
+                    SHOW_CUE_COL_ORIGIN,
+                )
+                or "center"
             )
-            layer_speed = float(_row_value(queue_panel.show_cues_table, row, SHOW_CUE_COL_LAYER_SPEED))
-            layer_priority = int(_row_value(queue_panel.show_cues_table, row, SHOW_CUE_COL_LAYER_PRIORITY))
+            direction = str(
+                _row_value(
+                    queue_panel.show_cues_table,
+                    row,
+                    SHOW_CUE_COL_DIRECTION,
+                )
+                or ""
+            )
+            color_bias = _row_text_edit(queue_panel.show_cues_table, row, SHOW_CUE_COL_COLOR_BIAS)
+            scene_layers = _scene_layers_from_button(
+                layers_widget
+            )
             target_groups = tuple(
                 part.strip().lower()
                 for part in _row_text_edit(
@@ -5749,8 +6409,6 @@ def create_main_window(
                 or "blackout"
             )
 
-            if abs(wave_rate - 1.0) > 1e-9:
-                params["wave_rate_mult"] = wave_rate
             if palette_override:
                 params["palette_override"] = True
             else:
@@ -5772,87 +6430,35 @@ def create_main_window(
                 params["untargeted_behavior"] = untargeted_behavior
             else:
                 params.pop("untargeted_behavior", None)
-            effect_layer = _show_cue_effect_layer_from_controls(
-                category=layer_category,
-                target=layer_target,
-                trigger=layer_trigger,
-                falloff=layer_falloff,
-                thickness=layer_thickness,
-                speed=layer_speed,
-                render_mode=render_mode,
-                palette=palette,
-                color_bias=color_bias,
-            )
-            if effect_layer is not None:
-                for key in ("time_offset_s", "duration_s", "intensity_scale", "radius"):
-                    if key in params:
-                        effect_layer[key] = params.pop(key)
-
-            instrument_route: dict[str, object] | None = None
-            if instrument or instrument_route_extra:
-                instrument_route = dict(instrument_route_extra)
-                if instrument:
-                    instrument_route["instrument"] = instrument
-                if when:
-                    instrument_route["when"] = when
-                if abs(pan_follow) > 1e-9:
-                    instrument_route["pan_follow"] = pan_follow
-                if abs(width_scale - 1.0) > 1e-9:
-                    instrument_route["width_scale"] = width_scale
-                if abs(confidence) > 1e-9:
-                    instrument_route["confidence_min"] = confidence
-                if abs(intensity_boost) > 1e-9:
-                    instrument_route["intensity_boost"] = intensity_boost
-                if spatial_preset:
-                    instrument_route["spatial_preset"] = spatial_preset
-                if color_bias:
-                    instrument_route["color_bias"] = color_bias
-                if effect_layer is not None:
-                    instrument_route["effect_layer"] = effect_layer
-                    if layer_priority:
-                        instrument_route["layer_priority"] = layer_priority
-                params["instrument_routes"] = [instrument_route]
-                params["active_instrument_routes"] = [dict(instrument_route)]
+            if scene_layers:
+                params["scene_layers"] = scene_layers
             else:
-                if when:
-                    params["when"] = when
-                if abs(pan_follow) > 1e-9:
-                    params["pan_follow"] = pan_follow
-                if abs(width_scale - 1.0) > 1e-9:
-                    params["width_scale"] = width_scale
-                if abs(confidence) > 1e-9:
-                    params["confidence"] = confidence
-
-            eq_route: dict[str, object] | None = None
-            if eq_band or eq_route_extra:
-                eq_route = dict(eq_route_extra)
-                if eq_band:
-                    eq_route["band"] = eq_band
-                if when:
-                    eq_route["when"] = when
-                if abs(intensity_boost) > 1e-9:
-                    eq_route["intensity_boost"] = intensity_boost
-                if spatial_preset:
-                    eq_route["spatial_preset"] = spatial_preset
-                if color_bias:
-                    eq_route["color_bias"] = color_bias
-                if effect_layer is not None:
-                    eq_route["effect_layer"] = effect_layer
-                    if layer_priority:
-                        eq_route["layer_priority"] = layer_priority
-                params["eq_routes"] = [eq_route]
-                params["active_eq_routes"] = [dict(eq_route)]
-            elif instrument_route is None:
-                if abs(intensity_boost) > 1e-9:
-                    params["intensity_boost"] = intensity_boost
-                if spatial_preset:
-                    params["spatial_preset"] = spatial_preset
-                if color_bias:
-                    params["color_bias"] = color_bias
-                if effect_layer is not None:
-                    params["effect_layer"] = effect_layer
-                    if layer_priority:
-                        params["layer_priority"] = layer_priority
+                params.pop("scene_layers", None)
+            params.pop("eq_layers", None)
+            if abs(pan_follow) > 1e-9:
+                params["pan_follow"] = pan_follow
+            else:
+                params.pop("pan_follow", None)
+            if abs(intensity_boost) > 1e-9:
+                params["intensity_boost"] = intensity_boost
+            else:
+                params.pop("intensity_boost", None)
+            origin_mapping, origin_mode = _origin_mapping(origin)
+            params["spatial_origin"] = origin_mapping
+            if origin_mode == "outer":
+                params["spatial_origin_mode"] = "outer"
+            else:
+                params.pop("spatial_origin_mode", None)
+            if direction:
+                params["spatial_direction"] = direction
+            else:
+                params.pop("spatial_direction", None)
+            params.pop("spatial_preset", None)
+            params.pop("wave_rate_mult", None)
+            if color_bias:
+                params["color_bias"] = color_bias
+            else:
+                params.pop("color_bias", None)
 
             intensity_start_raw = float(
                 _row_value(queue_panel.show_cues_table, row, SHOW_CUE_COL_INTENSITY_START)
@@ -9239,6 +9845,10 @@ def create_main_window(
         return float(timeline.cues[row].t)
 
     def _start_saved_show(*, from_selected_cue: bool = False) -> None:  # pragma: no cover - Qt only
+        if bool(show_editor_state.get("busy")):
+            queue_controller.set_status("Show playback is already being prepared.")
+            _render_queue_state(queue_controller.state)
+            return
         _commit_current_show_track_editor()
         show = _current_show()
         track = _current_show_track()
@@ -9249,22 +9859,32 @@ def create_main_window(
         start_seconds = _selected_editor_cue_start() if from_selected_cue else 0.0
         try:
             _sync_runtime_settings_from_form()
-            if from_selected_cue:
-                if track is None or track.timeline is None:
-                    raise ValueError("Compile the selected Track before playing from one of its cues.")
-                runtime_supervisor.start_timeline_show(
-                    Path(track.audio_path),
-                    track.timeline,
-                    show_path=show_editor_state["path"],
-                    config_path=config_path,
-                    start_seconds=start_seconds,
-                )
-            else:
-                runtime_supervisor.start_compiled_show(
+
+            def _prepare_playback(_report_progress):
+                if from_selected_cue:
+                    if track is None or track.timeline is None:
+                        raise ValueError(
+                            "Compile the selected Track before playing from one of its cues."
+                        )
+                    return runtime_supervisor.start_timeline_show(
+                        Path(track.audio_path),
+                        track.timeline,
+                        show_path=show_editor_state["path"],
+                        config_path=config_path,
+                        start_seconds=start_seconds,
+                    )
+                return runtime_supervisor.start_compiled_show(
                     show,
                     show_path=show_editor_state["path"],
                     config_path=config_path,
                 )
+
+            preparation_label = (
+                "Preparing Track playback and connecting to devices..."
+                if from_selected_cue
+                else "Preparing Show playback and connecting to devices..."
+            )
+            _run_show_editor_busy_task(preparation_label, _prepare_playback)
         except Exception as exc:
             _render_session_status(None, running=False, error=exc)
             queue_controller.set_status(str(exc))
@@ -10385,7 +11005,7 @@ def create_main_window(
     window._dreamsync_spatial_shortcuts = spatial_shortcuts
 
     tab_shortcut_hints = (
-        (device_discovery_panel.widget, "Shortcuts: L scan LAN, B scan BLE, S scan all, I identify, A add/update, Ctrl+S save."),
+        (device_discovery_panel.widget, "Add Device scans LAN and BLE. Identify cycles protocols; Ctrl+Enter confirms and Ctrl+N tries the next. Shortcuts: L scan LAN, B scan BLE, S rescan all, I identify, A add/update, Ctrl+S save."),
         (spatial_widget, "Shortcuts: M toggle object mode, D cycle direction, L apply line, Enter fine tune, Ctrl+R reload, Ctrl+S save."),
         (profile_panel.widget, "Shortcuts: L load profile, N new palette, G generate from seeds, Q Quickshow, R randomness, S save palette, Ctrl+S save all, Esc unfocus text."),
         (queue_panel.shows_widget, "Shortcuts: Ctrl+O open saved Show, Ctrl+L load a Profile, Ctrl+C compile Track, Ctrl+S save Show, Esc stop playback."),
@@ -10406,10 +11026,17 @@ def create_main_window(
         )
         main_tab_shortcuts.append(shortcut)
     window._dreamsync_main_tab_shortcuts = main_tab_shortcuts
+    device_discovery_panel.add_device_button.clicked.connect(_add_discovery_device)
     device_discovery_panel.scan_lan_devices_button.clicked.connect(lambda: _scan_discovery_devices("lan"))
     device_discovery_panel.scan_ble_devices_button.clicked.connect(lambda: _scan_discovery_devices("ble"))
     device_discovery_panel.scan_all_devices_button.clicked.connect(lambda: _scan_discovery_devices("all"))
     device_discovery_panel.identify_device_button.clicked.connect(_identify_discovery_device)
+    device_discovery_panel.confirm_identify_protocol_button.clicked.connect(
+        _confirm_identify_protocol
+    )
+    device_discovery_panel.try_next_identify_protocol_button.clicked.connect(
+        _try_next_identify_protocol
+    )
     device_discovery_panel.advanced_test_device_button.clicked.connect(_show_advanced_device_test)
     device_discovery_panel.assign_discovered_device_button.clicked.connect(_save_discovery_assignment)
     device_discovery_panel.save_discovered_config_button.clicked.connect(_save_discovery_assignment)
@@ -10419,6 +11046,8 @@ def create_main_window(
         ("B", lambda: _scan_discovery_devices("ble")),
         ("S", lambda: _scan_discovery_devices("all")),
         ("I", _identify_discovery_device),
+        ("Ctrl+Enter", _confirm_identify_protocol),
+        ("Ctrl+N", _try_next_identify_protocol),
         ("A", _save_discovery_assignment),
         ("Ctrl+S", _save_discovery_assignment),
         ("Ctrl+Shift+S", _save_all_discovery_assignments),
@@ -10629,11 +11258,19 @@ def create_main_window(
             )
 
         def _handler_for(self, sequence: str):
-            if _show_text_input_has_focus():
-                return None
             current_widget = tabs.currentWidget()
+            if current_widget is device_discovery_panel.widget:
+                device_actions = {
+                    "Ctrl+S": _save_discovery_assignment,
+                    "Ctrl+Enter": _confirm_identify_protocol,
+                    "Ctrl+N": _try_next_identify_protocol,
+                }
+                if sequence in device_actions:
+                    return device_actions[sequence]
             if current_widget is queue_panel.config_widget and sequence == "Ctrl+S":
                 return _save_configuration
+            if _show_text_input_has_focus():
+                return None
             if current_widget is queue_panel.shows_widget and sequence == "Ctrl+O":
                 return _load_saved_show_file
             if current_widget is queue_panel.widget:
@@ -10645,8 +11282,10 @@ def create_main_window(
         def eventFilter(self, watched, event):  # pragma: no cover - Qt only
             event_type = event.type()
             if event_type == QtCore.QEvent.Type.ShortcutOverride and _show_text_input_has_focus():
-                event.accept()
-                return True
+                sequence = self._event_sequence(event)
+                if self._handler_for(sequence) is None:
+                    event.accept()
+                    return True
             if (
                 event_type == QtCore.QEvent.Type.KeyPress
                 and event.key() == QtCore.Qt.Key.Key_Escape
@@ -10705,6 +11344,23 @@ def create_main_window(
                     window.saveGeometry().toBase64()
                 ).decode("ascii"),
                 dark_mode=bool(queue_panel.dark_mode_check.isChecked()),
+                show_editor_hidden_columns=tuple(
+                    index
+                    for index in range(
+                        queue_panel.show_cues_table.columnCount()
+                    )
+                    if queue_panel.show_cues_table.isColumnHidden(index)
+                ),
+                show_editor_meta_hidden=bool(
+                    show_editor_state.get("meta_hidden")
+                ),
+                show_editor_focus_mode=bool(
+                    show_editor_state.get("focus_enabled")
+                ),
+                show_editor_splitter_sizes=tuple(
+                    int(value)
+                    for value in queue_panel.shows_splitter.sizes()
+                ),
                 reactive_diagnostics_splitter_sizes=tuple(
                     int(value)
                     for value in queue_panel.reactive_diagnostics_splitter.sizes()

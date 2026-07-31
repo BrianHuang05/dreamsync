@@ -11,6 +11,7 @@ from dreamsync.live import (
     HARMONIC_RATIOS,
     CyclicBeatGridTracker,
     IOIHistogram,
+    LiveEqState,
     LiveEqStateTracker,
     LiveInstrumentState,
     LiveInstrumentStateTracker,
@@ -547,6 +548,16 @@ class TestLiveEqRouting(unittest.TestCase):
         self.assertEqual(dominant_route["color_bias"], "#00ffaa")
         self.assertEqual(dominant_route["spatial_preset"], "wave_front_to_back")
 
+    def test_resolve_live_eq_routes_aligns_accents_to_active_palette(self) -> None:
+        routes = _resolve_live_eq_routes(
+            LiveEqState(trigger_keys=(("air", "dominant"),)),
+            {"_palette_colors": ("#330066", "#ff0088")},
+        )
+
+        self.assertEqual(len(routes), 1)
+        self.assertIn(routes[0]["color_bias"], ("#330066", "#ff0088"))
+        self.assertNotEqual(routes[0]["color_bias"], "#dff6ff")
+
     def test_build_eq_layers_and_apply_live_eq_to_intent(self) -> None:
         from dataclasses import dataclass
 
@@ -582,7 +593,7 @@ class TestLiveEqRouting(unittest.TestCase):
         self.assertEqual(layers[0]["falloff"], "smoothstep")
         self.assertEqual(layers[0]["intensity_scale"], 1.2)
         intent = _apply_live_eq_to_intent(_Intent(intensity=0.5, color="#123456"), routes)
-        self.assertEqual(intent.color, "#66ccff")
+        self.assertEqual(intent.color, "#123456")
         self.assertAlmostEqual(intent.intensity, 0.66, places=2)
 
 
@@ -817,7 +828,7 @@ class TestLiveInstrumentProxyTracking(unittest.TestCase):
         self.assertEqual(layers[0]["duration_s"], 0.4)
         self.assertEqual(layers[0]["layer_priority"], 4)
 
-    def test_apply_live_routes_to_intent_uses_route_bias_and_boost(self) -> None:
+    def test_apply_live_routes_to_intent_keeps_base_color_and_uses_boost(self) -> None:
         from dataclasses import dataclass
 
         @dataclass(frozen=True)
@@ -833,7 +844,7 @@ class TestLiveInstrumentProxyTracking(unittest.TestCase):
                 {"band": "presence", "when": "lift", "color_bias": "#66ccff", "intensity_boost": 0.04},
             ],
         )
-        self.assertEqual(result.color, "#99ddff")
+        self.assertEqual(result.color, "#123456")
         self.assertAlmostEqual(result.intensity, 0.52, places=2)
 
     def test_compute_whitened_flux_first_frame(self) -> None:

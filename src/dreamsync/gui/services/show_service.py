@@ -12,6 +12,7 @@ import numpy as np
 from dreamsync.analyzer.decode import decode_mp3
 from dreamsync.analyzer.analyze import analyze_song
 from dreamsync.analyzer.models import SongStructure
+from dreamsync.color_utils import nearest_palette_color
 from dreamsync.compiler import compile_show
 from dreamsync.show.control_patch import ShowControlPatch, apply_show_control_patch
 from dreamsync.show.baked_frames import (
@@ -29,6 +30,24 @@ class ShowEditorTimelineContext:
     duration: float
     waveform: tuple[float, ...] = ()
     sections: tuple[TimelineSectionMarker, ...] = ()
+
+
+def _retint_color_biases(value: Any, palette: tuple[str, ...]) -> Any:
+    """Recursively keep stored route/layer color biases inside a show palette."""
+    if isinstance(value, dict):
+        return {
+            key: (
+                nearest_palette_color(str(child), palette)
+                if key == "color_bias" and child is not None
+                else _retint_color_biases(child, palette)
+            )
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [_retint_color_biases(child, palette) for child in value]
+    if isinstance(value, tuple):
+        return tuple(_retint_color_biases(child, palette) for child in value)
+    return value
 
 
 class ShowService:
@@ -110,6 +129,7 @@ class ShowService:
                 previous_show_palette,
             }:
                 params["gradient_colors"] = tuple(palette)
+            params = _retint_color_biases(params, palette)
             retinted_cues.append(replace(cue, color_palette=palette, params=params))
 
         metadata = {

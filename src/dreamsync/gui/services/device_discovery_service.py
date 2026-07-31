@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from dreamsync.output.auto_detect import DeviceConfig, load_device_config, save_device_config
-from dreamsync.output.discovery import GoveeDevice, scan_devices
+from dreamsync.output.discovery import GoveeDevice, probe_devices, scan_devices
 from dreamsync.output.govee_ble import (
     BleProtocol,
     GoveeBleAdapter,
@@ -79,12 +79,14 @@ class DeviceDiscoveryService:
         self,
         *,
         lan_scan: Callable[[float], list[GoveeDevice]] | None = None,
+        lan_direct_probe: Callable[[list[str], float], list[GoveeDevice]] | None = None,
         ble_scan: Callable[[float], list[GoveeBleDevice]] | None = None,
         lan_adapter_factory: Callable[[GoveeLanConfig], object] | None = None,
         ble_adapter_factory: Callable[[GoveeBleConfig], object] | None = None,
         sleep_fn: Callable[[float], None] | None = None,
     ) -> None:
         self._lan_scan = lan_scan or scan_devices
+        self._lan_direct_probe = lan_direct_probe or probe_devices
         self._ble_scan = ble_scan or scan_ble_devices
         self._lan_adapter_factory = lan_adapter_factory or GoveeLanAdapter
         self._ble_adapter_factory = ble_adapter_factory or GoveeBleAdapter
@@ -161,6 +163,68 @@ class DeviceDiscoveryService:
             if entry.source == "lan" and entry.connected
             else entry
             for entry in live_entries
+        ]
+
+    def probe_configured_lan(
+        self,
+        entries: Iterable[DiscoveredDeviceEntry],
+    ) -> list[DiscoveredDeviceEntry]:
+        """Directly query configured LAN entries omitted by multicast discovery."""
+
+        current = list(entries)
+        missing_ips = [
+            entry.address
+            for entry in current
+            if entry.source == "lan" and entry.assigned and not entry.connected
+        ]
+        if not missing_ips:
+            return current
+        try:
+            found = {
+                device.ip: device
+                for device in self._lan_direct_probe(missing_ips, 1.0)
+            }
+        except Exception:
+            return current
+        return [
+            replace(
+                entry,
+                connected=True,
+                sku=found[entry.address].sku,
+                device_id=found[entry.address].device_id,
+            )
+            if entry.address in found
+            else entry
+            for entry in current
+        ]
+
+    @staticmethod
+    def collapse_transport_aliases(
+        entries: Iterable[DiscoveredDeviceEntry],
+        config_path: Path | None,
+    ) -> list[DiscoveredDeviceEntry]:
+        """Hide unconfigured BLE advertisements already represented by LAN."""
+
+        current = list(entries)
+        explicitly_configured: set[str] = set()
+        if config_path is not None and config_path.exists():
+            explicitly_configured = {
+                config.address.upper()
+                for config in load_device_config(config_path)
+            }
+        ble_aliases = {
+            _ble_identity_from_lan_device_id(entry.device_id): entry.address
+            for entry in current
+            if entry.source == "lan" and entry.device_id
+        }
+        return [
+            entry
+            for entry in current
+            if not (
+                entry.source == "ble"
+                and entry.address.upper() not in explicitly_configured
+                and entry.address.upper() in ble_aliases
+            )
         ]
 
     def merge_with_config(
@@ -403,6 +467,7 @@ class DeviceDiscoveryService:
         frames_sent = 0
         adapter.start()
         try:
+            self._wait_for_ble_connection(adapter, entry.address)
             if spec.pattern == "solid":
                 r, g, b = _parse_hex_color(spec.color)
                 adapter.send_color(r, g, b, brightness)
@@ -468,6 +533,7 @@ class DeviceDiscoveryService:
         r, g, b = _parse_hex_color(color)
         adapter.start()
         try:
+            self._wait_for_ble_connection(adapter, entry.address)
             for _ in range(_pulse_count(seconds)):
                 adapter.send_color(r, g, b, 100)
                 self._sleep(_pulse_duration(seconds))
@@ -476,6 +542,23 @@ class DeviceDiscoveryService:
             adapter.send_color(0, 0, 0, 100)
         finally:
             adapter.stop()
+
+    @staticmethod
+    def _wait_for_ble_connection(adapter: object, address: str) -> None:
+        """Wait for adapters that expose readiness; retain simple test fakes."""
+
+        wait = getattr(adapter, "wait_until_connected", None)
+        if not callable(wait):
+            return
+        config = getattr(adapter, "config", None)
+        connect_timeout = float(getattr(config, "connect_timeout", 10.0))
+        if wait(connect_timeout + 1.0):
+            return
+        raise RuntimeError(
+            f"BLE device {address} advertised, but DreamSync could not establish "
+            "a writable GATT connection. Close Govee Home/other controllers, move "
+            "the device closer, and try again."
+        )
 
     def _pulse_frames(
         self,
@@ -496,6 +579,17 @@ def _parse_hex_color(color: str) -> tuple[int, int, int]:
     if len(value) != 6:
         raise ValueError(f"Expected #RRGGBB color, got {color!r}")
     return int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
+
+
+def _ble_identity_from_lan_device_id(device_id: str) -> str:
+    """Return the six-byte BLE MAC embedded at the end of a LAN device ID."""
+
+    octets = [
+        octet.upper()
+        for octet in str(device_id).strip().split(":")
+        if octet
+    ]
+    return ":".join(octets[-6:]) if len(octets) >= 6 else ""
 
 
 def _pulse_count(seconds: float) -> int:

@@ -15,6 +15,7 @@ import numpy as np
 
 from dreamsync.audio.ring import AudioBlockRing, PcmFrameBuffer
 from dreamsync.audio.system_input import _require_sounddevice
+from dreamsync.color_utils import nearest_palette_color
 from dreamsync.director import Director, DirectorConfig, EffectMode
 from dreamsync.groups.models import GroupRuntimeState
 from dreamsync.groups.reactive_policy import (
@@ -2888,7 +2889,10 @@ def _resolve_live_eq_routes(state: LiveEqState | None, params: dict[str, object]
         route for route in configured_routes
         if (str(route.get("band", "")), str(route.get("when", ""))) in state.trigger_keys
     ]
-    return _sort_active_routes(_merge_eq_routes(default_routes, matching_configured))
+    return _align_live_route_color_biases(
+        _sort_active_routes(_merge_eq_routes(default_routes, matching_configured)),
+        params,
+    )
 
 
 def _resolve_live_instrument_routes(
@@ -2918,15 +2922,45 @@ def _resolve_live_instrument_routes(
         for route in active_routes
         if str(route.get("when", "")) == "dominant"
     }
-    if not dominant_instruments:
-        return _sort_active_routes(active_routes)
-    return _sort_active_routes([
-        route for route in active_routes
-        if not (
-            str(route.get("when", "")) == "present"
-            and str(route.get("instrument", "")) in dominant_instruments
-        )
-    ])
+    if dominant_instruments:
+        active_routes = [
+            route for route in active_routes
+            if not (
+                str(route.get("when", "")) == "present"
+                and str(route.get("instrument", "")) in dominant_instruments
+            )
+        ]
+    return _align_live_route_color_biases(
+        _sort_active_routes(active_routes),
+        params,
+    )
+
+
+def _align_live_route_color_biases(
+    routes: list[dict[str, object]],
+    params: dict[str, object] | None,
+) -> list[dict[str, object]]:
+    """Keep live-react accents inside the authoritative active palette."""
+
+    palette_raw = (params or {}).get("_palette_colors")
+    palette = (
+        tuple(str(color) for color in palette_raw if str(color).strip())
+        if isinstance(palette_raw, (list, tuple))
+        else ()
+    )
+    if not palette:
+        return [dict(route) for route in routes]
+
+    aligned_routes: list[dict[str, object]] = []
+    for route in routes:
+        aligned = dict(route)
+        if aligned.get("color_bias") is not None:
+            aligned["color_bias"] = nearest_palette_color(
+                str(aligned["color_bias"]),
+                palette,
+            )
+        aligned_routes.append(aligned)
+    return aligned_routes
 
 
 def _build_scene_layers(routes: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -3143,12 +3177,10 @@ def _enrich_live_instrument_route(
 def _apply_live_routes_to_intent(intent: Any, routes: list[dict[str, object]]) -> Any:
     if not routes:
         return intent
-    color_bias = _first_route_value(routes, "color_bias")
     intensity_boost = sum(float(route.get("intensity_boost", 0.0) or 0.0) for route in routes)
     return dataclasses.replace(
         intent,
         intensity=min(1.0, max(0.0, float(intent.intensity) + intensity_boost)),
-        color=str(color_bias) if color_bias is not None else intent.color,
     )
 
 

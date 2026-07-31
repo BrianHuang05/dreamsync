@@ -356,6 +356,54 @@ class SpatialMapperTests(unittest.TestCase):
         self.assertEqual([layer.layer.band for layer in layers], ["bass", "presence"])
         self.assertEqual([layer.layer.priority for layer in layers], [2, 10])
 
+    def test_scene_layer_inherits_cue_spatial_and_group_defaults(self) -> None:
+        mapper = SpatialMapper(enabled=True)
+        _base, layers = mapper.resolve_spatial_layers(
+            _intent(mode=EffectMode.MOTION),
+            params={
+                "spatial_origin": {"x": -1.0, "y": 0.0, "z": 0.0},
+                "spatial_direction": "y+",
+                "target_groups": ["odd"],
+                "exclude_groups": ["disabled"],
+                "scene_layers": [
+                    {
+                        "effect_mode": "wave",
+                        "layer_category": "slice",
+                        "spatial_mode": "wave",
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(len(layers), 1)
+        self.assertEqual(layers[0].spec.origin, (-1.0, 0.0, 0.0))
+        self.assertEqual(layers[0].spec.direction, (0.0, 1.0, 0.0))
+        self.assertEqual(layers[0].layer.target_groups, ("odd",))
+        self.assertEqual(layers[0].layer.exclude_groups, ("disabled",))
+        self.assertEqual(layers[0].layer.weight, 1.0)
+
+    def test_scene_layer_can_override_cue_origin_and_direction(self) -> None:
+        mapper = SpatialMapper(enabled=True)
+        _base, layers = mapper.resolve_spatial_layers(
+            _intent(mode=EffectMode.MOTION),
+            params={
+                "spatial_origin": {"x": -1.0, "y": 0.0, "z": 0.0},
+                "spatial_direction": "y+",
+                "scene_layers": [
+                    {
+                        "effect_mode": "wave",
+                        "layer_category": "slice",
+                        "spatial_mode": "wave",
+                        "spatial_origin": {"x": 1.0, "y": 0.0, "z": 0.0},
+                        "spatial_direction": "x-",
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(layers[0].spec.origin, (1.0, 0.0, 0.0))
+        self.assertEqual(layers[0].spec.direction, (-1.0, 0.0, 0.0))
+
     def test_resolve_spatial_spec_accepts_explicit_effect_layer_descriptor(self) -> None:
         mapper = SpatialMapper(enabled=True)
         layer = SpatialEffectLayer(
@@ -446,6 +494,57 @@ class SpatialMapperTests(unittest.TestCase):
         self.assertAlmostEqual(spec.effect_layer.duration_s, 0.25)
         self.assertAlmostEqual(spec.effect_layer.speed_units_per_second, 0.5)
         self.assertAlmostEqual(spec.effect_layer.thickness, 0.3)
+
+    def test_effect_layer_is_inactive_after_its_duration(self) -> None:
+        mapper = SpatialMapper(enabled=True)
+        spec = mapper.resolve_spatial_spec(
+            _intent(mode=EffectMode.AMBIENT),
+            params={
+                "layer_category": "static",
+                "spatial_mode": "wash",
+                "duration_s": 0.25,
+                "color_bias": "#44ccff",
+            },
+        )
+        placement = DevicePlacement(x=0.0, y=0.0, z=0.0)
+
+        active = mapper.sample_point(
+            0.249,
+            placement,
+            _intent(mode=EffectMode.AMBIENT),
+            spec,
+        )
+        expired = mapper.sample_point(
+            0.25,
+            placement,
+            _intent(mode=EffectMode.AMBIENT),
+            spec,
+        )
+
+        self.assertGreater(active.intensity_scale, 0.0)
+        self.assertEqual(active.color_override, "#44ccff")
+        self.assertEqual(expired.intensity_scale, 0.0)
+        self.assertIsNone(expired.color_override)
+
+    def test_effect_layer_is_inactive_before_existing_time_offset(self) -> None:
+        mapper = SpatialMapper(enabled=True)
+        spec = mapper.resolve_spatial_spec(
+            _intent(mode=EffectMode.AMBIENT),
+            params={
+                "layer_category": "static",
+                "spatial_mode": "wash",
+                "time_offset_s": 1.0,
+            },
+        )
+
+        sample = mapper.sample_point(
+            0.5,
+            DevicePlacement(x=0.0, y=0.0, z=0.0),
+            _intent(mode=EffectMode.AMBIENT),
+            spec,
+        )
+
+        self.assertEqual(sample.intensity_scale, 0.0)
 
     def test_resolve_spatial_layers_accepts_effect_layer_descriptor(self) -> None:
         mapper = SpatialMapper(enabled=True)

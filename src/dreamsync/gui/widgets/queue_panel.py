@@ -2619,7 +2619,7 @@ def build_queue_panel(qt_modules):
     show_editor_buttons.addStretch(1)
     show_editor_layout.addLayout(show_editor_buttons)
 
-    show_cues_table = QtWidgets.QTableWidget(0, 31)
+    show_cues_table = QtWidgets.QTableWidget(0, 19)
     show_cues_table.setObjectName("showCuesTable")
     show_cues_table.setHorizontalHeaderLabels(
         [
@@ -2631,25 +2631,13 @@ def build_queue_panel(qt_modules):
             "Speed",
             "Transition",
             "Trans Beats",
-            "Wave Rate",
-            "Width",
-            "When",
             "Pan Follow",
             "Int Boost",
-            "Instrument",
-            "Confidence",
-            "EQ Band",
-            "Spatial",
+            "Origin",
+            "Direction",
             "Color Bias",
-            "Extra",
             "Intensity Start",
-            "Layer Category",
-            "Layer Target",
-            "Layer Trigger",
-            "Layer Falloff",
-            "Layer Thickness",
-            "Layer Speed",
-            "Layer Priority",
+            "Layers",
             "Target Groups",
             "Group Match",
             "Exclude Groups",

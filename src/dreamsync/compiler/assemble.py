@@ -11,6 +11,7 @@ from dreamsync.analyzer.phrases import Phrase
 from dreamsync.compiler.arc import ArcWeight
 from dreamsync.compiler.treatments import Treatment
 from dreamsync.compiler.transitions import TransitionPlan
+from dreamsync.color_utils import nearest_palette_color
 from dreamsync.show.models import ShowCue, ShowTimeline
 
 logger = logging.getLogger(__name__)
@@ -378,6 +379,10 @@ class TimelineAssembler:
 
         configured_eq_routes = self._normalize_eq_routes(params.get("eq_routes"))
         active_eq_routes = self._resolve_active_eq_routes(phrase, events_at_phrase, params)
+        active_eq_routes = self._align_route_color_biases(
+            active_eq_routes,
+            color_palette,
+        )
         if active_eq_routes:
             active_keys = {
                 (str(route.get("band", "")), str(route.get("when", "")))
@@ -395,6 +400,10 @@ class TimelineAssembler:
             instrument_proxy,
             previous_instrument_proxy,
             params,
+        )
+        active_instrument_routes = self._align_route_color_biases(
+            active_instrument_routes,
+            color_palette,
         )
         if active_instrument_routes:
             active_keys = {
@@ -605,6 +614,23 @@ class TimelineAssembler:
             existing.update(route)
             merged[key] = existing
         return [merged[key] for key in order if key in merged]
+
+    @staticmethod
+    def _align_route_color_biases(
+        routes: list[dict],
+        color_palette: tuple[str, ...],
+    ) -> list[dict]:
+        """Keep compiled route accents inside the authoritative selected palette."""
+        aligned_routes: list[dict] = []
+        for route in routes:
+            aligned = dict(route)
+            if aligned.get("color_bias") is not None:
+                aligned["color_bias"] = nearest_palette_color(
+                    str(aligned["color_bias"]),
+                    color_palette,
+                )
+            aligned_routes.append(aligned)
+        return aligned_routes
 
     @staticmethod
     def _apply_route_intensity(intensity: float, routes: list[dict]) -> float:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from dreamsync.gui.services.device_discovery_service import (
     DeviceDiscoveryService,
     DeviceTestSpec,
@@ -34,6 +36,7 @@ class FakeBleAdapter:
         self.config = config
         self.started = False
         self.stopped = False
+        self.waited_for_connection = False
         self.colors: list[tuple[int, int, int, int]] = []
         FakeBleAdapter.instances.append(self)
 
@@ -42,6 +45,10 @@ class FakeBleAdapter:
 
     def stop(self):
         self.stopped = True
+
+    def wait_until_connected(self, timeout=None):
+        self.waited_for_connection = True
+        return True
 
     def send_color(self, r, g, b, brightness=100):
         self.colors.append((r, g, b, brightness))
@@ -139,6 +146,92 @@ def test_merge_with_config_retains_configured_devices_not_seen_by_scan(tmp_path:
     assert entries[0].source == "lan"
     assert entries[0].assigned is True
     assert entries[0].connected is False
+
+
+def test_direct_probe_recovers_multicast_missing_lan_and_collapses_ble_alias(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "devices.yaml"
+    save_device_config(
+        config_path,
+        [
+            DeviceConfig(
+                name="Blinds strip (H612F)",
+                address="10.126.166.155",
+                type="lan",
+            )
+        ],
+    )
+    service = DeviceDiscoveryService(
+        lan_direct_probe=lambda ips, timeout: [
+            GoveeDevice(
+                ip="10.126.166.155",
+                sku="H612F",
+                device_id="39:8A:DE:B6:43:46:7C:3F",
+                raw={},
+            )
+        ]
+    )
+    entries = service.merge_with_config(
+        [
+            DiscoveredDeviceEntry(
+                key="ble:DE:B6:43:46:7C:3F",
+                source="ble",
+                name="Govee_H612F_7C3F",
+                address="DE:B6:43:46:7C:3F",
+                rssi=-59,
+            )
+        ],
+        config_path,
+    )
+
+    entries = service.probe_configured_lan(entries)
+    entries = service.collapse_transport_aliases(entries, config_path)
+
+    assert len(entries) == 1
+    assert entries[0].address == "10.126.166.155"
+    assert entries[0].connected is True
+    assert entries[0].device_id.endswith("DE:B6:43:46:7C:3F")
+
+
+def test_transport_alias_collapse_preserves_explicit_ble_fallback(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "devices.yaml"
+    ble_address = "DD:6E:05:86:6A:53"
+    save_device_config(
+        config_path,
+        [
+            DeviceConfig(name="Couch LAN", address="10.126.166.180", type="lan"),
+            DeviceConfig(name="Couch BLE", address=ble_address, type="ble"),
+        ],
+    )
+    service = DeviceDiscoveryService()
+    entries = service.merge_with_config(
+        [
+            DiscoveredDeviceEntry(
+                key="lan:10.126.166.180",
+                source="lan",
+                name="H612F",
+                address="10.126.166.180",
+                device_id="39:8A:DD:6E:05:86:6A:53",
+            ),
+            DiscoveredDeviceEntry(
+                key=f"ble:{ble_address}",
+                source="ble",
+                name="Govee_H612F_6A53",
+                address=ble_address,
+            ),
+        ],
+        config_path,
+    )
+
+    collapsed = service.collapse_transport_aliases(entries, config_path)
+
+    assert {entry.address for entry in collapsed} == {
+        "10.126.166.180",
+        ble_address,
+    }
 
 
 def test_assignment_to_config_defaults_and_spatial_fields() -> None:
@@ -276,8 +369,37 @@ def test_identify_ble_starts_flashes_blue_and_stops() -> None:
     assert adapter.config.protocol == BleProtocol.BULB
     assert adapter.started is True
     assert adapter.stopped is True
+    assert adapter.waited_for_connection is True
     assert adapter.colors[0] == (0, 0, 255, 100)
     assert adapter.colors[-1] == (0, 0, 0, 100)
+
+
+def test_identify_ble_reports_advertised_but_unwritable_device() -> None:
+    class UnreadyBleAdapter(FakeBleAdapter):
+        def wait_until_connected(self, timeout=None):
+            self.waited_for_connection = True
+            return False
+
+    service = DeviceDiscoveryService(
+        ble_adapter_factory=UnreadyBleAdapter,
+        sleep_fn=lambda seconds: None,
+    )
+
+    with pytest.raises(RuntimeError, match="advertised.*writable GATT"):
+        service.identify(
+            DiscoveredDeviceEntry(
+                key="ble:aa:bb",
+                source="ble",
+                name="Lamp",
+                address="aa:bb",
+            ),
+            seconds=0.2,
+            protocol="segment",
+        )
+
+    adapter = FakeBleAdapter.instances[-1]
+    assert adapter.stopped is True
+    assert adapter.colors == []
 
 
 def test_advanced_lan_walk_test_is_bounded_scaled_and_forces_off() -> None:

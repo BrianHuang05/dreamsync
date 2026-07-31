@@ -707,7 +707,14 @@ def test_show_service_retint_preserves_cues_and_explicit_palette_overrides():
                 color_palette=original_palette,
                 intensity=0.7,
                 speed=1.4,
-                params={"gradient_colors": original_palette, "effect": "wave"},
+                params={
+                    "gradient_colors": original_palette,
+                    "effect": "wave",
+                    "active_instrument_routes": [
+                        {"instrument": "percussive", "color_bias": "#ffd07a"},
+                    ],
+                    "scene_layers": [{"color_bias": "#ffd07a"}],
+                },
                 transition="fade",
                 transition_beats=2,
             ),
@@ -729,6 +736,14 @@ def test_show_service_retint_preserves_cues_and_explicit_palette_overrides():
 
     assert retinted.cues[0].color_palette == replacement_palette
     assert retinted.cues[0].params["gradient_colors"] == replacement_palette
+    assert (
+        retinted.cues[0].params["active_instrument_routes"][0]["color_bias"]
+        in replacement_palette
+    )
+    assert (
+        retinted.cues[0].params["scene_layers"][0]["color_bias"]
+        in replacement_palette
+    )
     assert retinted.cues[0].t == timeline.cues[0].t
     assert retinted.cues[0].intensity == timeline.cues[0].intensity
     assert retinted.cues[0].params["effect"] == "wave"
