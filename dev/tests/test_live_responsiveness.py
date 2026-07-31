@@ -158,6 +158,42 @@ def test_reactive_live_is_capture_only_and_reports_bounded_overflow() -> None:
     assert states[-1]["downbeat"] is states[-1]["meter_downbeat"]
 
 
+def test_raw_visualizer_runs_without_tempo_detection() -> None:
+    fake_sd = _CaptureOnlySoundDevice()
+    adapter = _RecordingAdapter()
+    states: list[dict] = []
+
+    with (
+        patch("dreamsync.live._require_sounddevice", return_value=fake_sd),
+        patch(
+            "dreamsync.live.LiveBpmEstimator.update",
+            autospec=True,
+        ) as bpm_update,
+    ):
+        logs, summary = run_live_to_govee(
+            adapter,
+            duration_seconds=0.08,
+            sample_rate=44_100,
+            channels=1,
+            frame_size=64,
+            hop_size=16,
+            blocksize=64,
+            auto_cycle=False,
+            raw_visualizer=True,
+            state_callback=states.append,
+        )
+
+    bpm_update.assert_not_called()
+    assert logs
+    assert summary["raw_visualizer"] is True
+    assert summary["beats"] == 0
+    assert states
+    assert states[-1]["raw_visualizer"] is True
+    assert states[-1]["raw_visualizer_levels"]
+    assert adapter.params
+    assert adapter.params[-1]["raw_visualizer_levels"]
+
+
 def test_manual_downbeat_nudge_applies_on_next_detected_beat() -> None:
     fake_sd = _CaptureOnlySoundDevice()
     states: list[dict] = []

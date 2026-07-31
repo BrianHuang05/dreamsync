@@ -5024,7 +5024,11 @@ def run_live_to_govee(
                     bass=sf.bass,
                     bass_ratio=sf.bass_ratio,
                     spectral_flux=sf.spectral_flux,
-                    onset_strength=bpm_estimator.last_onset,
+                    onset_strength=(
+                        0.0
+                        if raw_frequency_visualizer is not None
+                        else bpm_estimator.last_onset
+                    ),
                     centroid=sf.centroid,
                     pan_center=last_pan.pan_center,
                     pan_width=last_pan.pan_width,
