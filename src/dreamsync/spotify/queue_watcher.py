@@ -60,6 +60,9 @@ class SpotifyQueueWatcher:
         self._on_track_changed = on_track_changed
         self._on_playback_state_changed = on_playback_state_changed
         self._on_queue_updated = on_queue_updated
+        self._track_subscribers: list[Callable[[SpotifyTrack, SpotifyTrack | None], None]] = []
+        self._state_subscribers: list[Callable[[PlaybackState], None]] = []
+        self._queue_subscribers: list[Callable[[QueueSnapshot], None]] = []
 
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -104,6 +107,41 @@ class SpotifyQueueWatcher:
                 "auth_failed": self._auth_failed,
                 "consecutive_errors": self._consecutive_errors,
             }
+
+    def subscribe_track_changed(self, callback: Callable[[SpotifyTrack, SpotifyTrack | None], None]):
+        """Register a track callback and return an idempotent unsubscribe function."""
+        return self._subscribe(self._track_subscribers, callback)
+
+    def subscribe_playback_state(self, callback: Callable[[PlaybackState], None]):
+        """Register a playback-state callback and return an unsubscribe function."""
+        return self._subscribe(self._state_subscribers, callback)
+
+    def subscribe_queue_updated(self, callback: Callable[[QueueSnapshot], None]):
+        """Register a queue callback and return an unsubscribe function."""
+        return self._subscribe(self._queue_subscribers, callback)
+
+    def _subscribe(self, subscribers: list, callback: Callable):
+        with self._lock:
+            subscribers.append(callback)
+        removed = False
+
+        def unsubscribe() -> None:
+            nonlocal removed
+            with self._lock:
+                if not removed and callback in subscribers:
+                    subscribers.remove(callback)
+                removed = True
+
+        return unsubscribe
+
+    def _notify(self, subscribers: list, *args) -> None:
+        with self._lock:
+            callbacks = tuple(subscribers)
+        for callback in callbacks:
+            try:
+                callback(*args)
+            except Exception as exc:
+                _logger.warning("Spotify watcher subscriber error: %s", exc)
 
     # -- Lifecycle -----------------------------------------------------------
 
@@ -197,6 +235,7 @@ class SpotifyQueueWatcher:
                 self._on_playback_state_changed(state)
             except Exception as exc:
                 _logger.warning("on_playback_state_changed callback error: %s", exc)
+        self._notify(self._state_subscribers, state)
 
         # Track change detection
         new_track = state.track
@@ -214,6 +253,7 @@ class SpotifyQueueWatcher:
                     self._on_track_changed(new_track, old_track)
                 except Exception as exc:
                     _logger.warning("on_track_changed callback error: %s", exc)
+            self._notify(self._track_subscribers, new_track, old_track)
             return True
 
         # Update current track even if unchanged (could be None → None)
@@ -237,3 +277,4 @@ class SpotifyQueueWatcher:
                 self._on_queue_updated(snapshot)
             except Exception as exc:
                 _logger.warning("on_queue_updated callback error: %s", exc)
+        self._notify(self._queue_subscribers, snapshot)

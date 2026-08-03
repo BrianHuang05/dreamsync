@@ -36,3 +36,25 @@ class CaptureSettings:
             errors.append("Capture frame, hop, and block sizes must be greater than 0.")
         return tuple(errors)
 
+
+@dataclass(frozen=True)
+class LearnedLiveSettings:
+    enabled: bool = False
+    learning_enabled: bool = True
+    profile_path: str = ""
+    capture_device_pattern: str = "CABLE Output"
+    mp3_retention_policy: str = "keep_recent"
+    retained_mp3_limit: int = 10
+    diagnostic_logging: bool = False
+
+    def validate(self) -> tuple[str, ...]:
+        errors: list[str] = []
+        if self.mp3_retention_policy not in {
+            "keep_all", "keep_recent", "delete_after_verified_compile"
+        }:
+            errors.append("Learned-live MP3 retention policy is invalid.")
+        if self.retained_mp3_limit < 0:
+            errors.append("Learned-live retained MP3 limit must be 0 or greater.")
+        if self.learning_enabled and not self.capture_device_pattern.strip():
+            errors.append("Learned-live capture device pattern is required.")
+        return tuple(errors)

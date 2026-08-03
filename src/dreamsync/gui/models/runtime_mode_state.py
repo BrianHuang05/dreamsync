@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .capture_settings import CaptureSettings
+from .capture_settings import CaptureSettings, LearnedLiveSettings
 from .reactive_settings import ReactiveSettings
 from .runtime_routing_state import RuntimeRoutingState
 
@@ -49,6 +49,14 @@ class RuntimeModeState:
     capture_state: str = "off"
     pipeline_state: str = "idle"
     spotify_state: str = "off"
+    learned_live_strategy: str = "waiting"
+    learned_live_badge: str = ""
+    learning_state: str = "idle"
+    learning_reason: str = ""
+    learned_library_count: int = 0
+    learned_cache_hits: int = 0
+    learned_cache_misses: int = 0
+    background_learning_items: tuple[str, ...] = field(default_factory=tuple)
     ready_queue_count: int = 0
     ready_items: tuple[CapturedShowItem, ...] = field(default_factory=tuple)
     output_lease: OutputLease = field(default_factory=OutputLease)
@@ -63,6 +71,7 @@ class RuntimeModeState:
     input_device: str = ""
     routing_state: RuntimeRoutingState = field(default_factory=RuntimeRoutingState)
     capture_settings: CaptureSettings = field(default_factory=CaptureSettings)
+    learned_live_settings: LearnedLiveSettings = field(default_factory=LearnedLiveSettings)
     reactive_settings: ReactiveSettings = field(default_factory=ReactiveSettings)
     recent_saved_shows: tuple[str, ...] = field(default_factory=tuple)
     status_message: str = ""

@@ -1047,6 +1047,22 @@ class CaptureOrchestrator:
             song_title=boundary_meta.get("song_title") if boundary_meta else None,
             artist=boundary_meta.get("artist") if boundary_meta else None,
             album=boundary_meta.get("album") if boundary_meta else None,
+            spotify_track_id=boundary_meta.get("spotify_track_id") if boundary_meta else None,
+            spotify_uri=boundary_meta.get("spotify_uri") if boundary_meta else None,
+            expected_duration_seconds=(
+                boundary_meta.get("expected_duration_seconds") if boundary_meta else None
+            ),
+            observed_start_progress_seconds=float(
+                boundary_meta.get("observed_start_progress_seconds", 0.0)
+                if boundary_meta else 0.0
+            ),
+            observed_end_progress_seconds=(
+                boundary_meta.get("observed_end_progress_seconds") if boundary_meta else None
+            ),
+            seek_detected=bool(boundary_meta.get("seek_detected", False)) if boundary_meta else False,
+            skipped=bool(boundary_meta.get("skipped", False)) if boundary_meta else False,
+            paused=bool(boundary_meta.get("paused", False)) if boundary_meta else False,
+            capture_restarts=int(boundary_meta.get("capture_restarts", 0)) if boundary_meta else 0,
             output_file=output_file,
             gaps=gaps,
         )

@@ -23,6 +23,15 @@ class SegmentMetadata:
     song_title: str | None = None
     artist: str | None = None
     album: str | None = None
+    spotify_track_id: str | None = None
+    spotify_uri: str | None = None
+    expected_duration_seconds: float | None = None
+    observed_start_progress_seconds: float = 0.0
+    observed_end_progress_seconds: float | None = None
+    seek_detected: bool = False
+    skipped: bool = False
+    paused: bool = False
+    capture_restarts: int = 0
     planned_start_time: str | None = None
     planned_end_time: str | None = None
     source_timing_data: dict | None = None
@@ -94,6 +103,15 @@ class MetadataWriter:
             "songTitle": meta.song_title,
             "artist": meta.artist,
             "album": meta.album,
+            "spotifyTrackId": meta.spotify_track_id,
+            "spotifyUri": meta.spotify_uri,
+            "expectedDurationSeconds": meta.expected_duration_seconds,
+            "observedStartProgressSeconds": meta.observed_start_progress_seconds,
+            "observedEndProgressSeconds": meta.observed_end_progress_seconds,
+            "seekDetected": meta.seek_detected,
+            "skipped": meta.skipped,
+            "paused": meta.paused,
+            "captureRestarts": meta.capture_restarts,
             "segmentIndex": meta.segment_index,
             "sampleRate": meta.sample_rate,
             "channels": meta.channels,

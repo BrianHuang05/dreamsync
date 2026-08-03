@@ -2,7 +2,8 @@
 
 ## Status
 
-Planned. This document defines the implementation for the fourth runtime mode:
+Implemented (automated verification complete; real-device MVP validation handed
+off for manual testing). This document defines the implementation for the fourth runtime mode:
 Spotify-connected live playback that uses a saved compiled show when one exists,
 falls back to Reactive Live immediately when one does not, and learns missing
 tracks by capturing and compiling them in the background.
@@ -917,4 +918,3 @@ The implementation is complete when all of the following are true:
 - Replacing both input readers before the MVP produces evidence that it is
   necessary.
 - Removing the existing delayed replay pipeline.
-

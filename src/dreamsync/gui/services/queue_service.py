@@ -146,6 +146,9 @@ class QueueService:
             "song_title": new_track.name,
             "artist": new_track.artist,
             "album": new_track.album,
+            "spotify_track_id": new_track.track_id,
+            "spotify_uri": new_track.uri,
+            "expected_duration_seconds": new_track.duration_ms / 1000.0,
         }
         timing_data: dict[str, Any] = {
             "song_durations": [new_track.duration_ms / 1000.0],
@@ -158,6 +161,9 @@ class QueueService:
                 "song_title": old_track.name,
                 "artist": old_track.artist,
                 "album": old_track.album,
+                "spotify_track_id": old_track.track_id,
+                "spotify_uri": old_track.uri,
+                "expected_duration_seconds": old_track.duration_ms / 1000.0,
             }
         return timing_data
 
@@ -184,15 +190,21 @@ class QueueService:
                 "song_title": track.name,
                 "artist": track.artist,
                 "album": track.album,
+                "spotify_track_id": track.track_id,
+                "spotify_uri": track.uri,
+                "expected_duration_seconds": track.duration_ms / 1000.0,
             }
             for track in tracks
         ]
+        progress_seconds = (
+            getattr(playback_state, "progress_ms", 0) / 1000.0
+            if playback_state is not None else 0.0
+        )
+        songs[0]["observed_start_progress_seconds"] = progress_seconds
         return {
             "song_durations": [track.duration_ms / 1000.0 for track in tracks],
             "current_playback_time": (
-                getattr(playback_state, "progress_ms", 0) / 1000.0
-                if playback_state is not None
-                else 0.0
+                progress_seconds
             ),
             "current_song": songs[0],
             "songs": songs,

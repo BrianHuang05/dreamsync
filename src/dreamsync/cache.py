@@ -25,6 +25,8 @@ if TYPE_CHECKING:
     from dreamsync.analyzer.models import SongStructure
 
 logger = logging.getLogger(__name__)
+SHOW_SCHEMA_VERSION = 1
+COMPILER_COMPATIBILITY_VERSION = 1
 
 # ---------------------------------------------------------------------------
 # D4.1 — Profile Fingerprint
@@ -276,6 +278,8 @@ class ShowCache:
         data["metadata"]["_cache_profile_name"] = profile.name if profile else "(built-in defaults)"
         data["metadata"]["_cache_profile_fp"] = profile_fingerprint(profile)
         data["metadata"]["_cache_compiled_at"] = datetime.now(timezone.utc).isoformat()
+        data["metadata"]["_show_schema_version"] = SHOW_SCHEMA_VERSION
+        data["metadata"]["_compiler_version"] = COMPILER_COMPATIBILITY_VERSION
 
         path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -307,12 +311,34 @@ def sidecar_track_id(song_title: str, artist: str) -> str:
     return f"sidecar_{hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]}"
 
 
+def spotify_track_cache_id(track_id: str) -> str:
+    """Return the canonical cache key for a Spotify track identifier."""
+    value = str(track_id or "").strip()
+    if not value:
+        raise ValueError("Spotify track ID is empty")
+    return _sanitize_track_id(f"spotify_{value}")
+
+
+def fallback_track_id(song_title: str, artist: str, duration_seconds: float) -> str:
+    """Versioned metadata fallback that distinguishes materially different edits."""
+    title = song_title.strip().lower()
+    art = artist.strip().lower()
+    if not title and not art:
+        raise ValueError("Both song_title and artist are empty/whitespace")
+    duration_bucket = max(0, round(float(duration_seconds) / 5.0))
+    key = f"v2:{art}:{title}:{duration_bucket}"
+    return f"fallback_{hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]}"
+
+
 def track_id_for_capture(capture_track) -> str:
     """Compute a cache track ID for a CaptureTrack.
 
-    Uses sidecar metadata (title+artist) when available for cross-capture
+    Uses Spotify identity when available, then sidecar metadata for cross-capture
     cache stability. Falls back to path-based ID otherwise.
     """
+    spotify_id = getattr(capture_track, "spotify_track_id", None)
+    if spotify_id:
+        return spotify_track_cache_id(spotify_id)
     if capture_track.song_title and capture_track.artist:
         return sidecar_track_id(capture_track.song_title, capture_track.artist)
     return path_based_track_id(capture_track.mp3_path)

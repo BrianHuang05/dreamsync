@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 from dreamsync.cache import ShowCache, path_based_track_id
+from dreamsync.spotify.learned_track import LearnedTrackStore
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,9 @@ class DirectoryStats:
 class StorageSnapshot:
     cache: DirectoryStats
     captures: DirectoryStats
+    learned: DirectoryStats = field(
+        default_factory=lambda: DirectoryStats(Path("."), 0, 0)
+    )
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,10 @@ class StorageService:
     def snapshot(self, capture_dir: Path | str) -> StorageSnapshot:
         cache = ShowCache(self._cache_dir).stats()
         captures = self.capture_preview(capture_dir)
+        learned_files = tuple(
+            path for directory in self._cache_dir.glob("spotify_*")
+            if directory.is_dir() for path in directory.iterdir() if path.is_file()
+        )
         return StorageSnapshot(
             cache=DirectoryStats(
                 path=cache.cache_dir,
@@ -55,7 +63,48 @@ class StorageService:
                 file_count=len(captures.files),
                 total_bytes=captures.total_bytes,
             ),
+            learned=DirectoryStats(
+                path=self._cache_dir,
+                file_count=len(learned_files),
+                total_bytes=sum(path.stat().st_size for path in learned_files),
+            ),
         )
+
+    def learned_recovery_items(self) -> tuple[Path, ...]:
+        return LearnedTrackStore(self._cache_dir).recovery_items()
+
+    def delete_retained_source(self, source: Path | str, capture_dir: Path | str) -> None:
+        source_path = Path(source).expanduser().resolve()
+        root = self._safe_root(capture_dir, label="capture")
+        if source_path.parent != root:
+            raise ValueError("Retained source is outside the configured capture directory.")
+        if source_path.suffix.lower() != ".mp3":
+            raise ValueError("Only retained MP3 source files can be deleted.")
+        source_path.unlink(missing_ok=True)
+        source_path.with_suffix(".json").unlink(missing_ok=True)
+
+    def delete_learned_entry(self, track_id: str, profile=None) -> int:
+        from dreamsync.cache import spotify_track_cache_id
+
+        key = spotify_track_cache_id(track_id)
+        self._safe_track_id(key)
+        cache = ShowCache(self._cache_dir)
+        if profile is not None:
+            path = cache.entry_path(key, profile)
+            if path.exists():
+                path.unlink()
+                return 1
+            return 0
+        directory = (self._cache_dir / key).resolve()
+        if directory.parent != self._cache_dir or not directory.is_dir():
+            return 0
+        count = 0
+        for path in directory.iterdir():
+            if path.is_file():
+                path.unlink()
+                count += 1
+        directory.rmdir()
+        return count
 
     def clear_all_cache(self) -> int:
         self._safe_root(self._cache_dir, label="cache")

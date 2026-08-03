@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from dreamsync.gui.models.capture_settings import CaptureSettings
+from dreamsync.gui.models.capture_settings import CaptureSettings, LearnedLiveSettings
 from dreamsync.gui.models.reactive_settings import ReactiveSettings
 from dreamsync.raw_visualizer import DEFAULT_RAW_VISUALIZER_GRADIENT
 
@@ -74,6 +74,7 @@ class GuiSettings:
     raw_visualizer_palette_interval: float = 16.0
     show_compile_seed: int | None = None
     capture_settings: CaptureSettings = field(default_factory=CaptureSettings)
+    learned_live_settings: LearnedLiveSettings = field(default_factory=LearnedLiveSettings)
     reactive_settings: ReactiveSettings = field(default_factory=ReactiveSettings)
 
 
@@ -92,6 +93,7 @@ class GuiSettingsStore:
             return GuiSettings()
         raw = json.loads(self._path.read_text(encoding="utf-8"))
         capture_raw = raw.get("capture_settings", {}) or {}
+        learned_raw = raw.get("learned_live_settings", {}) or {}
         reactive_raw = raw.get("reactive_settings", {}) or {}
         rotation_profiles = tuple(
             str(value) for value in reactive_raw.get("rotation_profiles", ())
@@ -137,7 +139,7 @@ class GuiSettingsStore:
             live_start_mode=(
                 str(raw.get("live_start_mode", "queue"))
                 if str(raw.get("live_start_mode", "queue"))
-                in {"queue", "reactive", "raw_visualizer"}
+                in {"queue", "reactive", "raw_visualizer", "spotify_learned_live"}
                 else "queue"
             ),
             raw_visualizer_noise_threshold=float(
@@ -257,6 +259,19 @@ class GuiSettingsStore:
                 ),
                 purge_after_playback=bool(capture_raw.get("purge_after_playback", False)),
                 debug_pipeline=bool(capture_raw.get("debug_pipeline", False)),
+            ),
+            learned_live_settings=LearnedLiveSettings(
+                enabled=bool(learned_raw.get("enabled", False)),
+                learning_enabled=bool(learned_raw.get("learning_enabled", True)),
+                profile_path=str(learned_raw.get("profile_path", "")),
+                capture_device_pattern=str(
+                    learned_raw.get("capture_device_pattern", "CABLE Output")
+                ),
+                mp3_retention_policy=str(
+                    learned_raw.get("mp3_retention_policy", "keep_recent")
+                ),
+                retained_mp3_limit=int(learned_raw.get("retained_mp3_limit", 10)),
+                diagnostic_logging=bool(learned_raw.get("diagnostic_logging", False)),
             ),
             reactive_settings=ReactiveSettings(
                 render_mode=str(reactive_raw.get("render_mode", "scroll")),

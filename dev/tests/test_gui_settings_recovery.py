@@ -6,9 +6,30 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from dreamsync.gui.settings import GuiSettingsStore
+from dreamsync.gui.settings import GuiSettings
+from dreamsync.gui.models.capture_settings import LearnedLiveSettings
 
 
 class GuiSettingsRecoveryTests(unittest.TestCase):
+    def test_learned_live_settings_round_trip(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "gui-settings.json"
+            store = GuiSettingsStore(path)
+            expected = LearnedLiveSettings(
+                enabled=True,
+                learning_enabled=False,
+                capture_device_pattern="Loopback",
+                mp3_retention_policy="delete_after_verified_compile",
+                retained_mp3_limit=3,
+                diagnostic_logging=True,
+            )
+            store.save(GuiSettings(
+                live_start_mode="spotify_learned_live",
+                learned_live_settings=expected,
+            ))
+            loaded = store.load()
+        self.assertEqual(loaded.learned_live_settings, expected)
+        self.assertEqual(loaded.live_start_mode, "spotify_learned_live")
     def test_incomplete_saved_rotation_recovers_to_active_profile(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "gui-settings.json"

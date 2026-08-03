@@ -1743,6 +1743,9 @@ def main(argv: list[str] | None = None) -> int:
                                 "song_title": new.name,
                                 "artist": new.artist,
                                 "album": new.album,
+                                "spotify_track_id": new.track_id,
+                                "spotify_uri": new.uri,
+                                "expected_duration_seconds": new.duration_ms / 1000.0,
                             },
                         }
                         if old is not None:
@@ -1750,6 +1753,9 @@ def main(argv: list[str] | None = None) -> int:
                                 "song_title": old.name,
                                 "artist": old.artist,
                                 "album": old.album,
+                                "spotify_track_id": old.track_id,
+                                "spotify_uri": old.uri,
+                                "expected_duration_seconds": old.duration_ms / 1000.0,
                             }
                         capture_orchestrator.on_track_change(timing_data)
                     except Exception:
@@ -1783,6 +1789,9 @@ def main(argv: list[str] | None = None) -> int:
                             "song_title": current.name,
                             "artist": current.artist,
                             "album": current.album,
+                            "spotify_track_id": current.track_id,
+                            "spotify_uri": current.uri,
+                            "expected_duration_seconds": current.duration_ms / 1000.0,
                         },
                     }
                 capture_orchestrator.start_periodic_timing(_fetch_timing)

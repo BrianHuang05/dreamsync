@@ -541,6 +541,7 @@ def create_main_window(
     runtime_supervisor.set_selected_live_input_device(settings.selected_live_input_device_id)
     runtime_supervisor.set_capture_settings(settings.capture_settings)
     runtime_supervisor.set_reactive_settings(settings.reactive_settings)
+    runtime_supervisor.set_learned_live_settings(settings.learned_live_settings)
     runtime_supervisor.set_baked_playback_mode(settings.baked_playback_mode)
     runtime_supervisor.set_live_loopback_enabled(settings.live_loopback_enabled)
     runtime_supervisor.set_recent_saved_shows(settings.recent_saved_show_paths)
@@ -907,6 +908,18 @@ def create_main_window(
     queue_panel.startup_live_mode_combo.setCurrentIndex(
         startup_mode_index if startup_mode_index >= 0 else 0
     )
+    queue_panel.spotify_learning_enabled_check.setChecked(
+        settings.learned_live_settings.learning_enabled
+    )
+    retention_index = queue_panel.spotify_retention_combo.findData(
+        settings.learned_live_settings.mp3_retention_policy
+    )
+    queue_panel.spotify_retention_combo.setCurrentIndex(
+        retention_index if retention_index >= 0 else 0
+    )
+    queue_panel.spotify_retained_limit_spin.setValue(
+        settings.learned_live_settings.retained_mp3_limit
+    )
     raw_points = tuple(settings.raw_visualizer_gradient_points)
     queue_panel.raw_visualizer_point_count_spin.setValue(
         max(1, min(5, len(raw_points) or 3))
@@ -1251,7 +1264,7 @@ def create_main_window(
         "value": (
             settings.live_start_mode
             if settings.live_start_mode
-            in {"queue", "reactive", "raw_visualizer"}
+            in {"queue", "reactive", "raw_visualizer", "spotify_learned_live"}
             else "queue"
         )
     }
@@ -7539,7 +7552,8 @@ def create_main_window(
             queue_panel.reactive_effect_tempo_double_button,
         ):
             tempo_control.setEnabled(
-                active_reactive and not raw_visualizer_mode
+                (active_reactive or live_mode_state["value"] == "reactive")
+                and not raw_visualizer_mode
             )
         queue_panel.reactive_chord_history_group.setVisible(
             queue_panel.reactive_chord_panel_check.isChecked()
@@ -8173,7 +8187,7 @@ def create_main_window(
     def _set_live_mode(mode: str, *, announce: bool = True) -> None:  # pragma: no cover - Qt only
         selected_mode = (
             mode
-            if mode in {"queue", "reactive", "raw_visualizer"}
+            if mode in {"queue", "reactive", "raw_visualizer", "spotify_learned_live"}
             else "queue"
         )
         live_mode_state["value"] = selected_mode
@@ -8188,7 +8202,7 @@ def create_main_window(
             blocker = QtCore.QSignalBlocker(button)
             button.setChecked(button_mode == selected_mode)
             del blocker
-        queue_visible = selected_mode == "queue"
+        queue_visible = selected_mode in {"queue", "spotify_learned_live"}
         queue_panel.live_queue_toolbar.setVisible(queue_visible)
         queue_panel.live_queue_group.setVisible(queue_visible)
         queue_panel.live_palette_group.setVisible(queue_visible)
@@ -8201,7 +8215,9 @@ def create_main_window(
         )
         if queue_visible:
             queue_panel.reactive_mode_status_label.setText(
-                "Reactive settings are ready in Config. Choose Reactive Mode to cue them."
+                "Spotify Live — Learning is ready. Use its Start button below."
+                if selected_mode == "spotify_learned_live"
+                else "Reactive settings are ready in Config. Choose Reactive Mode to cue them."
             )
         else:
             raw_mode = selected_mode == "raw_visualizer"
@@ -8219,16 +8235,25 @@ def create_main_window(
                     else "Reactive mode cued. Press Space to start listening."
                 )
                 if selected_mode != "queue"
-                else "Queue mode selected. Local and Spotify queues are available."
+                else (
+                    "Spotify Live — Learning selected. Start when Spotify is playing."
+                    if selected_mode == "spotify_learned_live"
+                    else "Queue mode selected. Local and Spotify queues are available."
+                )
             )
         _render_queue_state(queue_controller.state)
 
     def _render_queue_state(state: QueueState) -> None:
         selected = state.selected_track
         spotify_available = bool(
-            queue_panel.live_loopback_check.isChecked() and live_mode_state["value"] == "queue"
+            live_mode_state["value"] == "spotify_learned_live"
+            or (
+                queue_panel.live_loopback_check.isChecked()
+                and live_mode_state["value"] == "queue"
+            )
         )
         queue_panel.spotify_group.setVisible(spotify_available)
+        queue_panel.spotify_learning_group.setVisible(spotify_available)
         queue_panel.playlist_label.setText(
             f"Live source: {state.playlist_source_path}" if state.playlist_source_path else "No local queue loaded."
         )
@@ -8291,6 +8316,28 @@ def create_main_window(
 
         if spotify_available:
             queue_panel.spotify_list.clear()
+            queue_panel.spotify_learning_list.clear()
+            if runtime_state is not None and runtime_state.active_output_mode == "spotify_learned_live":
+                if runtime_state.learned_live_badge:
+                    queue_panel.spotify_list.addItem(
+                        f"DreamSync: {runtime_state.learned_live_badge}"
+                    )
+                if runtime_state.learning_state not in {"", "idle"}:
+                    detail = (
+                        f" · {runtime_state.learning_reason}"
+                        if runtime_state.learning_reason else ""
+                    )
+                    queue_panel.spotify_learning_list.addItem(
+                        f"Current job: {runtime_state.learning_state}{detail}"
+                    )
+                for background_item in runtime_state.background_learning_items:
+                    queue_panel.spotify_learning_list.addItem(background_item)
+                queue_panel.spotify_learning_list.addItem(
+                    "Learned Library: "
+                    f"{runtime_state.learned_library_count} tracks · "
+                    f"{runtime_state.learned_cache_hits} hits / "
+                    f"{runtime_state.learned_cache_misses} misses"
+                )
             if state.spotify_current:
                 queue_panel.spotify_list.addItem(f"Now Playing: {state.spotify_current}")
             for item in state.spotify_upcoming:
@@ -8897,6 +8944,45 @@ def create_main_window(
                 spotify_runtime.update(client=None, watcher=None, error=str(exc))
                 queue_controller.set_status(f"Spotify live loopback could not start: {exc}")
         _render_queue_state(queue_controller.state)
+        _render_runtime_state(runtime_supervisor.snapshot())
+
+    def _start_spotify_learned_live() -> None:  # pragma: no cover - Qt only
+        if spotify_runtime.get("watcher") is None:
+            queue_panel.live_loopback_check.setChecked(True)
+            _set_live_loopback_enabled(True)
+        watcher = spotify_runtime.get("watcher")
+        if watcher is None:
+            return
+        try:
+            capture_settings, _reactive = _sync_runtime_settings_from_form()
+            learned_settings = replace(
+                runtime_supervisor.learned_live_settings(),
+                enabled=True,
+                learning_enabled=bool(
+                    queue_panel.spotify_learning_enabled_check.isChecked()
+                ),
+                capture_device_pattern=capture_settings.device_pattern,
+                mp3_retention_policy=str(
+                    queue_panel.spotify_retention_combo.currentData() or "keep_recent"
+                ),
+                retained_mp3_limit=int(queue_panel.spotify_retained_limit_spin.value()),
+            )
+            runtime_supervisor.set_learned_live_settings(learned_settings)
+            raw_config = queue_panel.device_room_config_path_edit.text().strip()
+            runtime_supervisor.start_spotify_learned_live(
+                watcher,
+                capture_dir=Path(capture_settings.capture_dir),
+                config_path=Path(raw_config) if raw_config else None,
+                profile=_current_base_profile(),
+            )
+            queue_controller.set_status("Spotify Live — Learning started.")
+        except Exception as exc:
+            queue_controller.set_status(f"Spotify Live — Learning could not start: {exc}")
+        _render_runtime_state(runtime_supervisor.snapshot())
+
+    def _stop_spotify_learned_live() -> None:  # pragma: no cover - Qt only
+        runtime_supervisor.stop_spotify_learned_live()
+        queue_controller.set_status("Spotify Live — Learning stopped.")
         _render_runtime_state(runtime_supervisor.snapshot())
 
     def _apply_palette_choices(
@@ -9913,8 +9999,10 @@ def create_main_window(
 
     def _set_reactive_cycle_tempo(
         multiplier: float,
+        *,
+        ignore_focus: bool = False,
     ) -> None:  # pragma: no cover - Qt only
-        if _show_text_input_has_focus():
+        if not ignore_focus and _show_text_input_has_focus():
             return
         selected = float(multiplier)
         reactive_cycle_tempo_state["multiplier"] = selected
@@ -11500,6 +11588,12 @@ def create_main_window(
     queue_panel.spotify_skip_button.clicked.connect(_spotify_skip)
     queue_panel.spotify_shuffle_button.clicked.connect(_spotify_toggle_shuffle)
     queue_panel.spotify_add_button.clicked.connect(_spotify_add_to_queue)
+    queue_panel.spotify_learned_live_start_button.clicked.connect(
+        _start_spotify_learned_live
+    )
+    queue_panel.spotify_learned_live_stop_button.clicked.connect(
+        _stop_spotify_learned_live
+    )
     queue_panel.ready_preview_button.clicked.connect(_preview_ready_item)
     queue_panel.ready_play_button.clicked.connect(_play_ready_item_now)
     queue_panel.ready_prioritize_button.clicked.connect(_prioritize_ready_item)
@@ -11612,13 +11706,13 @@ def create_main_window(
     )
     _load_raw_palette_profile(raw_palette_profile_state["path"])
     queue_panel.reactive_cycle_tempo_half_button.clicked.connect(
-        lambda: _set_reactive_cycle_tempo(0.5)
+        lambda: _set_reactive_cycle_tempo(0.5, ignore_focus=True)
     )
     queue_panel.reactive_cycle_tempo_normal_button.clicked.connect(
-        lambda: _set_reactive_cycle_tempo(1.0)
+        lambda: _set_reactive_cycle_tempo(1.0, ignore_focus=True)
     )
     queue_panel.reactive_cycle_tempo_double_button.clicked.connect(
-        lambda: _set_reactive_cycle_tempo(2.0)
+        lambda: _set_reactive_cycle_tempo(2.0, ignore_focus=True)
     )
     queue_panel.reactive_downbeat_nudge_button.clicked.connect(
         _nudge_reactive_downbeat
@@ -11890,6 +11984,7 @@ def create_main_window(
         _set_live_loopback_enabled(True)
 
     def _stop_spotify_loopback_on_close(*_args) -> None:  # pragma: no cover - Qt only
+        runtime_supervisor.stop_spotify_learned_live()
         watcher = spotify_runtime.get("watcher")
         client = spotify_runtime.get("client")
         runtime_supervisor.set_capture_timing_source(None)
@@ -12160,6 +12255,16 @@ def create_main_window(
                 else None
             ),
             capture_settings=capture_settings,
+            learned_live_settings=replace(
+                runtime_supervisor.learned_live_settings(),
+                learning_enabled=bool(
+                    queue_panel.spotify_learning_enabled_check.isChecked()
+                ),
+                mp3_retention_policy=str(
+                    queue_panel.spotify_retention_combo.currentData() or "keep_recent"
+                ),
+                retained_mp3_limit=int(queue_panel.spotify_retained_limit_spin.value()),
+            ),
             reactive_settings=reactive_settings,
         )
 

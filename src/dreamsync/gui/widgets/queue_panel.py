@@ -256,6 +256,8 @@ class QueuePanelWidgets:
     duplicate_show_cue_button: object
     remove_show_cue_button: object
     spotify_list: object
+    spotify_learning_group: object
+    spotify_learning_list: object
     ready_list: object
     ready_preview_button: object
     ready_play_button: object
@@ -291,6 +293,11 @@ class QueuePanelWidgets:
     spotify_shuffle_button: object
     spotify_uri_edit: object
     spotify_add_button: object
+    spotify_learned_live_start_button: object
+    spotify_learned_live_stop_button: object
+    spotify_learning_enabled_check: object
+    spotify_retention_combo: object
+    spotify_retained_limit_spin: object
     live_loopback_check: object
     patch_name_edit: object
     patch_rules_edit: object
@@ -686,6 +693,9 @@ def build_queue_panel(qt_modules):
     startup_live_mode_combo.addItem("Queue", "queue")
     startup_live_mode_combo.addItem("Reactive (cued)", "reactive")
     startup_live_mode_combo.addItem("Raw Visualizer (cued)", "raw_visualizer")
+    startup_live_mode_combo.addItem(
+        "Spotify Live — Learning (experimental)", "spotify_learned_live"
+    )
     startup_live_mode_combo.setToolTip(
         "Chooses the Live screen shown when DreamSync opens. Listening modes are cued but do not start until the action button or Space."
     )
@@ -2575,9 +2585,17 @@ def build_queue_panel(qt_modules):
     spotify_refresh_button = QtWidgets.QPushButton("Refresh")
     spotify_skip_button = QtWidgets.QPushButton("Skip")
     spotify_shuffle_button = QtWidgets.QPushButton("Shuffle")
+    spotify_learned_live_start_button = QtWidgets.QPushButton("Start Live — Learning")
+    spotify_learned_live_start_button.setObjectName("spotifyLearnedLiveStartButton")
+    spotify_learned_live_stop_button = QtWidgets.QPushButton("Stop Live — Learning")
+    spotify_learned_live_stop_button.setObjectName("spotifyLearnedLiveStopButton")
     for button in (spotify_refresh_button, spotify_skip_button, spotify_shuffle_button):
         spotify_actions.addWidget(button)
     spotify_layout.addLayout(spotify_actions)
+    spotify_learning_actions = QtWidgets.QHBoxLayout()
+    spotify_learning_actions.addWidget(spotify_learned_live_start_button)
+    spotify_learning_actions.addWidget(spotify_learned_live_stop_button)
+    spotify_layout.addLayout(spotify_learning_actions)
     spotify_add_row = QtWidgets.QHBoxLayout()
     spotify_uri_edit = QtWidgets.QLineEdit()
     spotify_uri_edit.setPlaceholderText("spotify:track:…")
@@ -2586,6 +2604,32 @@ def build_queue_panel(qt_modules):
     spotify_add_row.addWidget(spotify_add_button)
     spotify_layout.addLayout(spotify_add_row)
     queue_left_layout.addWidget(spotify_group, 2)
+    spotify_learning_group = QtWidgets.QGroupBox("DreamSync Background Learning")
+    spotify_learning_group.setObjectName("spotifyBackgroundLearningGroup")
+    spotify_learning_layout = QtWidgets.QVBoxLayout(spotify_learning_group)
+    spotify_learning_settings = QtWidgets.QHBoxLayout()
+    spotify_learning_enabled_check = QtWidgets.QCheckBox("Learn cache misses")
+    spotify_learning_enabled_check.setObjectName("spotifyLearningEnabledCheck")
+    spotify_retention_combo = QtWidgets.QComboBox()
+    spotify_retention_combo.setObjectName("spotifyRetentionCombo")
+    spotify_retention_combo.addItem("Keep recent MP3s", "keep_recent")
+    spotify_retention_combo.addItem("Keep all MP3s", "keep_all")
+    spotify_retention_combo.addItem(
+        "Delete after verified compile", "delete_after_verified_compile"
+    )
+    spotify_retained_limit_spin = QtWidgets.QSpinBox()
+    spotify_retained_limit_spin.setObjectName("spotifyRetainedLimitSpin")
+    spotify_retained_limit_spin.setRange(0, 1000)
+    spotify_retained_limit_spin.setSuffix(" recent")
+    spotify_learning_settings.addWidget(spotify_learning_enabled_check)
+    spotify_learning_settings.addWidget(spotify_retention_combo)
+    spotify_learning_settings.addWidget(spotify_retained_limit_spin)
+    spotify_learning_layout.addLayout(spotify_learning_settings)
+    spotify_learning_list = QtWidgets.QListWidget()
+    spotify_learning_list.setObjectName("spotifyBackgroundLearningList")
+    spotify_learning_layout.addWidget(spotify_learning_list)
+    spotify_learning_group.setVisible(False)
+    queue_left_layout.addWidget(spotify_learning_group, 1)
     queue_splitter.addWidget(queue_left_panel)
 
     queue_right_panel = QtWidgets.QWidget()
@@ -2783,7 +2827,7 @@ def build_queue_panel(qt_modules):
     saved_layout.addWidget(recent_saved_list)
     shows_left_layout.addWidget(saved_group, 1)
 
-    ready_group = QtWidgets.QGroupBox("Captured Ready Shows")
+    ready_group = QtWidgets.QGroupBox("Compiled Capture Replay Queue")
     ready_layout = QtWidgets.QVBoxLayout(ready_group)
     ready_list = QtWidgets.QListWidget()
     ready_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
@@ -3320,6 +3364,8 @@ def build_queue_panel(qt_modules):
         duplicate_show_cue_button=duplicate_show_cue_button,
         remove_show_cue_button=remove_show_cue_button,
         spotify_list=spotify_list,
+        spotify_learning_group=spotify_learning_group,
+        spotify_learning_list=spotify_learning_list,
         ready_list=ready_list,
         ready_preview_button=ready_preview_button,
         ready_play_button=ready_play_button,
@@ -3355,6 +3401,11 @@ def build_queue_panel(qt_modules):
         spotify_shuffle_button=spotify_shuffle_button,
         spotify_uri_edit=spotify_uri_edit,
         spotify_add_button=spotify_add_button,
+        spotify_learned_live_start_button=spotify_learned_live_start_button,
+        spotify_learned_live_stop_button=spotify_learned_live_stop_button,
+        spotify_learning_enabled_check=spotify_learning_enabled_check,
+        spotify_retention_combo=spotify_retention_combo,
+        spotify_retained_limit_spin=spotify_retained_limit_spin,
         live_loopback_check=live_loopback_check,
         patch_name_edit=patch_name_edit,
         patch_rules_edit=patch_rules_edit,

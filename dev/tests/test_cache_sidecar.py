@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from dreamsync.cache import sidecar_track_id, track_id_for_capture
+from dreamsync.cache import sidecar_track_id, spotify_track_cache_id, track_id_for_capture
 from dreamsync.capture.scanner import CaptureTrack
 
 
@@ -29,6 +29,15 @@ class TestSidecarTrackId:
 
 
 class TestTrackIdForCapture:
+    def test_spotify_identity_takes_precedence(self):
+        track = type("Track", (), {
+            "spotify_track_id": "edition-a", "song_title": "Hello",
+            "artist": "Adele", "mp3_path": "/tmp/hello.mp3",
+        })()
+        assert track_id_for_capture(track) == spotify_track_cache_id("edition-a")
+
+    def test_identical_metadata_with_distinct_spotify_ids_do_not_collide(self):
+        assert spotify_track_cache_id("edition-a") != spotify_track_cache_id("edition-b")
 
     def test_with_metadata(self, tmp_path):
         mp3 = tmp_path / "song.mp3"

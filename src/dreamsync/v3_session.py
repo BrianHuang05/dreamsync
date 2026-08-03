@@ -152,29 +152,12 @@ class SpotifyShowSession:
         # 1. Activate devices
         self._multi_adapter.activate(brightness=100)
 
-        # 2. Wire callbacks — chain with existing ones
-        orig_track = self._watcher._on_track_changed
-        orig_state = self._watcher._on_playback_state_changed
-        orig_queue = self._watcher._on_queue_updated
-
-        def _chained_track(new, old):
-            if orig_track:
-                orig_track(new, old)
-            self._on_track_changed(new, old)
-
-        def _chained_state(state):
-            if orig_state:
-                orig_state(state)
-            self._on_playback_state(state)
-
-        def _chained_queue(snapshot):
-            if orig_queue:
-                orig_queue(snapshot)
-            self._on_queue_updated(snapshot)
-
-        self._watcher._on_track_changed = _chained_track
-        self._watcher._on_playback_state_changed = _chained_state
-        self._watcher._on_queue_updated = _chained_queue
+        # 2. Subscribe without mutating the watcher's private callbacks.
+        unsubscribers = (
+            self._watcher.subscribe_track_changed(self._on_track_changed),
+            self._watcher.subscribe_playback_state(self._on_playback_state),
+            self._watcher.subscribe_queue_updated(self._on_queue_updated),
+        )
 
         logger.info("v3 session started — waiting for Spotify track")
         if self._debug:
@@ -207,10 +190,9 @@ class SpotifyShowSession:
         self._executor.shutdown(wait=False)
         self._multi_adapter.deactivate()
 
-        # 5. Restore original callbacks
-        self._watcher._on_track_changed = orig_track
-        self._watcher._on_playback_state_changed = orig_state
-        self._watcher._on_queue_updated = orig_queue
+        # 5. Detach subscriptions
+        for unsubscribe in unsubscribers:
+            unsubscribe()
 
         # 6. Build summary
         runtime_stats = {}

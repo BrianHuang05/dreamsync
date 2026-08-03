@@ -21,6 +21,9 @@ class CaptureTrack:
     artist: str | None
     album: str | None
     duration_seconds: float
+    spotify_track_id: str | None = None
+    spotify_uri: str | None = None
+    expected_duration_seconds: float | None = None
     metadata: dict = field(default_factory=dict)
 
 
@@ -55,6 +58,9 @@ class CaptureDirectoryScanner:
                     artist=sidecar_data.get("artist"),
                     album=sidecar_data.get("album"),
                     duration_seconds=sidecar_data.get("segmentDurationSeconds", 0.0),
+                    spotify_track_id=sidecar_data.get("spotifyTrackId"),
+                    spotify_uri=sidecar_data.get("spotifyUri"),
+                    expected_duration_seconds=sidecar_data.get("expectedDurationSeconds"),
                     metadata=sidecar_data,
                 )
             else:

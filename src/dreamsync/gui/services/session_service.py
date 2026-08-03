@@ -96,6 +96,41 @@ class SessionHandle:
         return self.summary
 
 
+class SpotifyTimelineSession:
+    """Tick a compiled show from Spotify's interpolated clock without audio replay."""
+
+    def __init__(self, multi_adapter, timeline: ShowTimeline, interpolator) -> None:
+        self._multi_adapter = multi_adapter
+        self._timeline = timeline
+        self._interpolator = interpolator
+        self._runtime = ShowPlaybackRuntime(timeline, multi_adapter)
+        self._playback_state = "starting"
+        self._frames_sent = 0
+
+    def run(self, stop_event: threading.Event) -> dict[str, Any]:
+        self._multi_adapter.activate(brightness=100)
+        try:
+            while not stop_event.wait(0.005):
+                self._playback_state = (
+                    "playing" if self._interpolator.is_playing else "paused"
+                )
+                if self._interpolator.is_playing and self._runtime.tick(
+                    self._interpolator.position_seconds
+                ):
+                    self._frames_sent += 1
+        finally:
+            self._multi_adapter.deactivate()
+        return {"mode": "spotify_compiled_live", "frames_sent": self._frames_sent}
+
+    def session_snapshot(self) -> dict[str, Any]:
+        return {
+            "playback_state": self._playback_state,
+            "current_track": str(self._timeline.metadata.get("track_name", "")),
+            "device_status": _device_status_for_adapter(self._multi_adapter),
+            "audio_output": "Spotify",
+        }
+
+
 class TimelinePlaybackSession:
     """Playback session for an already-compiled show timeline."""
 
@@ -1096,6 +1131,41 @@ class SessionService:
                 handle.error = exc
 
         handle.thread = threading.Thread(target=_runner, name=f"gui-{mode}-session", daemon=True)
+        handle.thread.start()
+        return handle
+
+    def start_spotify_timeline_session(
+        self,
+        timeline: ShowTimeline,
+        interpolator,
+        *,
+        config_path: Path | None = None,
+        simulation_only: bool = True,
+        fallback_to_simulation: bool = True,
+    ) -> SessionHandle:
+        stop_event = threading.Event()
+        adapter = self.build_output_adapter(
+            config_path,
+            simulation_only=simulation_only,
+            fallback_to_simulation=fallback_to_simulation,
+        )
+        session = SpotifyTimelineSession(adapter, timeline, interpolator)
+        handle = SessionHandle(
+            mode="spotify_compiled_live",
+            stop_event=stop_event,
+            thread=threading.Thread(),
+            session_ref=[session],
+        )
+
+        def _runner() -> None:
+            try:
+                handle.summary = session.run(stop_event)
+            except BaseException as exc:
+                handle.error = exc
+
+        handle.thread = threading.Thread(
+            target=_runner, name="gui-spotify-compiled-live", daemon=True
+        )
         handle.thread.start()
         return handle
 

@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 from dreamsync.cache import ShowCache
 from dreamsync.capture.orchestrator import CaptureOrchestrator, OrchestratorConfig
-from dreamsync.gui.models.capture_settings import CaptureSettings
+from dreamsync.gui.models.capture_settings import CaptureSettings, LearnedLiveSettings
 from dreamsync.gui.models.reactive_settings import ReactiveSettings
 from dreamsync.gui.models.runtime_mode_state import CapturedShowItem, OutputLease, RuntimeModeState
 from dreamsync.gui.models.runtime_routing_state import OutputTarget, RuntimeRoutingState
@@ -20,6 +20,8 @@ from dreamsync.gui.services.audio_device_service import AudioDeviceService
 from dreamsync.gui.services.session_service import SessionHandle, SessionService
 from dreamsync.show.models import Show, ShowTimeline
 from dreamsync.show_pipeline_worker import ShowPipelineWorker
+from dreamsync.spotify.learned_live_session import SpotifyLearnedLiveSession
+from dreamsync.spotify.learned_track import LearnedTrackStore
 
 
 class PipelineCoordinator:
@@ -44,6 +46,9 @@ class PipelineCoordinator:
         self._order: list[str] = []
         self._running = False
         self._timing_fetcher: Callable[[], dict | None] | None = None
+        self._capture_invalidation_reason = ""
+        self._learning_state_callback = None
+        self._item_track_ids: dict[str, str] = {}
 
     @property
     def running(self) -> bool:
@@ -59,6 +64,9 @@ class PipelineCoordinator:
         capture_buffer: int = 0,
         device_pattern: str = "CABLE Output",
         debug: bool = False,
+        learned_live: bool = False,
+        retention_policy: str = "keep_recent",
+        retained_mp3_limit: int = 10,
     ) -> None:
         if self._running:
             return
@@ -70,6 +78,10 @@ class PipelineCoordinator:
             ready_queue=ready_queue,
             debug=debug,
             state_callback=self._on_worker_state,
+            max_workers=1 if learned_live else 2,
+            learned_live=learned_live,
+            retention_policy=retention_policy,
+            retained_mp3_limit=retained_mp3_limit,
         )
         capture = self._capture_factory(
             config=OrchestratorConfig(
@@ -127,6 +139,18 @@ class PipelineCoordinator:
         if capture is None:
             return 0
         return int(capture.on_track_change(timing_data))
+
+    def begin_learning_candidate(self) -> None:
+        with self._lock:
+            self._capture_invalidation_reason = ""
+
+    def invalidate_learning_candidate(self, reason: str) -> None:
+        with self._lock:
+            self._capture_invalidation_reason = str(reason or "invalidated")
+
+    def set_learning_state_callback(self, callback) -> None:
+        with self._lock:
+            self._learning_state_callback = callback
 
     @staticmethod
     def _activate_timing_source(capture, fetcher: Callable[[], dict | None]) -> None:
@@ -207,6 +231,16 @@ class PipelineCoordinator:
             self._order = [item_id, *[value for value in self._order if value != item_id]]
 
     def _on_segment_saved(self, mp3_path: str, metadata: dict) -> None:
+        metadata = dict(metadata)
+        with self._lock:
+            invalidation_reason = self._capture_invalidation_reason
+            self._capture_invalidation_reason = ""
+        if invalidation_reason == "seek_detected":
+            metadata["seek_detected"] = True
+        elif invalidation_reason == "paused":
+            metadata["paused"] = True
+        elif invalidation_reason:
+            metadata["skipped"] = True
         path = Path(mp3_path)
         item = CapturedShowItem(
             item_id=str(path),
@@ -223,7 +257,13 @@ class PipelineCoordinator:
             if item.item_id not in self._order:
                 self._order.append(item.item_id)
             self._items[item.item_id] = item
+            track_id = str(metadata.get("spotify_track_id") or "")
+            if track_id:
+                self._item_track_ids[item.item_id] = track_id
             worker = self._worker
+            learning_callback = self._learning_state_callback
+        if learning_callback is not None and track_id:
+            learning_callback(track_id, "queued", "")
         if worker is not None:
             worker.on_segment_saved(mp3_path, metadata)
 
@@ -245,6 +285,14 @@ class PipelineCoordinator:
             self._items[item_id] = updated
             if timeline is not None:
                 self._timelines[item_id] = timeline
+            track_id = self._item_track_ids.get(item_id, "")
+            learning_callback = self._learning_state_callback
+        if learning_callback is not None and track_id:
+            learning_callback(
+                track_id,
+                state,
+                str(error) if error is not None else "",
+            )
 
 
 class RuntimeSupervisor:
@@ -277,6 +325,10 @@ class RuntimeSupervisor:
         self._events: deque[str] = deque(maxlen=32)
         self._capture_settings = CaptureSettings()
         self._reactive_settings = ReactiveSettings()
+        self._learned_live_settings = LearnedLiveSettings()
+        self._learned_live_handle: SessionHandle | None = None
+        self._learned_live_session: SpotifyLearnedLiveSession | None = None
+        self._learned_store: LearnedTrackStore | None = None
         self._baked_playback_mode = "auto"
         self._live_loopback_enabled = False
         self._recent_saved_shows: list[str] = []
@@ -344,6 +396,9 @@ class RuntimeSupervisor:
                 section_actions=settings.structure_section_actions_enabled,
             )
 
+    def set_learned_live_settings(self, settings: LearnedLiveSettings) -> None:
+        self._learned_live_settings = settings
+
     def set_baked_playback_mode(self, mode: str) -> None:
         self._baked_playback_mode = str(mode or "auto")
 
@@ -358,6 +413,9 @@ class RuntimeSupervisor:
 
     def reactive_settings(self) -> ReactiveSettings:
         return self._reactive_settings
+
+    def learned_live_settings(self) -> LearnedLiveSettings:
+        return self._learned_live_settings
 
     def recent_saved_shows(self) -> tuple[str, ...]:
         return tuple(self._recent_saved_shows)
@@ -728,6 +786,111 @@ class RuntimeSupervisor:
         self._record_event(self._status_message)
         return handle
 
+    def start_spotify_learned_live(
+        self,
+        watcher,
+        *,
+        cache_dir: Path | str = "~/.dreamsync/cache",
+        capture_dir: Path | None = None,
+        config_path: Path | None = None,
+        profile=None,
+        simulation_only: bool | None = None,
+    ) -> SessionHandle:
+        """Start cache-first Spotify output plus background learning capture."""
+        self.stop_spotify_learned_live()
+        settings = self._learned_live_settings
+        capture_root = capture_dir or Path(self._capture_settings.capture_dir)
+        cache = ShowCache(cache_dir)
+        self._learned_store = LearnedTrackStore(cache)
+        if settings.learning_enabled:
+            self.start_capture_pipeline(
+                capture_dir=Path(capture_root),
+                profile=profile,
+                sample_rate=self._capture_settings.sample_rate,
+                capture_naming="metadata",
+                capture_buffer=0,
+                device_pattern=settings.capture_device_pattern,
+                debug=settings.diagnostic_logging,
+                learned_live=True,
+                retention_policy=settings.mp3_retention_policy,
+                retained_mp3_limit=settings.retained_mp3_limit,
+            )
+
+        def start_compiled(timeline, interpolator) -> None:
+            self._stop_output_handle()
+            self._reactive_effect_mode = ""
+            self._output_handle = self._session_service.start_spotify_timeline_session(
+                timeline,
+                interpolator,
+                config_path=config_path,
+                simulation_only=self._simulation_only(simulation_only),
+                fallback_to_simulation=self._fallback_to_simulation(),
+            )
+            self._record_event("learned_live_runtime_switched:compiled")
+
+        def start_reactive() -> None:
+            self.start_reactive_live(
+                config_path=config_path,
+                profile=profile,
+                simulation_only=simulation_only,
+            )
+            self._record_event("learned_live_runtime_switched:reactive")
+
+        session = SpotifyLearnedLiveSession(
+            watcher,
+            cache=cache,
+            profile=profile,
+            start_compiled=start_compiled,
+            start_reactive=start_reactive,
+            stop_output=self._stop_output_handle,
+            start_capture=(
+                (lambda _track, _progress: self._pipeline.begin_learning_candidate())
+                if settings.learning_enabled and self._pipeline is not None else None
+            ),
+            invalidate_capture=(
+                self._pipeline.invalidate_learning_candidate
+                if settings.learning_enabled and self._pipeline is not None else None
+            ),
+            learning_enabled=settings.learning_enabled,
+            learned_store=self._learned_store,
+        )
+        stop_event = threading.Event()
+        handle = SessionHandle(
+            mode="spotify_learned_live",
+            stop_event=stop_event,
+            thread=threading.Thread(),
+            session_ref=[session],
+        )
+
+        def runner() -> None:
+            try:
+                handle.summary = session.run(stop_event)
+            except BaseException as exc:
+                handle.error = exc
+
+        handle.thread = threading.Thread(
+            target=runner, name="gui-spotify-learned-live", daemon=True
+        )
+        self._learned_live_session = session
+        self._learned_live_handle = handle
+        if self._pipeline is not None:
+            self._pipeline.set_learning_state_callback(session.notify_learning_state)
+        handle.thread.start()
+        self._status_message = "Spotify Live — Learning started."
+        self._record_event(self._status_message)
+        return handle
+
+    def stop_spotify_learned_live(self) -> None:
+        handle = self._learned_live_handle
+        self._learned_live_handle = None
+        self._learned_live_session = None
+        if handle is not None:
+            handle.stop()
+            handle.wait(timeout=5.0)
+        self._stop_output_handle()
+        if self._pipeline is not None and self._pipeline.running:
+            self._pipeline.stop()
+
     def start_capture_pipeline(
         self,
         *,
@@ -738,6 +901,9 @@ class RuntimeSupervisor:
         capture_buffer: int = 0,
         device_pattern: str = "CABLE Output",
         debug: bool = False,
+        learned_live: bool = False,
+        retention_policy: str = "keep_recent",
+        retained_mp3_limit: int = 10,
     ) -> None:
         if self._pipeline is None:
             self._pipeline = self._pipeline_factory()
@@ -760,6 +926,9 @@ class RuntimeSupervisor:
             capture_buffer=settings.max_capture_buffer,
             device_pattern=settings.device_pattern,
             debug=settings.debug_pipeline,
+            learned_live=learned_live,
+            retention_policy=retention_policy,
+            retained_mp3_limit=retained_mp3_limit,
         )
         self._status_message = f"Audio loopback capture running in {capture_dir}."
         self._error_message = ""
@@ -850,6 +1019,8 @@ class RuntimeSupervisor:
         self._record_event(self._status_message)
 
     def stop_output_only(self) -> None:
+        if self._learned_live_handle is not None:
+            self.stop_spotify_learned_live()
         self._pipeline_playback_enabled = False
         self._armed_output_mode = ""
         self._pipeline_current_item_id = None
@@ -1034,9 +1205,22 @@ class RuntimeSupervisor:
             if active_session is not None and hasattr(active_session, "session_snapshot")
             else {}
         )
-        active_mode = self._output_handle.mode if self._output_handle is not None else self._armed_output_mode or "idle"
+        learned_snapshot = (
+            self._learned_live_session.snapshot()
+            if self._learned_live_session is not None else None
+        )
+        output_mode = self._output_handle.mode if self._output_handle is not None else ""
+        active_mode = (
+            "spotify_learned_live"
+            if self._learned_live_handle is not None
+            else output_mode or self._armed_output_mode or "idle"
+        )
         playback_status = str(active_snapshot.get("playback_state", "armed" if self._armed_output_mode else "idle"))
-        current_track = active_snapshot.get("current_track")
+        current_track = (
+            learned_snapshot.active_track_title
+            if learned_snapshot is not None
+            else active_snapshot.get("current_track")
+        )
         device_status = str(active_snapshot.get("device_status", "")) if active_snapshot else ""
         audio_output = str(active_snapshot.get("audio_output", "")) if active_snapshot else ""
         input_device = str(active_snapshot.get("input_device", self._selected_input_label())) if active_snapshot else self._selected_input_label()
@@ -1049,8 +1233,8 @@ class RuntimeSupervisor:
             ready_items = self._pipeline.snapshot_items()
             ready_queue_count = self._pipeline.ready_queue_count()
         lease = OutputLease(
-            owner=active_mode if self._output_handle is not None else "",
-            mode=active_mode,
+            owner=output_mode if self._output_handle is not None else "",
+            mode=output_mode or active_mode,
             simulation_only=bool(device_status.startswith("simulation") or device_status.startswith("preview")),
         )
         return RuntimeModeState(
@@ -1060,6 +1244,29 @@ class RuntimeSupervisor:
             capture_state="running" if self._pipeline is not None and self._pipeline.running else "off",
             pipeline_state=pipeline_state,
             spotify_state="enabled" if self._live_loopback_enabled else "off",
+            learned_live_strategy=(
+                learned_snapshot.active_strategy if learned_snapshot is not None else "waiting"
+            ),
+            learned_live_badge=(
+                "PAUSED" if learned_snapshot is not None and learned_snapshot.paused
+                else "PRECOMPILED" if learned_snapshot is not None and learned_snapshot.active_strategy == "compiled"
+                else "REACTIVE · LEARNING" if learned_snapshot is not None and learned_snapshot.active_learning_state == "capturing"
+                else "REACTIVE · NOT LEARNING" if learned_snapshot is not None and learned_snapshot.active_strategy == "reactive"
+                else ""
+            ),
+            learning_state=(learned_snapshot.learning_state if learned_snapshot is not None else "idle"),
+            learning_reason=(learned_snapshot.learning_reason if learned_snapshot is not None else ""),
+            learned_library_count=(
+                len(self._learned_store.list_manifests()) if self._learned_store is not None else 0
+            ),
+            learned_cache_hits=(learned_snapshot.cache_hits if learned_snapshot is not None else 0),
+            learned_cache_misses=(learned_snapshot.cache_misses if learned_snapshot is not None else 0),
+            background_learning_items=(
+                tuple(
+                    f"{track_id}: {state}" + (f" · {reason}" if reason else "")
+                    for track_id, state, reason in learned_snapshot.background_jobs
+                ) if learned_snapshot is not None else ()
+            ),
             ready_queue_count=ready_queue_count,
             ready_items=ready_items,
             output_lease=lease,
@@ -1077,6 +1284,7 @@ class RuntimeSupervisor:
                 selected_output_owner=active_mode,
             ),
             capture_settings=self._capture_settings,
+            learned_live_settings=self._learned_live_settings,
             reactive_settings=self._reactive_settings,
             recent_saved_shows=tuple(self._recent_saved_shows),
             status_message=self._status_message,
