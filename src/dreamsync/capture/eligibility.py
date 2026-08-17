@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -81,3 +83,76 @@ class CaptureEligibilityValidator:
         ):
             reasons.append("trivial_audio")
         return CaptureEligibility(not reasons, tuple(dict.fromkeys(reasons)))
+
+
+_SIDECAR_FIELD_ALIASES = {
+    "spotifyTrackId": "spotify_track_id",
+    "spotifyUri": "spotify_uri",
+    "songTitle": "song_title",
+    "expectedDurationSeconds": "expected_duration_seconds",
+    "observedStartProgressSeconds": "observed_start_progress_seconds",
+    "observedEndProgressSeconds": "observed_end_progress_seconds",
+    "segmentDurationSeconds": "segment_duration_seconds",
+    "startFrame": "start_frame",
+    "endFrame": "end_frame",
+    "sampleRate": "sample_rate",
+    "seekDetected": "seek_detected",
+    "captureRestarts": "capture_restarts",
+}
+
+
+def normalize_capture_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Return capture metadata using the worker's snake-case field names.
+
+    Capture callbacks already use snake case, while persisted sidecars use
+    camel case.  Normalizing both through one function keeps reuse validation
+    identical to validation of a newly finished capture.
+    """
+
+    normalized = dict(metadata)
+    for persisted_name, runtime_name in _SIDECAR_FIELD_ALIASES.items():
+        if runtime_name not in normalized and persisted_name in normalized:
+            normalized[runtime_name] = normalized[persisted_name]
+    return normalized
+
+
+def candidate_from_capture_metadata(
+    mp3_path: Path | str,
+    metadata: dict[str, Any],
+) -> SpotifyCaptureCandidate:
+    """Build an eligibility candidate from a live callback or sidecar."""
+
+    path = Path(mp3_path)
+    metadata = normalize_capture_metadata(metadata)
+    expected = float(metadata.get("expected_duration_seconds") or 0.0)
+    captured = metadata.get("segment_duration_seconds")
+    if captured is None:
+        sample_rate = float(metadata.get("sample_rate") or 1.0)
+        captured = (
+            float(metadata.get("end_frame", 0))
+            - float(metadata.get("start_frame", 0))
+        ) / sample_rate
+    observed_end = metadata.get("observed_end_progress_seconds")
+    if observed_end is None:
+        observed_end = expected
+    gaps = metadata.get("gaps") or ()
+    return SpotifyCaptureCandidate(
+        track_id=str(metadata.get("spotify_track_id") or ""),
+        uri=str(metadata.get("spotify_uri") or ""),
+        title=str(metadata.get("song_title") or ""),
+        artist=str(metadata.get("artist") or ""),
+        album=str(metadata.get("album") or ""),
+        expected_duration_seconds=expected,
+        observed_start_progress_seconds=float(
+            metadata.get("observed_start_progress_seconds") or 0.0
+        ),
+        observed_end_progress_seconds=float(observed_end or 0.0),
+        captured_duration_seconds=float(captured or 0.0),
+        seek_detected=bool(metadata.get("seek_detected", False)),
+        paused=bool(metadata.get("paused", False)),
+        skipped=bool(metadata.get("skipped", False)),
+        capture_gaps=len(gaps),
+        capture_restarts=int(metadata.get("capture_restarts") or 0),
+        audio_readable=path.is_file(),
+        nontrivial_audio=path.is_file() and path.stat().st_size > 1024,
+    )

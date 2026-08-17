@@ -189,3 +189,16 @@ class TestShowCache:
         cache = ShowCache(nested)
         assert nested.exists()
         assert nested.is_dir()
+
+    def test_get_finds_track_moved_beneath_user_subfolder(self, tmp_path):
+        cache = ShowCache(tmp_path / "shows")
+        profile = _make_profile()
+        original = cache.put("track123", _make_timeline(), profile)
+        nested = cache.cache_dir / "Artist" / "Album" / "track123"
+        nested.parent.mkdir(parents=True)
+        original.parent.rename(nested)
+
+        result = cache.get("track123", profile)
+
+        assert result is not None
+        assert cache.entry_path("track123", profile).parent == nested

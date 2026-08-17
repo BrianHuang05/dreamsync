@@ -51,6 +51,13 @@ class TimingIntegrator:
         self._logger = logger
         self._track_change_time: float = 0.0
         self._track_change_debounce: float = 3.0
+        # Periodic Spotify snapshots contain the *current* playback progress.
+        # A boundary may be refreshed many times before it is consumed, so
+        # copying that changing value directly into boundary metadata makes a
+        # full-track segment appear to have started near the end of the song.
+        # Latch the first observed progress for each active track instead.
+        self._active_track_id = ""
+        self._active_track_start_progress = 0.0
 
     # ------------------------------------------------------------------
     # One-shot update
@@ -80,6 +87,11 @@ class TimingIntegrator:
                 meta = songs[i]
             else:
                 meta = fallback_meta
+            if i == 0:
+                meta = self._metadata_with_latched_start(
+                    meta,
+                    playback_time=float(playback_time or 0.0),
+                )
             entries.append(
                 BoundaryEntry(
                     frame_position=abs_frame,
@@ -117,6 +129,11 @@ class TimingIntegrator:
 
         previous_song = timing_data.get("previous_song")
         if previous_song is not None:
+            previous_song = self._metadata_with_latched_start(
+                previous_song,
+                playback_time=self._active_track_start_progress,
+                preserve_active_track=True,
+            )
             current_frame = self._get_current_frame()
             # Clear any stale boundaries near the split point
             removed = self._queue.remove_near(current_frame, 2 * self._sample_rate)
@@ -136,6 +153,37 @@ class TimingIntegrator:
             )
 
         return self.update(timing_data)
+
+    def _metadata_with_latched_start(
+        self,
+        metadata: dict | None,
+        *,
+        playback_time: float,
+        preserve_active_track: bool = False,
+    ) -> dict | None:
+        """Return boundary metadata with a stable per-track start offset."""
+        if metadata is None:
+            return None
+        result = dict(metadata)
+        track_id = str(result.get("spotify_track_id") or "")
+        if not track_id:
+            return result
+        if preserve_active_track and track_id == self._active_track_id:
+            start_progress = self._active_track_start_progress
+        elif track_id != self._active_track_id:
+            start_progress = float(
+                result.get("observed_start_progress_seconds", playback_time)
+                or 0.0
+            )
+            self._active_track_id = track_id
+            self._active_track_start_progress = max(0.0, start_progress)
+        else:
+            start_progress = self._active_track_start_progress
+        result["observed_start_progress_seconds"] = max(
+            0.0,
+            float(start_progress),
+        )
+        return result
 
     # ------------------------------------------------------------------
     # Periodic refresh

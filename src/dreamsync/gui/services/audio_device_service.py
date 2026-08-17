@@ -48,3 +48,20 @@ class AudioDeviceService:
                 return option.label
         return "System default" if device_id is None else f"Device {device_id}"
 
+    @staticmethod
+    def resolve_input_sample_rate(
+        options: tuple[AudioDeviceOption, ...],
+        device_id: int | None,
+        requested_sample_rate: int,
+    ) -> int:
+        """Return the selected endpoint's native input rate when known."""
+
+        requested = max(1, int(requested_sample_rate))
+        if device_id is None:
+            return requested
+        for option in options:
+            if option.id == device_id:
+                native = round(float(option.default_samplerate or 0.0))
+                return native if native > 0 else requested
+        return requested
+

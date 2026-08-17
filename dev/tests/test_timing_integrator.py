@@ -92,6 +92,77 @@ class TestMultipleUpdates:
         # Should have updated boundaries
         assert len(second_entries) >= 1
 
+    def test_periodic_refresh_preserves_first_observed_track_progress(self, queue):
+        current = [0]
+        integ = TimingIntegrator(
+            boundary_queue=queue,
+            get_current_frame=lambda: current[0],
+            sample_rate=48000,
+        )
+        song = {
+            "song_title": "Song",
+            "spotify_track_id": "track-a",
+        }
+        integ.update(
+            {
+                "current_playback_time": 0.7,
+                "song_durations": [180.0],
+                "songs": [song],
+            }
+        )
+
+        current[0] = 176 * 48000
+        integ.update(
+            {
+                "current_playback_time": 176.0,
+                "song_durations": [180.0],
+                "songs": [song],
+            }
+        )
+
+        assert queue.peek_next().metadata["observed_start_progress_seconds"] == 0.7
+
+    def test_track_change_boundary_keeps_previous_track_start_progress(self, queue):
+        integ = TimingIntegrator(
+            boundary_queue=queue,
+            get_current_frame=lambda: 0,
+            sample_rate=48000,
+        )
+        integ.update(
+            {
+                "current_playback_time": 0.4,
+                "song_durations": [10.0],
+                "songs": [
+                    {
+                        "song_title": "A",
+                        "spotify_track_id": "track-a",
+                        "observed_start_progress_seconds": 0.4,
+                    }
+                ],
+            }
+        )
+
+        integ.on_track_change(
+            {
+                "current_playback_time": 0.0,
+                "song_durations": [10.0],
+                "previous_song": {
+                    "song_title": "A",
+                    "spotify_track_id": "track-a",
+                },
+                "songs": [
+                    {
+                        "song_title": "B",
+                        "spotify_track_id": "track-b",
+                    }
+                ],
+            }
+        )
+
+        previous = queue.entries()[0]
+        assert previous.metadata["spotify_track_id"] == "track-a"
+        assert previous.metadata["observed_start_progress_seconds"] == 0.4
+
 
 class TestPerSongMetadata:
     """Boundaries get per-song metadata from the songs list."""

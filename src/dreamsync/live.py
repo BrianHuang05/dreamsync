@@ -4528,6 +4528,11 @@ def run_live_to_govee(
         device=device,
         dtype="float32",
         blocksize=blocksize,
+        # PortAudio otherwise chooses the backend's high/default latency.
+        # Live analysis is input-only and should stay as close as possible to
+        # the current samples; request each backend's supported low-latency
+        # path without changing the external audible route.
+        latency="low",
         callback=_callback,
     ):
         while True:

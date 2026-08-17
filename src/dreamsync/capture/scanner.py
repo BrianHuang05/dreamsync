@@ -7,6 +7,12 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from dreamsync.capture.eligibility import (
+    CaptureEligibilityValidator,
+    candidate_from_capture_metadata,
+    normalize_capture_metadata,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,7 +46,10 @@ class CaptureDirectoryScanner:
 
         Returns CaptureTrack list sorted by segment_index, then filename.
         """
-        mp3_files = sorted(self._directory.glob("*.mp3"), key=lambda p: p.name.lower())
+        mp3_files = sorted(
+            self._directory.rglob("*.mp3"),
+            key=lambda path: str(path.relative_to(self._directory)).lower(),
+        )
         if not mp3_files:
             return []
 
@@ -78,6 +87,27 @@ class CaptureDirectoryScanner:
 
         tracks.sort(key=lambda t: (t.segment_index, t.mp3_path.name.lower()))
         return tracks
+
+    def find_reusable_capture(
+        self,
+        spotify_track_id: str,
+        *,
+        validator: CaptureEligibilityValidator | None = None,
+    ) -> tuple[CaptureTrack, dict] | None:
+        """Return the newest complete, eligible MP3 for a Spotify track."""
+
+        validator = validator or CaptureEligibilityValidator()
+        matches: list[tuple[CaptureTrack, dict]] = []
+        for track in self.scan():
+            if track.sidecar_path is None or track.spotify_track_id != spotify_track_id:
+                continue
+            metadata = normalize_capture_metadata(track.metadata)
+            candidate = candidate_from_capture_metadata(track.mp3_path, metadata)
+            if validator.validate(candidate).eligible:
+                matches.append((track, metadata))
+        if not matches:
+            return None
+        return max(matches, key=lambda match: match[0].mp3_path.stat().st_mtime)
 
     def _read_sidecar(self, path: Path) -> dict | None:
         """Read and parse a JSON sidecar file. Returns None on missing/corrupt."""

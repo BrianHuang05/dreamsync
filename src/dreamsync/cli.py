@@ -751,7 +751,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--pipeline",
         action="store_true",
         default=False,
-        help="Stream captured songs through analyze -> compile -> play concurrently.",
+        help="Compile captured songs into Queue-ready artifacts without autoplay.",
     )
     session.add_argument(
         "--playback-device",
@@ -763,7 +763,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--purge",
         action="store_true",
         default=False,
-        help="Delete MP3 + sidecar after playback (use with --pipeline).",
+        help="Delete MP3 + sidecar after later Queue playback.",
     )
     session.add_argument(
         "--archive",

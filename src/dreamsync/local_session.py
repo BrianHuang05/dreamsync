@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 ProfileResolver = Callable[[Path, "ProfileConfig | None"], "ProfileConfig | None"]
 TimelineResolver = Callable[[Path, ShowTimeline], ShowTimeline]
+AudioPlayerFactory = Callable[..., AudioPlayer]
 _ANALYSIS_CACHE_VERSION = 5
 
 
@@ -70,6 +71,7 @@ class LocalShowSession:
         audio_device: int | None = None,
         debug: bool = False,
         runtime_control: RuntimeControlBus | None = None,
+        audio_player_factory: AudioPlayerFactory | None = None,
     ) -> None:
         self._multi_adapter = multi_adapter
         self._cache = cache
@@ -88,6 +90,7 @@ class LocalShowSession:
         self._audio_device = audio_device
         self._debug = debug
         self._runtime_control = runtime_control or RuntimeControlBus()
+        self._audio_player_factory = audio_player_factory
 
         # Stats
         self._cache_hits: int = 0
@@ -140,7 +143,8 @@ class LocalShowSession:
 
         # 3. Create AudioPlayer
         self._set_playback_state("loading_audio", track=audio_path)
-        player = AudioPlayer(
+        player_factory = self._audio_player_factory or AudioPlayer
+        player = player_factory(
             audio_path,
             sample_rate=self._sample_rate,
             device=self._audio_device,
@@ -525,6 +529,7 @@ class LocalPlaylistSession:
         audio_device: int | None = None,
         debug: bool = False,
         runtime_control: RuntimeControlBus | None = None,
+        audio_player_factory: AudioPlayerFactory | None = None,
     ) -> None:
         self._multi_adapter = multi_adapter
         self._playlist = playlist
@@ -537,6 +542,7 @@ class LocalPlaylistSession:
         self._audio_device = audio_device
         self._debug = debug
         self._runtime_control = runtime_control or RuntimeControlBus()
+        self._audio_player_factory = audio_player_factory
 
         # Control signals
         self._signal_next = threading.Event()
@@ -561,6 +567,7 @@ class LocalPlaylistSession:
             audio_device=audio_device,
             debug=debug,
             runtime_control=self._runtime_control,
+            audio_player_factory=audio_player_factory,
         )
 
         # Stats
@@ -916,7 +923,8 @@ class LocalPlaylistSession:
 
         # Create AudioPlayer
         self._set_playback_state("loading_audio", track=audio_path)
-        player = AudioPlayer(
+        player_factory = self._audio_player_factory or AudioPlayer
+        player = player_factory(
             audio_path,
             sample_rate=self._sample_rate,
             device=self._audio_device,
@@ -1034,6 +1042,7 @@ def run_local_session(
     runtime_control: RuntimeControlBus | None = None,
     precompiled_timelines: dict[str, ShowTimeline] | None = None,
     precompiled_timeline_sources: dict[str, str] | None = None,
+    audio_player_factory: AudioPlayerFactory | None = None,
 ) -> dict[str, Any]:
     """Top-level entry point for local session. Called from run_session() or CLI."""
     cache = ShowCache(cache_dir)
@@ -1052,6 +1061,7 @@ def run_local_session(
             audio_device=audio_device,
             debug=debug,
             runtime_control=runtime_control,
+            audio_player_factory=audio_player_factory,
         )
         if session_ref is not None:
             session_ref[:] = [session]
@@ -1069,6 +1079,7 @@ def run_local_session(
             audio_device=audio_device,
             debug=debug,
             runtime_control=runtime_control,
+            audio_player_factory=audio_player_factory,
         )
         if session_ref is not None:
             session_ref[:] = [session]
@@ -1084,6 +1095,7 @@ def run_precompiled_show_session(
     stop_event: threading.Event,
     session_ref: list[Any] | None = None,
     runtime_control: RuntimeControlBus | None = None,
+    audio_player_factory: AudioPlayerFactory | None = None,
 ) -> dict[str, Any]:
     """Play an ordered saved Show using its embedded compiled Track timelines."""
     if not tracks:
@@ -1102,4 +1114,5 @@ def run_precompiled_show_session(
         runtime_control=runtime_control,
         precompiled_timelines=timelines,
         precompiled_timeline_sources=timeline_sources,
+        audio_player_factory=audio_player_factory,
     )

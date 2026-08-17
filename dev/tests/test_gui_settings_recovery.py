@@ -7,10 +7,28 @@ import unittest
 
 from dreamsync.gui.settings import GuiSettingsStore
 from dreamsync.gui.settings import GuiSettings
-from dreamsync.gui.models.capture_settings import LearnedLiveSettings
+from dreamsync.gui.models.capture_settings import CaptureSettings, LearnedLiveSettings
 
 
 class GuiSettingsRecoveryTests(unittest.TestCase):
+    def test_library_roots_round_trip(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "gui-settings.json"
+            store = GuiSettingsStore(path)
+            expected = CaptureSettings(
+                capture_dir="D:/DreamSync/temp",
+                captured_audio_root="D:/DreamSync/audio",
+                analysis_root="D:/DreamSync/analysis",
+                compiled_show_root="D:/DreamSync/shows",
+                temp_capture_root="D:/DreamSync/temp",
+                temp_retention_hours=12,
+            )
+            store.save(GuiSettings(capture_settings=expected))
+
+            loaded = store.load().capture_settings
+
+        self.assertEqual(loaded, expected)
+
     def test_learned_live_settings_round_trip(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "gui-settings.json"

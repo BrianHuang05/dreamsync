@@ -27,6 +27,7 @@ class _FakeInputStream:
         self._callback = callback
         self._channels = channels
         self._blocksize = blocksize
+        self.options = dict(_kwargs)
 
     def __enter__(self):
         for index in range(12):
@@ -135,6 +136,7 @@ def test_reactive_live_is_capture_only_and_reports_bounded_overflow() -> None:
 
     assert fake_sd.input_streams == 1
     assert fake_sd.output_streams == 0
+    assert fake_sd.last_input_stream.options["latency"] == "low"
     assert summary["audio_ring_capacity"] == 8
     assert summary["analysis_dropped_blocks"] == 4
     assert summary["analysis_discontinuities"] >= 0

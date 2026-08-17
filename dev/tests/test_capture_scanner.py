@@ -154,3 +154,64 @@ class TestCaptureDirectoryScanner:
         assert tracks[0].mp3_path.name == "a_song.mp3"
         assert tracks[1].mp3_path.name == "m_song.mp3"
         assert tracks[2].mp3_path.name == "z_song.mp3"
+
+    def test_find_reusable_capture_uses_eligible_sidecar_and_normalizes_fields(self, tmp_path):
+        mp3 = tmp_path / "complete.mp3"
+        mp3.write_bytes(b"audio" * 300)
+        _write_sidecar(
+            mp3.with_suffix(".json"),
+            _make_sidecar_data(
+                duration=179.98,
+                spotifyTrackId="track-1",
+                spotifyUri="spotify:track:track-1",
+                expectedDurationSeconds=180.82,
+                observedStartProgressSeconds=0.0,
+                observedEndProgressSeconds=None,
+                sampleRate=48_000,
+            ),
+        )
+
+        result = CaptureDirectoryScanner(tmp_path).find_reusable_capture("track-1")
+
+        assert result is not None
+        track, metadata = result
+        assert track.mp3_path == mp3
+        assert metadata["spotify_track_id"] == "track-1"
+        assert metadata["segment_duration_seconds"] == 179.98
+
+    def test_find_reusable_capture_rejects_partial_capture(self, tmp_path):
+        mp3 = tmp_path / "partial.mp3"
+        mp3.write_bytes(b"audio" * 300)
+        _write_sidecar(
+            mp3.with_suffix(".json"),
+            _make_sidecar_data(
+                duration=20.0,
+                spotifyTrackId="track-1",
+                expectedDurationSeconds=180.0,
+                observedStartProgressSeconds=0.0,
+                observedEndProgressSeconds=None,
+            ),
+        )
+
+        assert CaptureDirectoryScanner(tmp_path).find_reusable_capture("track-1") is None
+
+    def test_scan_and_reuse_are_recursive(self, tmp_path):
+        nested = tmp_path / "Artist" / "Album"
+        nested.mkdir(parents=True)
+        mp3 = nested / "complete.mp3"
+        mp3.write_bytes(b"audio" * 300)
+        _write_sidecar(
+            mp3.with_suffix(".json"),
+            _make_sidecar_data(
+                duration=60.0,
+                spotifyTrackId="nested-track",
+                expectedDurationSeconds=60.0,
+                observedStartProgressSeconds=0.0,
+                observedEndProgressSeconds=60.0,
+            ),
+        )
+
+        result = CaptureDirectoryScanner(tmp_path).find_reusable_capture("nested-track")
+
+        assert result is not None
+        assert result[0].mp3_path == mp3

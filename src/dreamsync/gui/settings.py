@@ -243,7 +243,27 @@ class GuiSettingsStore:
                 else None
             ),
             capture_settings=CaptureSettings(
-                capture_dir=str(capture_raw.get("capture_dir", "captured_songs")),
+                capture_dir=str(
+                    capture_raw.get(
+                        "temp_capture_root",
+                        capture_raw.get("capture_dir", "library/temp"),
+                    )
+                ),
+                captured_audio_root=str(
+                    capture_raw.get("captured_audio_root", "library/audio")
+                ),
+                analysis_root=str(
+                    capture_raw.get("analysis_root", "library/analysis")
+                ),
+                compiled_show_root=str(
+                    capture_raw.get("compiled_show_root", "library/shows")
+                ),
+                temp_capture_root=str(
+                    capture_raw.get("temp_capture_root", "library/temp")
+                ),
+                temp_retention_hours=int(
+                    capture_raw.get("temp_retention_hours", 24)
+                ),
                 naming_mode=str(capture_raw.get("naming_mode", "timestamp")),
                 max_capture_buffer=int(capture_raw.get("max_capture_buffer", 0)),
                 device_pattern=str(capture_raw.get("device_pattern", "CABLE Output")),

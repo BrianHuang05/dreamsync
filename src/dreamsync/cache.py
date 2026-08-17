@@ -164,84 +164,73 @@ class ShowCache:
 
     def get(self, track_id: str, profile: ProfileConfig | None = None) -> ShowTimeline | None:
         fp = profile_fingerprint(profile)
-        path = self._entry_path(track_id, fp)
-        if not path.exists():
+        path = self._find_entry_path(track_id, fp)
+        if path is None:
             return None
         return self._read_timeline(path)
 
     def put(self, track_id: str, timeline: ShowTimeline, profile: ProfileConfig | None = None) -> Path:
         fp = profile_fingerprint(profile)
-        path = self._entry_path(track_id, fp)
+        path = self._find_entry_path(track_id, fp) or self._entry_path(track_id, fp)
         self._write_timeline(path, timeline, profile)
         return path
 
     def has(self, track_id: str, profile: ProfileConfig | None = None) -> bool:
         fp = profile_fingerprint(profile)
-        return self._entry_path(track_id, fp).exists()
+        return self._find_entry_path(track_id, fp) is not None
 
     def entry_path(self, track_id: str, profile: ProfileConfig | None = None) -> Path:
         """Return the on-disk path used for a track/profile cache entry."""
 
-        return self._entry_path(track_id, profile_fingerprint(profile))
+        fp = profile_fingerprint(profile)
+        return self._find_entry_path(track_id, fp) or self._entry_path(track_id, fp)
 
     def invalidate(self, track_id: str) -> int:
-        track_dir = self._track_dir(track_id)
-        if not track_dir.exists():
-            return 0
         count = 0
-        for entry in track_dir.iterdir():
-            if entry.name.endswith(".show.json"):
+        for track_dir in self._track_dirs(track_id):
+            for entry in track_dir.glob("*.show.json"):
                 entry.unlink()
                 count += 1
-        try:
-            track_dir.rmdir()
-        except OSError:
-            pass
+            try:
+                track_dir.rmdir()
+            except OSError:
+                pass
         return count
 
     def clear(self) -> int:
         count = 0
         if not self._cache_dir.exists():
             return 0
-        for track_dir in self._cache_dir.iterdir():
-            if track_dir.is_dir():
-                for entry in track_dir.iterdir():
-                    if entry.name.endswith(".show.json"):
-                        entry.unlink()
-                        count += 1
-                try:
-                    track_dir.rmdir()
-                except OSError:
-                    pass
+        for entry in self._cache_dir.rglob("*.show.json"):
+            if entry.is_file():
+                entry.unlink()
+                count += 1
+        self._remove_empty_directories()
         return count
 
     def list_entries(self) -> list[CacheEntry]:
         entries = []
         if not self._cache_dir.exists():
             return entries
-        for track_dir in self._cache_dir.iterdir():
-            if not track_dir.is_dir():
+        for show_file in self._cache_dir.rglob("*.show.json"):
+            if not show_file.is_file():
                 continue
-            track_id = track_dir.name
-            for show_file in track_dir.iterdir():
-                if not show_file.name.endswith(".show.json"):
-                    continue
-                fp = show_file.stem.replace(".show", "")
-                timeline = self._read_timeline(show_file)
-                if timeline is None:
-                    continue
-                meta = timeline.metadata
-                entries.append(CacheEntry(
-                    track_id=track_id,
-                    profile_fingerprint=fp,
-                    profile_name=meta.get("_cache_profile_name", "unknown"),
-                    track_name=meta.get("track_name", "unknown"),
-                    artist=meta.get("artist", "unknown"),
-                    duration=timeline.duration,
-                    compiled_at=meta.get("_cache_compiled_at", "unknown"),
-                    file_path=show_file.resolve(),
-                    file_size=show_file.stat().st_size,
-                ))
+            fp = show_file.stem.replace(".show", "")
+            timeline = self._read_timeline(show_file)
+            if timeline is None:
+                continue
+            meta = timeline.metadata
+            entries.append(CacheEntry(
+                track_id=show_file.parent.name,
+                profile_fingerprint=fp,
+                profile_name=meta.get("_cache_profile_name", "unknown"),
+                track_name=meta.get("track_name", "unknown"),
+                artist=meta.get("artist", "unknown"),
+                duration=timeline.duration,
+                compiled_at=meta.get("_cache_compiled_at", "unknown"),
+                file_path=show_file.resolve(),
+                file_size=show_file.stat().st_size,
+            ))
         entries.sort(key=lambda e: e.track_name.lower())
         return entries
 
@@ -263,6 +252,39 @@ class ShowCache:
 
     def _track_dir(self, track_id: str) -> Path:
         return self._cache_dir / track_id
+
+    def _track_dirs(self, track_id: str) -> tuple[Path, ...]:
+        canonical = self._track_dir(track_id)
+        matches = [
+            path for path in self._cache_dir.rglob(track_id)
+            if path.is_dir() and path.name == track_id
+        ]
+        if canonical.is_dir() and canonical not in matches:
+            matches.append(canonical)
+        return tuple(matches)
+
+    def _find_entry_path(self, track_id: str, fp: str) -> Path | None:
+        canonical = self._entry_path(track_id, fp)
+        if canonical.is_file():
+            return canonical
+        filename = f"{fp}.show.json"
+        for directory in self._track_dirs(track_id):
+            candidate = directory / filename
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def _remove_empty_directories(self) -> None:
+        directories = sorted(
+            (path for path in self._cache_dir.rglob("*") if path.is_dir()),
+            key=lambda path: len(path.parts),
+            reverse=True,
+        )
+        for directory in directories:
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
 
     def _read_timeline(self, path: Path) -> ShowTimeline | None:
         try:

@@ -68,3 +68,21 @@ def test_no_manifest_is_published_when_show_is_missing(tmp_path):
         pass
     assert not store.manifest_path("abc").exists()
 
+
+def test_analysis_and_compiled_show_roots_are_independent_and_recursive(tmp_path):
+    cache = ShowCache(tmp_path / "shows")
+    store = LearnedTrackStore(cache, analysis_root=tmp_path / "analysis")
+    analysis_path = store.write_analysis("abc", structure())
+    show_path = cache.put(spotify_track_cache_id("abc"), timeline())
+    store.publish_manifest(candidate())
+
+    nested_analysis = tmp_path / "analysis" / "Artist" / analysis_path.parent.name
+    nested_analysis.parent.mkdir(parents=True)
+    analysis_path.parent.rename(nested_analysis)
+    nested_show = tmp_path / "shows" / "Artist" / show_path.parent.name
+    nested_show.parent.mkdir(parents=True)
+    show_path.parent.rename(nested_show)
+
+    assert store.is_complete("abc")
+    assert store.analysis_path("abc").parent == nested_analysis
+    assert store.manifest_path("abc").parent == nested_show

@@ -14,6 +14,8 @@ telemetry-test/
 dev/telemetry-test/
 test_preview_simulation_*/
 dev_tests_test_preview_simulation_*/
+captured_songs/
+library/
 .audio_route_state.json
 dreamsync-v1.0.0.zip
 dreamsync-v1.0.0/

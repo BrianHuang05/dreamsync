@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 
 from dreamsync.gui.services.queue_service import QueueService
@@ -40,6 +42,7 @@ class FakeCapture:
         self.track_changes: list[dict] = []
         self.periodic_fetcher = None
         self.periodic_stop_count = 0
+        self.suppressed_track_ids: list[str] = []
 
     def start(self) -> None:
         self.started = True
@@ -62,6 +65,9 @@ class FakeCapture:
         self.periodic_stop_count += 1
         self.periodic_fetcher = None
 
+    def suppress_track(self, track_id: str) -> None:
+        self.suppressed_track_ids.append(track_id)
+
     @property
     def stats(self) -> dict[str, int]:
         return {}
@@ -70,6 +76,10 @@ class FakeCapture:
 class FakeWorker:
     def __init__(self, **kwargs) -> None:
         self.shutdown_called = False
+        self.segments: list[tuple[str, dict]] = []
+
+    def on_segment_saved(self, mp3_path: str, metadata: dict) -> None:
+        self.segments.append((mp3_path, metadata))
 
     def shutdown(self) -> None:
         self.shutdown_called = True
@@ -170,6 +180,62 @@ def test_pipeline_coordinator_activates_timing_source_and_forwards_track_change(
     coordinator.set_timing_source(None)
     assert capture.periodic_stop_count == 1
     assert capture.periodic_fetcher is None
+
+
+def test_pipeline_coordinator_queues_existing_mp3_and_suppresses_live_duplicate(tmp_path: Path) -> None:
+    captures: list[FakeCapture] = []
+    workers: list[FakeWorker] = []
+
+    def capture_factory(**kwargs):
+        capture = FakeCapture(**kwargs)
+        captures.append(capture)
+        return capture
+
+    def worker_factory(**kwargs):
+        worker = FakeWorker(**kwargs)
+        workers.append(worker)
+        return worker
+
+    coordinator = PipelineCoordinator(
+        capture_factory=capture_factory,
+        worker_factory=worker_factory,
+        cache_factory=lambda _path: object(),
+    )
+    coordinator.start(capture_dir=tmp_path / "captures", learned_live=True)
+    existing = tmp_path / "captures" / "existing.mp3"
+    existing.parent.mkdir(parents=True, exist_ok=True)
+    existing.write_bytes(b"audio" * 300)
+    metadata = {
+        "spotify_track_id": "spotify-track",
+        "song_title": "Song",
+        "artist": "Artist",
+    }
+
+    assert coordinator.queue_existing_capture(existing, metadata) is True
+    assert coordinator.queue_existing_capture(existing, metadata) is False
+    assert captures[0].suppressed_track_ids == ["spotify-track"]
+    assert workers[0].segments == [(str(existing.resolve()), metadata)]
+
+
+def test_pipeline_start_purges_only_expired_temp_files(tmp_path: Path) -> None:
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    expired = temp_root / "expired.mp3"
+    recent = temp_root / "recent.mp3"
+    expired.write_bytes(b"old")
+    recent.write_bytes(b"new")
+    old_time = time.time() - 48 * 3600
+    os.utime(expired, (old_time, old_time))
+
+    coordinator = PipelineCoordinator(
+        capture_factory=FakeCapture,
+        worker_factory=FakeWorker,
+        cache_factory=lambda _path: object(),
+    )
+    coordinator.start(capture_dir=temp_root, temp_retention_hours=24)
+
+    assert not expired.exists()
+    assert recent.exists()
 
 
 def test_runtime_supervisor_supports_timing_source_before_or_after_capture(tmp_path: Path) -> None:

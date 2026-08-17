@@ -79,6 +79,10 @@ def test_cache_hit_uses_compiled_without_reactive_or_capture(tmp_path):
     stop.set(); thread.join()
     assert calls[:1] == ["compiled"]
     assert "reactive" not in calls and "capture" not in calls
+    snapshot = session.snapshot()
+    assert snapshot.active_source == "saved_show"
+    assert snapshot.learning_state == "using_saved_show"
+    assert "saved show file" in snapshot.active_source_detail
 
 
 def test_cache_miss_is_reactive_and_learning_then_next_play_hits(tmp_path):
@@ -94,6 +98,8 @@ def test_cache_miss_is_reactive_and_learning_then_next_play_hits(tmp_path):
     )
     stop, thread = run_session(session)
     assert calls[:2] == ["reactive", "capture"]
+    assert session.snapshot().active_source == "new_mp3"
+    assert session.snapshot().cache_misses == 1
     cache.put(spotify_track_cache_id("abc"), timeline())
     watcher.change(track("other"))
     watcher.change(track("abc"))
@@ -119,6 +125,56 @@ def test_pause_invalidates_active_learning_capture(tmp_path):
     stop.set(); thread.join()
 
 
+def test_existing_mp3_is_reused_and_compiled_without_new_capture(tmp_path):
+    watcher = Watcher(track())
+    calls = []
+    existing = tmp_path / "existing.mp3"
+    existing.write_bytes(b"audio" * 300)
+    metadata = {"spotify_track_id": "abc"}
+    session = SpotifyLearnedLiveSession(
+        watcher,
+        cache=ShowCache(tmp_path / "cache"),
+        start_compiled=lambda *_: calls.append("compiled"),
+        start_reactive=lambda: calls.append("reactive"),
+        stop_output=lambda: None,
+        start_capture=lambda *_: calls.append("capture"),
+        find_existing_capture=lambda _track: (str(existing), metadata),
+        queue_existing_capture=lambda path, meta: calls.append((path, meta)),
+    )
+
+    stop, thread = run_session(session)
+    snapshot = session.snapshot()
+
+    assert calls[0] == "reactive"
+    assert calls[1] == (str(existing), metadata)
+    assert "capture" not in calls
+    assert snapshot.active_source == "existing_mp3"
+    assert snapshot.active_learning_state == "compiling_existing_mp3"
+    assert snapshot.existing_mp3_reuses == 1
+    assert snapshot.cache_misses == 0
+    assert "without a new capture" in snapshot.active_source_detail
+    stop.set(); thread.join()
+
+
+def test_natural_track_change_leaves_completion_to_duration_validation(tmp_path):
+    watcher = Watcher(track())
+    invalidations = []
+    session = SpotifyLearnedLiveSession(
+        watcher, cache=ShowCache(tmp_path),
+        start_compiled=lambda *_: None,
+        start_reactive=lambda: None,
+        stop_output=lambda: None,
+        start_capture=lambda *_: None,
+        invalidate_capture=invalidations.append,
+    )
+    stop, thread = run_session(session)
+
+    watcher.change(track("next"))
+
+    assert invalidations == []
+    stop.set(); thread.join()
+
+
 def test_background_job_state_does_not_replace_active_learning_badge(tmp_path):
     watcher = Watcher(track())
     session = SpotifyLearnedLiveSession(
@@ -131,6 +187,6 @@ def test_background_job_state_does_not_replace_active_learning_badge(tmp_path):
     stop, thread = run_session(session)
     session.notify_learning_state("previous", "analyzing")
     snapshot = session.snapshot()
-    assert snapshot.active_learning_state == "capturing"
+    assert snapshot.active_learning_state == "capturing_new_mp3"
     assert snapshot.background_jobs == (("previous", "analyzing", ""),)
     stop.set(); thread.join()

@@ -72,8 +72,11 @@ def _parse_device_list(stderr: str, pattern: str) -> str | None:
     in_audio_section = False
     # Sectioned format: device name on its own line
     device_re = re.compile(r'\[dshow\s*@\s*[^\]]+\]\s+"([^"]+)"')
-    # Flat format: device name followed by (audio)/(video)
-    flat_re = re.compile(r'\[dshow\s*@\s*[^\]]+\]\s+"([^"]+)"\s+\(audio\)')
+    # Flat format: device name followed by (audio)/(video). FFmpeg 8 uses
+    # an input-context prefix such as ``[in#0 @ ...]`` instead of the older
+    # ``[dshow @ ...]`` prefix, so the bracketed logger context is deliberately
+    # treated as opaque here.
+    flat_re = re.compile(r'^\[[^\]]+\]\s+"([^"]+)"\s+\(audio\)\s*$')
     pattern_lower = pattern.lower()
 
     has_section_headers = "DirectShow audio devices" in stderr

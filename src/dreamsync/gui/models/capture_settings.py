@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
 class CaptureSettings:
-    capture_dir: str = "captured_songs"
+    # ``capture_dir`` remains as a compatibility alias for older callers. New
+    # GUI/runtime code writes live segments to ``temp_capture_root``.
+    capture_dir: str = "library/temp"
+    captured_audio_root: str = "library/audio"
+    analysis_root: str = "library/analysis"
+    compiled_show_root: str = "library/shows"
+    temp_capture_root: str = "library/temp"
+    temp_retention_hours: int = 24
     naming_mode: str = "timestamp"
     max_capture_buffer: int = 0
     device_pattern: str = "CABLE Output"
@@ -22,6 +30,23 @@ class CaptureSettings:
 
     def validate(self) -> tuple[str, ...]:
         errors: list[str] = []
+        roots = {
+            "Captured audio root": self.captured_audio_root,
+            "Analysis root": self.analysis_root,
+            "Compiled show root": self.compiled_show_root,
+            "Temporary capture root": self.temp_capture_root,
+        }
+        for label, value in roots.items():
+            if not str(value).strip():
+                errors.append(f"{label} is required.")
+        normalized_roots = [
+            str(Path(value).expanduser().resolve()).casefold()
+            for value in roots.values() if str(value).strip()
+        ]
+        if len(set(normalized_roots)) != len(normalized_roots):
+            errors.append("Storage roots must use four different directories.")
+        if self.temp_retention_hours < 1:
+            errors.append("Temporary capture retention must be at least 1 hour.")
         if self.naming_mode not in {"timestamp", "metadata"}:
             errors.append("Capture naming mode must be 'timestamp' or 'metadata'.")
         if self.max_capture_buffer < 0:

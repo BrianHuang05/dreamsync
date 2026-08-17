@@ -28,6 +28,7 @@ from dreamsync.gui.models.spatial_scene import (
 )
 from dreamsync.gui.services.device_discovery_service import DeviceTestSpec
 from dreamsync.gui.qt import QtModules
+from dreamsync.gui.help_guide import show_help_guide
 from dreamsync.gui.services import (
     AudioDeviceService,
     AppInfoService,
@@ -500,7 +501,6 @@ def create_main_window(
     profile_service = ProfileService()
     queue_service = QueueService()
     device_health_service = DeviceHealthService()
-    storage_service = StorageService()
     show_service = ShowService()
     session_service = SessionService()
     runtime_supervisor = RuntimeSupervisor(
@@ -569,6 +569,9 @@ def create_main_window(
 
     app_info_service = AppInfoService()
     help_menu = window.menuBar().addMenu("&Help")
+    guide_action = QtGui.QAction("How to Use DreamSync", window)
+    guide_action.setObjectName("dreamSyncHelpGuideAction")
+    help_menu.addAction(guide_action)
     about_action = QtGui.QAction("About DreamSync", window)
     about_action.setObjectName("aboutDreamSyncAction")
     help_menu.addAction(about_action)
@@ -596,7 +599,9 @@ def create_main_window(
         dialog.resize(520, 280)
         dialog.exec()
 
+    guide_action.triggered.connect(lambda: show_help_guide(window, qt_modules))
     about_action.triggered.connect(_show_about_dialog)
+    window._dreamsync_help_guide_action = guide_action
     window._dreamsync_about_action = about_action
 
     class _SpinBoxWheelBlocker(QtCore.QObject):
@@ -846,6 +851,16 @@ def create_main_window(
     queue_panel.profile_directory_edit.setText(settings.profile_directory)
     queue_panel.show_directory_edit.setText(settings.show_directory)
     queue_panel.queue_directory_edit.setText(settings.queue_directory)
+    queue_panel.captured_audio_root_edit.setText(
+        settings.capture_settings.captured_audio_root
+    )
+    queue_panel.analysis_root_edit.setText(settings.capture_settings.analysis_root)
+    queue_panel.compiled_show_root_edit.setText(
+        settings.capture_settings.compiled_show_root
+    )
+    queue_panel.temp_capture_root_edit.setText(
+        settings.capture_settings.temp_capture_root
+    )
     queue_panel.reactive_chord_panel_check.setChecked(
         settings.reactive_chord_panel_visible
     )
@@ -965,11 +980,15 @@ def create_main_window(
         (queue_panel.stop_preview_button, "Stop Live playback (Esc)"),
         (queue_panel.queue_mode_button, "Show the Live queue (M)"),
         (queue_panel.reactive_mode_button, "Cue the Reactive interface without listening (M)"),
+        (
+            queue_panel.spotify_learned_live_mode_button,
+            "Cue Spotify Live — Learning (M)",
+        ),
         (queue_panel.start_reactive_button, "Start listening in Reactive mode (Space)"),
         (queue_panel.stop_reactive_button, "Stop Reactive listening (Space or Esc)"),
         (queue_panel.start_capture_button, "Start system-audio loopback capture after confirming the OS loopback device"),
         (queue_panel.stop_capture_button, "Stop system-audio loopback capture"),
-        (queue_panel.switch_pipeline_button, "Auto-play captured shows as they become ready"),
+        (queue_panel.switch_pipeline_button, "Play the next ready capture through Queue"),
         (queue_panel.cycle_palette_button, "Cycle the selected song palette (Ctrl+P)"),
         (queue_panel.recompile_palette_button, "Recolor prepared cue data without recompiling (Ctrl+C)"),
         (queue_panel.load_show_button, "Open a saved Show (Ctrl+O)"),
@@ -2038,8 +2057,20 @@ def create_main_window(
         combo.blockSignals(False)
 
     def _capture_settings_from_form() -> CaptureSettings:
+        temp_root = queue_panel.temp_capture_root_edit.text().strip() or "library/temp"
         return CaptureSettings(
-            capture_dir=queue_panel.capture_dir_edit.text().strip() or "captured_songs",
+            capture_dir=temp_root,
+            captured_audio_root=(
+                queue_panel.captured_audio_root_edit.text().strip() or "library/audio"
+            ),
+            analysis_root=(
+                queue_panel.analysis_root_edit.text().strip() or "library/analysis"
+            ),
+            compiled_show_root=(
+                queue_panel.compiled_show_root_edit.text().strip() or "library/shows"
+            ),
+            temp_capture_root=temp_root,
+            temp_retention_hours=int(queue_panel.temp_retention_hours_spin.value()),
             naming_mode=str(queue_panel.capture_naming_combo.currentData() or "timestamp"),
             max_capture_buffer=int(queue_panel.capture_buffer_spin.value()),
             device_pattern=queue_panel.capture_device_pattern_edit.text().strip() or "CABLE Output",
@@ -2056,6 +2087,11 @@ def create_main_window(
     def _apply_capture_settings_to_form(settings_state: CaptureSettings) -> None:
         widgets = (
             queue_panel.capture_dir_edit,
+            queue_panel.captured_audio_root_edit,
+            queue_panel.analysis_root_edit,
+            queue_panel.compiled_show_root_edit,
+            queue_panel.temp_capture_root_edit,
+            queue_panel.temp_retention_hours_spin,
             queue_panel.capture_naming_combo,
             queue_panel.capture_buffer_spin,
             queue_panel.capture_device_pattern_edit,
@@ -2070,7 +2106,12 @@ def create_main_window(
         )
         for widget in widgets:
             widget.blockSignals(True)
-        queue_panel.capture_dir_edit.setText(settings_state.capture_dir)
+        queue_panel.capture_dir_edit.setText(settings_state.temp_capture_root)
+        queue_panel.captured_audio_root_edit.setText(settings_state.captured_audio_root)
+        queue_panel.analysis_root_edit.setText(settings_state.analysis_root)
+        queue_panel.compiled_show_root_edit.setText(settings_state.compiled_show_root)
+        queue_panel.temp_capture_root_edit.setText(settings_state.temp_capture_root)
+        queue_panel.temp_retention_hours_spin.setValue(settings_state.temp_retention_hours)
         _select_combo_data(queue_panel.capture_naming_combo, settings_state.naming_mode)
         queue_panel.capture_buffer_spin.setValue(settings_state.max_capture_buffer)
         queue_panel.capture_device_pattern_edit.setText(settings_state.device_pattern)
@@ -7532,7 +7573,13 @@ def create_main_window(
     ) -> None:  # pragma: no cover - Qt only
         """Render the real input/beat state from the refined reactive engine."""
         runtime_state = runtime_state or runtime_supervisor.snapshot()
-        active_reactive = runtime_state.active_output_mode in {"reactive", "reactive_live"}
+        active_reactive = (
+            runtime_state.active_output_mode in {"reactive", "reactive_live"}
+            or (
+                runtime_state.active_output_mode == "spotify_learned_live"
+                and runtime_state.reactive_effect_mode == "reactive"
+            )
+        )
         raw_visualizer_mode = (
             runtime_state.reactive_effect_mode == "raw_visualizer"
             or (
@@ -8198,12 +8245,35 @@ def create_main_window(
                 queue_panel.raw_visualizer_mode_button,
                 "raw_visualizer",
             ),
+            (
+                queue_panel.spotify_learned_live_mode_button,
+                "spotify_learned_live",
+            ),
         ):
             blocker = QtCore.QSignalBlocker(button)
             button.setChecked(button_mode == selected_mode)
             del blocker
         queue_visible = selected_mode in {"queue", "spotify_learned_live"}
-        queue_panel.live_queue_toolbar.setVisible(queue_visible)
+        queue_panel.live_queue_toolbar.setVisible(selected_mode == "queue")
+        queue_panel.live_reactive_toolbar.setVisible(
+            selected_mode in {"reactive", "raw_visualizer"}
+        )
+        queue_panel.live_learning_toolbar.setVisible(
+            selected_mode == "spotify_learned_live"
+        )
+        raw_mode_selected = selected_mode == "raw_visualizer"
+        queue_panel.start_reactive_button.setVisible(
+            selected_mode == "reactive"
+        )
+        queue_panel.stop_reactive_button.setVisible(
+            selected_mode == "reactive"
+        )
+        queue_panel.start_raw_visualizer_button.setVisible(
+            raw_mode_selected
+        )
+        queue_panel.stop_raw_visualizer_button.setVisible(
+            raw_mode_selected
+        )
         queue_panel.live_queue_group.setVisible(queue_visible)
         queue_panel.live_palette_group.setVisible(queue_visible)
         queue_panel.show_override_group.setVisible(queue_visible)
@@ -8228,22 +8298,24 @@ def create_main_window(
             else:
                 _render_reactive_live_state()
         if announce:
-            queue_controller.set_status(
-                (
+            status_by_mode = {
+                "queue": "Queue mode selected. Local and Spotify queues are available.",
+                "reactive": "Reactive mode cued. Press Space to start listening.",
+                "raw_visualizer": (
                     "Raw Visualizer cued. Press Space to start frequency-only listening."
-                    if selected_mode == "raw_visualizer"
-                    else "Reactive mode cued. Press Space to start listening."
-                )
-                if selected_mode != "queue"
-                else (
+                ),
+                "spotify_learned_live": (
                     "Spotify Live — Learning selected. Start when Spotify is playing."
-                    if selected_mode == "spotify_learned_live"
-                    else "Queue mode selected. Local and Spotify queues are available."
-                )
-            )
+                ),
+            }
+            queue_controller.set_status(status_by_mode[selected_mode])
         _render_queue_state(queue_controller.state)
 
     def _render_queue_state(state: QueueState) -> None:
+        # This renderer runs during startup before the first runtime render.
+        # Resolve its runtime data locally instead of relying on another
+        # callback's local variable.
+        runtime_state = runtime_supervisor.snapshot()
         selected = state.selected_track
         spotify_available = bool(
             live_mode_state["value"] == "spotify_learned_live"
@@ -8322,6 +8394,10 @@ def create_main_window(
                     queue_panel.spotify_list.addItem(
                         f"DreamSync: {runtime_state.learned_live_badge}"
                     )
+                if runtime_state.learned_track_source_detail:
+                    queue_panel.spotify_learning_list.addItem(
+                        f"Track source: {runtime_state.learned_track_source_detail}"
+                    )
                 if runtime_state.learning_state not in {"", "idle"}:
                     detail = (
                         f" · {runtime_state.learning_reason}"
@@ -8335,8 +8411,9 @@ def create_main_window(
                 queue_panel.spotify_learning_list.addItem(
                     "Learned Library: "
                     f"{runtime_state.learned_library_count} tracks · "
-                    f"{runtime_state.learned_cache_hits} hits / "
-                    f"{runtime_state.learned_cache_misses} misses"
+                    f"{runtime_state.learned_cache_hits} saved-show hits / "
+                    f"{runtime_state.learned_existing_mp3_reuses} existing-MP3 reuses / "
+                    f"{runtime_state.learned_cache_misses} new captures"
                 )
             if state.spotify_current:
                 queue_panel.spotify_list.addItem(f"Now Playing: {state.spotify_current}")
@@ -8523,9 +8600,39 @@ def create_main_window(
             f"Pipeline: {pipeline_state.title()} / Ready {runtime_state.ready_queue_count}"
         )
         queue_panel.routing_status_label.setText(f"Routing: {runtime_state.routing_state.routing_status}")
-        queue_panel.active_owner_label.setText(f"Active owner: {runtime_state.active_output_mode or 'idle'}")
+        lighting_owner = runtime_state.lighting_output_lease.owner or "none"
+        audio_owner = runtime_state.audio_output_lease.owner or "none"
+        queue_panel.active_owner_label.setText(
+            f"Lighting owner: {lighting_owner} · Audio owner: {audio_owner}"
+        )
         queue_panel.armed_owner_label.setText(
             f"Armed owner: {runtime_state.armed_output_mode or 'none'}"
+        )
+        learning_running = (
+            runtime_state.active_output_mode == "spotify_learned_live"
+        )
+        queue_panel.spotify_learned_live_status_label.setText(
+            "Learning: running" if learning_running else "Learning: stopped"
+        )
+        queue_panel.spotify_learned_live_start_button.setEnabled(
+            not learning_running
+        )
+        queue_panel.spotify_learned_live_stop_button.setEnabled(
+            learning_running
+        )
+        reactive_running = runtime_state.active_output_mode in {
+            "reactive",
+            "reactive_live",
+        }
+        queue_panel.start_reactive_button.setEnabled(
+            runtime_state.active_output_mode == "idle"
+        )
+        queue_panel.stop_reactive_button.setEnabled(reactive_running)
+        queue_panel.start_raw_visualizer_button.setEnabled(
+            runtime_state.active_output_mode == "idle"
+        )
+        queue_panel.stop_raw_visualizer_button.setEnabled(
+            reactive_running
         )
         saved_show_text = runtime_state.selected_show_path or "none"
         if saved_show_text and saved_show_text != "none":
@@ -8971,19 +9078,26 @@ def create_main_window(
             raw_config = queue_panel.device_room_config_path_edit.text().strip()
             runtime_supervisor.start_spotify_learned_live(
                 watcher,
-                capture_dir=Path(capture_settings.capture_dir),
+                capture_dir=Path(capture_settings.temp_capture_root),
                 config_path=Path(raw_config) if raw_config else None,
                 profile=_current_base_profile(),
             )
             queue_controller.set_status("Spotify Live — Learning started.")
+            queue_timer.start()
+            preview_timer.start()
         except Exception as exc:
             queue_controller.set_status(f"Spotify Live — Learning could not start: {exc}")
-        _render_runtime_state(runtime_supervisor.snapshot())
+        runtime_state = runtime_supervisor.snapshot()
+        _render_queue_state(queue_controller.state)
+        _render_runtime_state(runtime_state)
 
     def _stop_spotify_learned_live() -> None:  # pragma: no cover - Qt only
         runtime_supervisor.stop_spotify_learned_live()
         queue_controller.set_status("Spotify Live — Learning stopped.")
-        _render_runtime_state(runtime_supervisor.snapshot())
+        preview_timer.stop()
+        runtime_state = runtime_supervisor.snapshot()
+        _render_queue_state(queue_controller.state)
+        _render_runtime_state(runtime_state)
 
     def _apply_palette_choices(
         choices: list[dict[str, object]],
@@ -9516,12 +9630,16 @@ def create_main_window(
         return f"{size:.1f} GiB"
 
     def _capture_storage_path() -> Path:
-        value = queue_panel.capture_dir_edit.text().strip() or "captured_songs"
+        value = queue_panel.captured_audio_root_edit.text().strip() or "library/audio"
         return Path(value).expanduser()
+
+    def _configured_storage_service() -> StorageService:
+        root = queue_panel.compiled_show_root_edit.text().strip() or "library/shows"
+        return StorageService(root)
 
     def _refresh_storage() -> None:  # pragma: no cover - Qt only
         try:
-            snapshot = storage_service.snapshot(_capture_storage_path())
+            snapshot = _configured_storage_service().snapshot(_capture_storage_path())
         except Exception as exc:
             queue_panel.storage_cache_label.setText(f"Storage unavailable: {exc}")
             queue_panel.storage_capture_label.setText("")
@@ -9539,7 +9657,7 @@ def create_main_window(
         answer = QtWidgets.QMessageBox.question(
             window,
             "Clear All Show Cache?",
-            f"Delete all compiled cache entries under:\n{storage_service.cache_dir}",
+            f"Delete all compiled cache entries under:\n{_configured_storage_service().cache_dir}",
             QtWidgets.QMessageBox.StandardButton.Yes
             | QtWidgets.QMessageBox.StandardButton.No,
             QtWidgets.QMessageBox.StandardButton.No,
@@ -9547,7 +9665,7 @@ def create_main_window(
         if answer != QtWidgets.QMessageBox.StandardButton.Yes:
             return
         try:
-            count = storage_service.clear_all_cache()
+            count = _configured_storage_service().clear_all_cache()
             queue_controller.set_status(f"Cleared {count} compiled cache entr{'y' if count == 1 else 'ies'}.")
         except Exception as exc:
             queue_controller.set_status(f"Could not clear cache: {exc}")
@@ -9572,7 +9690,7 @@ def create_main_window(
         if answer != QtWidgets.QMessageBox.StandardButton.Yes:
             return
         try:
-            count = storage_service.clear_track_cache(track_path)
+            count = _configured_storage_service().clear_track_cache(track_path)
             queue_controller.set_status(
                 f"Cleared {count} compiled cache entr{'y' if count == 1 else 'ies'} for {track_path.name}."
             )
@@ -9586,7 +9704,7 @@ def create_main_window(
             queue_controller.set_status("Stop Audio Loopback Capture before archiving capture files.")
             _render_queue_state(queue_controller.state)
             return
-        preview = storage_service.capture_preview(_capture_storage_path())
+        preview = _configured_storage_service().capture_preview(_capture_storage_path())
         if not preview.files:
             queue_controller.set_status("No MP3 capture files are available to archive.")
             _render_queue_state(queue_controller.state)
@@ -9624,7 +9742,7 @@ def create_main_window(
             )
             if answer != QtWidgets.QMessageBox.StandardButton.Yes:
                 return
-        default_path = storage_service.default_archive_path(preview.directory)
+        default_path = _configured_storage_service().default_archive_path(preview.directory)
         selected, _filter = QtWidgets.QFileDialog.getSaveFileName(
             window,
             "Save Capture Archive",
@@ -9634,7 +9752,7 @@ def create_main_window(
         if not selected:
             return
         try:
-            archive_path = storage_service.archive_captures(
+            archive_path = _configured_storage_service().archive_captures(
                 preview.directory,
                 Path(selected),
                 keep_originals=keep_originals.isChecked(),
@@ -10802,7 +10920,7 @@ def create_main_window(
         warning.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
         warning.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Ok)
         warning.exec()
-        capture_dir = Path(capture_settings.capture_dir)
+        capture_dir = Path(capture_settings.temp_capture_root)
         try:
             runtime_supervisor.start_capture_pipeline(
                 capture_dir=capture_dir,
@@ -10812,6 +10930,10 @@ def create_main_window(
                 capture_buffer=capture_settings.max_capture_buffer,
                 device_pattern=capture_settings.device_pattern,
                 debug=capture_settings.debug_pipeline,
+                audio_root=Path(capture_settings.captured_audio_root),
+                analysis_root=Path(capture_settings.analysis_root),
+                compiled_show_root=Path(capture_settings.compiled_show_root),
+                temp_retention_hours=capture_settings.temp_retention_hours,
             )
         except Exception as exc:
             queue_controller.set_status(f"Could not start capture pipeline: {exc}")
@@ -10829,11 +10951,11 @@ def create_main_window(
         _render_runtime_state(runtime_supervisor.snapshot())
 
     def _switch_to_pipeline_playback() -> None:  # pragma: no cover - Qt only
-        started = runtime_supervisor.switch_to_pipeline_playback(config_path=config_path)
+        started = runtime_supervisor.start_next_queue_pipeline_item(config_path=config_path)
         if started:
-            queue_controller.set_status("Captured-show playback started.")
+            queue_controller.set_status("Queue playback started for the next captured show.")
         else:
-            queue_controller.set_status("Auto-play captured shows armed; waiting for the next ready capture.")
+            queue_controller.set_status("No captured show is ready for Queue playback.")
         _render_queue_state(queue_controller.state)
         _render_runtime_state(runtime_supervisor.snapshot())
         queue_timer.start()
@@ -11014,7 +11136,7 @@ def create_main_window(
             queue_controller.set_status(str(exc))
             _render_queue_state(queue_controller.state)
             return
-        queue_controller.set_status("Simulation preview started for the selected captured show.")
+        queue_controller.set_status("Silent lighting preview started for the selected captured show.")
         _render_queue_state(queue_controller.state)
         _render_runtime_state(runtime_supervisor.snapshot())
         queue_timer.start()
@@ -11026,11 +11148,11 @@ def create_main_window(
             _render_queue_state(queue_controller.state)
             return
         runtime_supervisor.prioritize_captured_show(item_id)
-        started = runtime_supervisor.switch_to_pipeline_playback(config_path=config_path)
+        started = runtime_supervisor.start_next_queue_pipeline_item(config_path=config_path)
         if started:
-            queue_controller.set_status("Selected captured show is now driving pipeline playback.")
+            queue_controller.set_status("Selected captured show is now playing through Queue.")
         else:
-            queue_controller.set_status("Selected captured show moved to the top; pipeline playback is armed.")
+            queue_controller.set_status("Selected captured show is not ready for Queue playback.")
         _render_queue_state(queue_controller.state)
         _render_runtime_state(runtime_supervisor.snapshot())
         queue_timer.start()
@@ -11347,6 +11469,33 @@ def create_main_window(
             "Select Local Audio / Playlist Source Folder",
         )
     )
+    for browse_button, edit, title in (
+        (
+            queue_panel.browse_captured_audio_root_button,
+            queue_panel.captured_audio_root_edit,
+            "Select Captured Audio Library Root",
+        ),
+        (
+            queue_panel.browse_analysis_root_button,
+            queue_panel.analysis_root_edit,
+            "Select Analysis Library Root",
+        ),
+        (
+            queue_panel.browse_compiled_show_root_button,
+            queue_panel.compiled_show_root_edit,
+            "Select Compiled Show Library Root",
+        ),
+        (
+            queue_panel.browse_temp_capture_root_button,
+            queue_panel.temp_capture_root_edit,
+            "Select Temporary Capture Root",
+        ),
+    ):
+        browse_button.clicked.connect(
+            lambda _checked=False, target=edit, caption=title: _browse_directory(
+                target, caption
+            )
+        )
     queue_panel.apply_file_locations_button.clicked.connect(_apply_file_locations)
     queue_panel.refresh_storage_button.clicked.connect(_refresh_storage)
     queue_panel.clear_all_cache_button.clicked.connect(_clear_all_cache)
@@ -11520,7 +11669,12 @@ def create_main_window(
 
     def _toggle_live_mode_shortcut() -> None:  # pragma: no cover - Qt only
         if not _show_text_input_has_focus():
-            mode_cycle = ("queue", "reactive", "raw_visualizer")
+            mode_cycle = (
+                "queue",
+                "reactive",
+                "raw_visualizer",
+                "spotify_learned_live",
+            )
             current_index = mode_cycle.index(live_mode_state["value"])
             _set_live_mode(mode_cycle[(current_index + 1) % len(mode_cycle)])
 
@@ -11607,6 +11761,9 @@ def create_main_window(
     queue_panel.reactive_mode_button.clicked.connect(lambda: _set_live_mode("reactive"))
     queue_panel.raw_visualizer_mode_button.clicked.connect(
         lambda: _set_live_mode("raw_visualizer")
+    )
+    queue_panel.spotify_learned_live_mode_button.clicked.connect(
+        lambda: _set_live_mode("spotify_learned_live")
     )
     def _sync_raw_visualizer_point_rows() -> None:
         count = int(
@@ -11731,6 +11888,16 @@ def create_main_window(
     queue_panel.input_device_combo.currentIndexChanged.connect(lambda _index: _on_input_device_changed())
     queue_panel.capture_naming_combo.currentIndexChanged.connect(lambda _index: _on_runtime_settings_changed())
     queue_panel.capture_dir_edit.editingFinished.connect(_on_runtime_settings_changed)
+    for root_edit in (
+        queue_panel.captured_audio_root_edit,
+        queue_panel.analysis_root_edit,
+        queue_panel.compiled_show_root_edit,
+        queue_panel.temp_capture_root_edit,
+    ):
+        root_edit.editingFinished.connect(_on_runtime_settings_changed)
+    queue_panel.temp_retention_hours_spin.valueChanged.connect(
+        lambda _value: _on_runtime_settings_changed()
+    )
     queue_panel.capture_buffer_spin.valueChanged.connect(lambda _value: _on_runtime_settings_changed())
     queue_panel.capture_device_pattern_edit.editingFinished.connect(_on_runtime_settings_changed)
     queue_panel.capture_sample_rate_spin.valueChanged.connect(lambda _value: _on_runtime_settings_changed())

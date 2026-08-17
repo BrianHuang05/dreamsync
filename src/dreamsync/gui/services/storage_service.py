@@ -49,7 +49,7 @@ class StorageService:
         cache = ShowCache(self._cache_dir).stats()
         captures = self.capture_preview(capture_dir)
         learned_files = tuple(
-            path for directory in self._cache_dir.glob("spotify_*")
+            path for directory in self._cache_dir.rglob("spotify_*")
             if directory.is_dir() for path in directory.iterdir() if path.is_file()
         )
         return StorageSnapshot(
@@ -76,7 +76,9 @@ class StorageService:
     def delete_retained_source(self, source: Path | str, capture_dir: Path | str) -> None:
         source_path = Path(source).expanduser().resolve()
         root = self._safe_root(capture_dir, label="capture")
-        if source_path.parent != root:
+        try:
+            source_path.relative_to(root)
+        except ValueError:
             raise ValueError("Retained source is outside the configured capture directory.")
         if source_path.suffix.lower() != ".mp3":
             raise ValueError("Only retained MP3 source files can be deleted.")
@@ -95,15 +97,19 @@ class StorageService:
                 path.unlink()
                 return 1
             return 0
-        directory = (self._cache_dir / key).resolve()
-        if directory.parent != self._cache_dir or not directory.is_dir():
+        directories = tuple(
+            directory for directory in self._cache_dir.rglob(key)
+            if directory.is_dir() and directory.name == key
+        )
+        if not directories:
             return 0
         count = 0
-        for path in directory.iterdir():
-            if path.is_file():
-                path.unlink()
-                count += 1
-        directory.rmdir()
+        for directory in directories:
+            for path in directory.iterdir():
+                if path.is_file():
+                    path.unlink()
+                    count += 1
+            directory.rmdir()
         return count
 
     def clear_all_cache(self) -> int:
@@ -117,7 +123,10 @@ class StorageService:
 
     def capture_preview(self, capture_dir: Path | str) -> CaptureArchivePreview:
         directory = Path(capture_dir).expanduser().resolve()
-        files = tuple(sorted(path for path in directory.glob("*.mp3") if path.is_file())) if directory.is_dir() else ()
+        files = (
+            tuple(sorted(path for path in directory.rglob("*.mp3") if path.is_file()))
+            if directory.is_dir() else ()
+        )
         return CaptureArchivePreview(
             directory=directory,
             files=files,
@@ -145,7 +154,7 @@ class StorageService:
         try:
             with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as archive:
                 for source in preview.files:
-                    archive.write(source, source.name)
+                    archive.write(source, source.relative_to(preview.directory))
             with zipfile.ZipFile(temporary, "r") as archive:
                 if archive.testzip() is not None or len(archive.namelist()) != len(preview.files):
                     raise RuntimeError("Capture archive verification failed.")

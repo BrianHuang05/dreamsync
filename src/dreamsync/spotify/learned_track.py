@@ -82,17 +82,31 @@ class TrackManifest:
 
 
 class LearnedTrackStore:
-    def __init__(self, cache: ShowCache | Path | str = "~/.dreamsync/cache") -> None:
+    def __init__(
+        self,
+        cache: ShowCache | Path | str = "~/.dreamsync/cache",
+        *,
+        analysis_root: Path | str | None = None,
+    ) -> None:
         self.cache = cache if isinstance(cache, ShowCache) else ShowCache(cache)
+        self.analysis_root = (
+            Path(analysis_root).expanduser().resolve()
+            if analysis_root is not None else self.cache.cache_dir
+        )
+        self.analysis_root.mkdir(parents=True, exist_ok=True)
 
     def track_dir(self, track_id: str) -> Path:
         return self.cache.cache_dir / spotify_track_cache_id(track_id)
 
     def manifest_path(self, track_id: str) -> Path:
-        return self.track_dir(track_id) / "manifest.json"
+        return self._find_track_file(
+            self.cache.cache_dir, track_id, "manifest.json"
+        ) or (self.track_dir(track_id) / "manifest.json")
 
     def analysis_path(self, track_id: str) -> Path:
-        return self.track_dir(track_id) / "analysis.json"
+        return self._find_track_file(
+            self.analysis_root, track_id, "analysis.json"
+        ) or (self.analysis_root / spotify_track_cache_id(track_id) / "analysis.json")
 
     def read_manifest(self, track_id: str) -> TrackManifest | None:
         try:
@@ -166,7 +180,9 @@ class LearnedTrackStore:
 
     def list_manifests(self) -> tuple[TrackManifest, ...]:
         manifests = []
-        for path in self.cache.cache_dir.glob("spotify_*/manifest.json"):
+        for path in self.cache.cache_dir.rglob("manifest.json"):
+            if not path.parent.name.startswith("spotify_"):
+                continue
             try:
                 manifest = TrackManifest.from_dict(json.loads(path.read_text(encoding="utf-8")))
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -178,13 +194,25 @@ class LearnedTrackStore:
     def recovery_items(self) -> tuple[Path, ...]:
         """Return incomplete transaction evidence without guessing provider identity."""
         items: list[Path] = []
-        for directory in self.cache.cache_dir.glob("spotify_*"):
+        for directory in self.cache.cache_dir.rglob("spotify_*"):
             if not directory.is_dir():
                 continue
             manifest = directory / "manifest.json"
             if not manifest.exists() or self.read_manifest(directory.name.removeprefix("spotify_")) is None:
                 items.append(directory)
         return tuple(items)
+
+    @staticmethod
+    def _find_track_file(root: Path, track_id: str, filename: str) -> Path | None:
+        directory_name = spotify_track_cache_id(track_id)
+        canonical = root / directory_name / filename
+        if canonical.is_file():
+            return canonical
+        for directory in root.rglob(directory_name):
+            candidate = directory / filename
+            if directory.is_dir() and candidate.is_file():
+                return candidate
+        return None
 
     @staticmethod
     def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -195,4 +223,3 @@ class LearnedTrackStore:
             os.replace(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
-

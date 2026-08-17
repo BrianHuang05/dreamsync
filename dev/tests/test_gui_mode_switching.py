@@ -1,12 +1,328 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
 from dreamsync.gui.main_window import create_main_window
 from dreamsync.gui.qt import require_qt
 from dreamsync.gui.settings import GuiSettings
+
+
+def test_help_action_opens_searchable_how_to_guide():
+    QtCore = pytest.importorskip("PySide6.QtCore")
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    window = create_main_window(
+        require_qt(),
+        GuiSettings(),
+        config_path=Path("dev/devices-dummy.yaml"),
+    )
+    action = window.findChild(QtCore.QObject, "dreamSyncHelpGuideAction")
+    assert action is not None
+
+    observed: dict[str, object] = {}
+
+    def inspect_and_close() -> None:
+        dialog = window.findChild(QtWidgets.QDialog, "dreamSyncHelpGuideDialog")
+        assert dialog is not None
+        sections = dialog.findChild(QtWidgets.QListWidget, "dreamSyncHelpGuideSections")
+        search = dialog.findChild(QtWidgets.QLineEdit, "dreamSyncHelpGuideSearch")
+        browser = dialog.findChild(QtWidgets.QTextBrowser, "dreamSyncHelpGuideText")
+        assert sections is not None
+        assert search is not None
+        assert browser is not None
+        observed["content"] = browser.toPlainText()
+        search.setText("VB-Cable")
+        observed["vb_cable_visible"] = not sections.item(1).isHidden()
+        observed["vb_cable_content"] = browser.toPlainText()
+        dialog.accept()
+
+    QtCore.QTimer.singleShot(0, inspect_and_close)
+    action.trigger()
+    app.processEvents()
+    assert "DreamSync how-to guide" in str(observed["content"])
+    assert observed["vb_cable_visible"] is True
+    assert "Windows system-audio loopback" in str(observed["vb_cable_content"])
+    window.close()
+
+
+def test_startup_with_live_loopback_enabled_renders_before_first_runtime_poll():
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    token_store = type("TokenStore", (), {"access_token": ""})()
+    with patch("dreamsync.spotify.auth.TokenStore", return_value=token_store):
+        window = create_main_window(
+            require_qt(),
+            GuiSettings(live_loopback_enabled=True),
+            config_path=Path("dev/devices-dummy.yaml"),
+        )
+
+    checkbox = window.findChild(QtWidgets.QCheckBox, "liveLoopbackCheck")
+    assert checkbox is not None
+    assert checkbox.isChecked()
+    window.close()
+
+
+def test_learning_mode_has_button_and_participates_in_m_cycle():
+    QtCore = pytest.importorskip("PySide6.QtCore")
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    QtTest = pytest.importorskip("PySide6.QtTest")
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    window = create_main_window(
+        require_qt(),
+        GuiSettings(),
+        config_path=Path("dev/devices-dummy.yaml"),
+    )
+    live_tab = window.findChild(QtWidgets.QWidget, "liveTabWidget")
+    queue_button = window.findChild(QtWidgets.QPushButton, "queueLiveModeButton")
+    reactive_button = window.findChild(
+        QtWidgets.QPushButton,
+        "reactiveLiveModeButton",
+    )
+    raw_button = window.findChild(
+        QtWidgets.QPushButton,
+        "rawVisualizerLiveModeButton",
+    )
+    learning_button = window.findChild(
+        QtWidgets.QPushButton,
+        "spotifyLearnedLiveModeButton",
+    )
+    reactive_toolbar = window.findChild(QtWidgets.QWidget, "liveReactiveToolbar")
+    learning_toolbar = window.findChild(QtWidgets.QWidget, "liveLearningToolbar")
+    start_reactive = window.findChild(QtWidgets.QPushButton, "startReactiveButton")
+    start_raw = window.findChild(QtWidgets.QPushButton, "startRawVisualizerButton")
+    start_learning = window.findChild(
+        QtWidgets.QPushButton,
+        "spotifyLearnedLiveStartButton",
+    )
+    learning_status = window.findChild(
+        QtWidgets.QLabel,
+        "spotifyLearnedLiveStatusLabel",
+    )
+
+    assert learning_button is not None
+    assert reactive_toolbar.isAncestorOf(start_reactive)
+    assert reactive_toolbar.isAncestorOf(start_raw)
+    assert learning_toolbar.isAncestorOf(start_learning)
+    learning_button.click()
+    app.processEvents()
+    assert learning_button.isChecked()
+    assert not learning_toolbar.isHidden()
+    assert reactive_toolbar.isHidden()
+    assert learning_status.text() == "Learning: stopped"
+
+    raw_button.click()
+    app.processEvents()
+    assert not reactive_toolbar.isHidden()
+    assert start_reactive.isHidden()
+    assert not start_raw.isHidden()
+
+    queue_button.click()
+    live_tab.setFocus()
+    for expected in (
+        reactive_button,
+        raw_button,
+        learning_button,
+        queue_button,
+    ):
+        QtTest.QTest.keyClick(live_tab, QtCore.Qt.Key.Key_M)
+        app.processEvents()
+        assert expected.isChecked()
+
+    window.close()
+
+
+def test_space_starts_and_stops_raw_visualizer_mode():
+    QtCore = pytest.importorskip("PySide6.QtCore")
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    QtTest = pytest.importorskip("PySide6.QtTest")
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    handles = []
+
+    class _FakeHandle:
+        mode = "reactive_live"
+        error = None
+        summary = None
+
+        def __init__(self):
+            self.running = True
+            self.stop_calls = 0
+            self.session_ref = [SimpleNamespace(session_snapshot=lambda: {})]
+
+        def stop(self):
+            self.stop_calls += 1
+            self.running = False
+
+    def _start_fake_raw(supervisor, **kwargs):
+        handle = _FakeHandle()
+        supervisor._reactive_effect_mode = kwargs["effect_mode"]
+        supervisor._output_handle = handle
+        handles.append(handle)
+        return handle
+
+    with patch(
+        "dreamsync.gui.services.runtime_supervisor.RuntimeSupervisor.start_reactive_live",
+        new=_start_fake_raw,
+    ):
+        window = create_main_window(
+            require_qt(),
+            GuiSettings(),
+            config_path=Path("dev/devices-dummy.yaml"),
+        )
+        live_tab = window.findChild(QtWidgets.QWidget, "liveTabWidget")
+        raw_button = window.findChild(
+            QtWidgets.QPushButton,
+            "rawVisualizerLiveModeButton",
+        )
+        raw_button.click()
+        live_tab.setFocus()
+
+        QtTest.QTest.keyClick(live_tab, QtCore.Qt.Key.Key_Space)
+        app.processEvents()
+        assert len(handles) == 1
+        assert handles[0].running
+
+        QtTest.QTest.keyClick(live_tab, QtCore.Qt.Key.Key_Space)
+        app.processEvents()
+        assert handles[0].stop_calls == 1
+        assert not handles[0].running
+        window.close()
+
+
+def test_learning_start_updates_status_and_polls_live_preview():
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    QtTest = pytest.importorskip("PySide6.QtTest")
+    from dreamsync.spotify.learned_live_session import LearnedLiveSnapshot
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    class _FakeWatcher:
+        def __init__(self, *_args, **_kwargs):
+            self.running = False
+
+        def start(self):
+            self.running = True
+
+        def stop(self):
+            self.running = False
+
+        def snapshot(self):
+            return {}
+
+    class _FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def close(self):
+            pass
+
+    class _FakeHandle:
+        error = None
+        summary = None
+
+        def __init__(self, mode, session=None):
+            self.mode = mode
+            self.running = True
+            self.session_ref = [session] if session is not None else []
+
+        def stop(self):
+            self.running = False
+
+    class _FakeReactiveSession:
+        def __init__(self):
+            self.preview_calls = 0
+
+        def session_snapshot(self):
+            return {"playback_state": "playing"}
+
+        def preview_frame_snapshot(self):
+            self.preview_calls += 1
+            return {"node_colors": {"preview-node": "#ff0000"}}
+
+    reactive_session = _FakeReactiveSession()
+
+    def _start_fake_learning(supervisor, *_args, **_kwargs):
+        learned_session = SimpleNamespace(
+            snapshot=lambda: LearnedLiveSnapshot(
+                active_strategy="reactive",
+                active_learning_state="capturing",
+            )
+        )
+        supervisor._learned_live_session = learned_session
+        supervisor._learned_live_handle = _FakeHandle("spotify_learned_live")
+        supervisor._reactive_effect_mode = "reactive"
+        supervisor._output_handle = _FakeHandle(
+            "reactive_live",
+            reactive_session,
+        )
+        return supervisor._learned_live_handle
+
+    def _stop_fake_learning(supervisor):
+        if supervisor._learned_live_handle is not None:
+            supervisor._learned_live_handle.stop()
+        supervisor._learned_live_handle = None
+        supervisor._learned_live_session = None
+        supervisor._stop_output_handle()
+
+    token_store = SimpleNamespace(access_token="test-token")
+    with (
+        patch("dreamsync.spotify.auth.TokenStore", return_value=token_store),
+        patch("dreamsync.spotify.client.SpotifyClient", _FakeClient),
+        patch("dreamsync.spotify.queue_watcher.SpotifyQueueWatcher", _FakeWatcher),
+        patch(
+            "dreamsync.gui.services.runtime_supervisor.RuntimeSupervisor.start_spotify_learned_live",
+            new=_start_fake_learning,
+        ),
+        patch(
+            "dreamsync.gui.services.runtime_supervisor.RuntimeSupervisor.stop_spotify_learned_live",
+            new=_stop_fake_learning,
+        ),
+    ):
+        window = create_main_window(
+            require_qt(),
+            GuiSettings(),
+            config_path=Path("dev/devices-dummy.yaml"),
+        )
+        mode_button = window.findChild(
+            QtWidgets.QPushButton,
+            "spotifyLearnedLiveModeButton",
+        )
+        start_button = window.findChild(
+            QtWidgets.QPushButton,
+            "spotifyLearnedLiveStartButton",
+        )
+        stop_button = window.findChild(
+            QtWidgets.QPushButton,
+            "spotifyLearnedLiveStopButton",
+        )
+        status = window.findChild(
+            QtWidgets.QLabel,
+            "spotifyLearnedLiveStatusLabel",
+        )
+
+        mode_button.click()
+        start_button.click()
+        QtTest.QTest.qWait(80)
+        app.processEvents()
+
+        assert status.text() == "Learning: running"
+        assert reactive_session.preview_calls > 0
+        label_texts = [label.text() for label in window.findChildren(QtWidgets.QLabel)]
+        assert "Spotify Live — Learning started." in label_texts
+        assert not any("Start when Spotify is playing" in text for text in label_texts)
+
+        stop_button.click()
+        app.processEvents()
+        assert status.text() == "Learning: stopped"
+        assert "Spotify Live — Learning stopped." in [
+            label.text() for label in window.findChildren(QtWidgets.QLabel)
+        ]
+        window.close()
 
 
 def test_raw_visualizer_mode_hides_reactive_live_controls():

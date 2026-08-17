@@ -10,10 +10,22 @@ from .runtime_routing_state import RuntimeRoutingState
 
 
 @dataclass(frozen=True)
-class OutputLease:
+class LightingOutputLease:
     owner: str = ""
     mode: str = "idle"
     simulation_only: bool = True
+
+
+@dataclass(frozen=True)
+class AudioOutputLease:
+    owner: str = ""
+    mode: str = "idle"
+    violation_count: int = 0
+    last_violation: str = ""
+
+
+# Compatibility name for code that still renders the former broad lease.
+OutputLease = LightingOutputLease
 
 
 @dataclass(frozen=True)
@@ -51,14 +63,19 @@ class RuntimeModeState:
     spotify_state: str = "off"
     learned_live_strategy: str = "waiting"
     learned_live_badge: str = ""
+    learned_track_source: str = "waiting"
+    learned_track_source_detail: str = ""
     learning_state: str = "idle"
     learning_reason: str = ""
     learned_library_count: int = 0
     learned_cache_hits: int = 0
     learned_cache_misses: int = 0
+    learned_existing_mp3_reuses: int = 0
     background_learning_items: tuple[str, ...] = field(default_factory=tuple)
     ready_queue_count: int = 0
     ready_items: tuple[CapturedShowItem, ...] = field(default_factory=tuple)
+    lighting_output_lease: LightingOutputLease = field(default_factory=LightingOutputLease)
+    audio_output_lease: AudioOutputLease = field(default_factory=AudioOutputLease)
     output_lease: OutputLease = field(default_factory=OutputLease)
     playback_status: str = "idle"
     current_track: str = ""

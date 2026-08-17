@@ -179,8 +179,6 @@ def run_session(
     # 4e. Capture pipeline (CaptureOrchestrator — independent FFmpeg subprocess)
     capture_orchestrator = None
     pipeline_worker = None
-    pipeline_consumer = None
-    pipeline_consumer_thread = None
     pipeline_ready_queue = None
     if capture:
         from dreamsync.capture.writer import check_ffmpeg
@@ -210,7 +208,6 @@ def run_session(
                 import queue as _queue_mod
                 from dreamsync.cache import ShowCache
                 from dreamsync.show_pipeline_worker import ShowPipelineWorker
-                from dreamsync.show_playback_consumer import ShowPlaybackConsumer
 
                 pipeline_ready_queue = _queue_mod.Queue()
                 pipeline_worker = ShowPipelineWorker(
@@ -227,15 +224,10 @@ def run_session(
 
                 segment_callback = _pipeline_segment_callback
 
-                pipeline_consumer = ShowPlaybackConsumer(
-                    ready_queue=pipeline_ready_queue,
-                    multi_adapter=multi_adapter,
-                    sample_rate=sample_rate,
-                    audio_device=playback_device,
-                    purge=purge,
-                    debug=debug_mood,
+                print(
+                    "Pipeline: compile-only ingestion enabled; ready captures remain "
+                    "silent until started by Queue playback."
                 )
-                print(f"Pipeline: streaming mode enabled (playback_device={playback_device}, purge={purge})")
 
             capture_orchestrator = CaptureOrchestrator(
                 config=orch_cfg,
@@ -308,13 +300,6 @@ def run_session(
     signal.signal(signal.SIGTERM, _handle_signal)
 
     # 5b. Start capture orchestrator (independent FFmpeg subprocess)
-    if pipeline_consumer is not None:
-        pipeline_consumer_thread = threading.Thread(
-            target=pipeline_consumer.run, args=(stop_event,),
-            name="show-playback", daemon=True,
-        )
-        pipeline_consumer_thread.start()
-
     if capture_orchestrator is not None:
         capture_orchestrator.start()
         if spotify_watcher is not None:
@@ -444,9 +429,6 @@ def run_session(
                 f"{p_stats['errors']} errors, "
                 f"{p_stats['pending']} pending"
             )
-        if pipeline_consumer_thread is not None:
-            # stop_event already set — consumer will drain queue and exit
-            pipeline_consumer_thread.join(timeout=60)
         if spotify_watcher is not None:
             spotify_watcher.stop()
         if health_mon is not None:

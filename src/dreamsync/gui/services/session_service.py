@@ -31,6 +31,8 @@ from dreamsync.show.playback_selector import choose_show_playback_runtime
 from dreamsync.show.runtime_control import RuntimeControlBus, runtime_control_to_dict
 from dreamsync.show.runtime import ShowPlaybackRuntime
 
+from .output_lease_service import OutputLeaseService, QUEUE_AUDIO_OWNER
+
 _PLAYBACK_FAULT_FILE = None
 _PLAYBACK_DIAGNOSTICS_PATH = Path("out") / "playback_diagnostics.log"
 
@@ -131,6 +133,58 @@ class SpotifyTimelineSession:
         }
 
 
+class TimelineLightingPreviewSession:
+    """Drive a captured timeline from a wall clock without audible playback."""
+
+    def __init__(self, multi_adapter, timeline: ShowTimeline, *, mode: str) -> None:
+        self._multi_adapter = multi_adapter
+        self._timeline = timeline
+        self._mode = mode
+        self._runtime = ShowPlaybackRuntime(timeline, multi_adapter)
+        self._playback_state = "idle"
+        self._position_seconds = 0.0
+        self._frames_sent = 0
+
+    def run(self, stop_event: threading.Event) -> dict[str, Any]:
+        started_at = time.monotonic()
+        self._multi_adapter.activate(brightness=100)
+        self._playback_state = "playing"
+        try:
+            while not stop_event.wait(0.005):
+                self._position_seconds = max(0.0, time.monotonic() - started_at)
+                if self._position_seconds >= self._timeline.duration:
+                    self._playback_state = "finished"
+                    break
+                if self._runtime.tick(self._position_seconds):
+                    self._frames_sent += 1
+        finally:
+            if self._playback_state != "finished":
+                self._playback_state = "stopped"
+            self._multi_adapter.deactivate()
+        return {
+            "mode": self._mode,
+            "duration": self._timeline.duration,
+            "frames_sent": self._frames_sent,
+            "audio_output": "none (lighting-only preview)",
+        }
+
+    def session_snapshot(self) -> dict[str, Any]:
+        return {
+            "mode": self._mode,
+            "playback_state": self._playback_state,
+            "position_seconds": self._position_seconds,
+            "duration_seconds": self._timeline.duration,
+            "audio_output": "none (lighting-only preview)",
+            "device_status": _device_status_for_adapter(self._multi_adapter),
+        }
+
+    def preview_frame_snapshot(self) -> dict[str, Any]:
+        preview_snapshot = getattr(self._multi_adapter, "preview_snapshot", None)
+        if callable(preview_snapshot):
+            return dict(preview_snapshot())
+        return {"node_colors": {}}
+
+
 class TimelinePlaybackSession:
     """Playback session for an already-compiled show timeline."""
 
@@ -150,6 +204,7 @@ class TimelinePlaybackSession:
         start_seconds: float = 0.0,
         config_path: Path | None = None,
         baked_playback_mode: str = "auto",
+        audio_player_factory=None,
     ) -> None:
         self._multi_adapter = multi_adapter
         self._audio_path = Path(audio_path)
@@ -164,6 +219,7 @@ class TimelinePlaybackSession:
         self._start_seconds = max(0.0, float(start_seconds))
         self._config_path = Path(config_path) if config_path is not None else None
         self._baked_playback_mode = baked_playback_mode
+        self._audio_player_factory = audio_player_factory
         self._status_lock = threading.RLock()
         self._player: AudioPlayer | None = None
         self._runtime: Any | None = None
@@ -186,7 +242,8 @@ class TimelinePlaybackSession:
             self._multi_adapter.activate(brightness=100)
             self._set_playback_state("loading_audio")
             _write_playback_diagnostic("decode audio")
-            player = AudioPlayer(
+            player_factory = self._audio_player_factory or AudioPlayer
+            player = player_factory(
                 self._audio_path,
                 sample_rate=44100,
                 device=self._audio_device,
@@ -935,6 +992,47 @@ class ReactiveLiveSession:
 class SessionService:
     """Start manageable background sessions for the GUI."""
 
+    def __init__(self, *, output_leases: OutputLeaseService | None = None) -> None:
+        self._output_leases = output_leases or OutputLeaseService()
+
+    def bind_output_leases(self, output_leases: OutputLeaseService) -> None:
+        """Use the supervisor's lease registry for subsequent session starts."""
+
+        self._output_leases = output_leases
+
+    def _require_queue_session(self, mode: str) -> None:
+        allowed_modes = {
+            "local",
+            "saved_show",
+            "queue",
+            "queue_pipeline_playback",
+        }
+        if mode not in allowed_modes:
+            # Route the violation through the lease service so diagnostics retain it.
+            self._output_leases.acquire_audio(owner=mode, mode=mode)
+        if self._output_leases.audio_snapshot().owner != QUEUE_AUDIO_OWNER:
+            self._output_leases.acquire_audio(owner=QUEUE_AUDIO_OWNER, mode=mode)
+        self._output_leases.require_queue_audio(mode=mode)
+
+    def create_queue_audio_player(
+        self,
+        audio_path: Path,
+        *,
+        sample_rate: int = 44100,
+        blocksize: int = 1024,
+        device: int | None = None,
+        mode: str = "queue",
+    ) -> AudioPlayer:
+        """Construct the sole audible player after verifying Queue ownership."""
+
+        self._output_leases.require_queue_audio(mode=mode)
+        return AudioPlayer(
+            audio_path,
+            sample_rate=sample_rate,
+            blocksize=blocksize,
+            device=device,
+        )
+
     @staticmethod
     def require_local_preview_dependencies() -> None:
         """Validate runtime dependencies for local preview playback."""
@@ -1022,6 +1120,7 @@ class SessionService:
         precompiled_timelines: dict[str, ShowTimeline] | None = None,
         precompiled_timeline_sources: dict[str, str] | None = None,
     ) -> SessionHandle:
+        self._require_queue_session("local")
         self.require_local_preview_dependencies()
         stop_event = threading.Event()
         session_ref: list[Any] = [None]
@@ -1060,6 +1159,13 @@ class SessionService:
                     runtime_control=runtime_control,
                     precompiled_timelines=precompiled_timelines,
                     precompiled_timeline_sources=precompiled_timeline_sources,
+                    audio_player_factory=(
+                        lambda path, **kwargs: self.create_queue_audio_player(
+                            path,
+                            mode="local",
+                            **kwargs,
+                        )
+                    ),
                 )
             except Exception as exc:  # pragma: no cover - surfaced via handle
                 handle.error = exc
@@ -1086,6 +1192,7 @@ class SessionService:
         start_seconds: float = 0.0,
         baked_playback_mode: str = "auto",
     ) -> SessionHandle:
+        self._require_queue_session(mode)
         stop_event = threading.Event()
         session_ref: list[Any] = [None]
         adapter = self.build_output_adapter(
@@ -1116,6 +1223,13 @@ class SessionService:
             start_seconds=start_seconds,
             config_path=config_path,
             baked_playback_mode=baked_playback_mode,
+            audio_player_factory=(
+                lambda path, **kwargs: self.create_queue_audio_player(
+                    path,
+                    mode=mode,
+                    **kwargs,
+                )
+            ),
         )
         session_ref[:] = [session]
 
@@ -1131,6 +1245,47 @@ class SessionService:
                 handle.error = exc
 
         handle.thread = threading.Thread(target=_runner, name=f"gui-{mode}-session", daemon=True)
+        handle.thread.start()
+        return handle
+
+    def start_timeline_preview_session(
+        self,
+        timeline: ShowTimeline,
+        *,
+        config_path: Path | None = None,
+        mode: str = "simulation_preview",
+        timeline_resolver=None,
+        audio_path: Path | None = None,
+    ) -> SessionHandle:
+        """Start a silent, simulation-only timeline preview."""
+
+        if timeline_resolver is not None and audio_path is not None:
+            timeline = timeline_resolver(audio_path, timeline)
+        stop_event = threading.Event()
+        adapter = self.build_output_adapter(
+            config_path,
+            simulation_only=True,
+            fallback_to_simulation=True,
+        )
+        session = TimelineLightingPreviewSession(adapter, timeline, mode=mode)
+        handle = SessionHandle(
+            mode=mode,
+            stop_event=stop_event,
+            thread=threading.Thread(),
+            session_ref=[session],
+        )
+
+        def _runner() -> None:
+            try:
+                handle.summary = session.run(stop_event)
+            except BaseException as exc:  # pragma: no cover - surfaced via handle
+                handle.error = exc
+
+        handle.thread = threading.Thread(
+            target=_runner,
+            name=f"gui-{mode}-session",
+            daemon=True,
+        )
         handle.thread.start()
         return handle
 
@@ -1212,6 +1367,7 @@ class SessionService:
         audio_device: int | None = None,
     ) -> SessionHandle:
         """Start an ordered saved Show from its embedded Track timelines."""
+        self._require_queue_session("saved_show")
         self.require_local_preview_dependencies()
         if not show.tracks:
             raise ValueError("Add at least one Track before playing this Show.")
@@ -1251,6 +1407,13 @@ class SessionService:
                     stop_event=stop_event,
                     session_ref=session_ref,
                     runtime_control=runtime_control,
+                    audio_player_factory=(
+                        lambda path, **kwargs: self.create_queue_audio_player(
+                            path,
+                            mode="saved_show",
+                            **kwargs,
+                        )
+                    ),
                 )
             except BaseException as exc:  # pragma: no cover - surfaced via handle
                 handle.error = exc

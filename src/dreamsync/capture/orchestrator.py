@@ -479,6 +479,8 @@ class CaptureOrchestrator:
         self._split: DynamicSplitProcessor | None = None
         self._finalize_threads: list[threading.Thread] = []
         self._finalize_lock = threading.Lock()
+        self._suppressed_track_ids: set[str] = set()
+        self._suppression_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Properties
@@ -647,6 +649,15 @@ class CaptureOrchestrator:
         """Stop background periodic timing refresh without stopping capture."""
         self._timing.stop()
 
+    def suppress_track(self, spotify_track_id: str) -> None:
+        """Discard this track's live segment because reusable audio exists."""
+
+        track_id = str(spotify_track_id or "").strip()
+        if not track_id:
+            return
+        with self._suppression_lock:
+            self._suppressed_track_ids.add(track_id)
+
     # ------------------------------------------------------------------
     # Callback dispatch
     # ------------------------------------------------------------------
@@ -675,8 +686,6 @@ class CaptureOrchestrator:
             self._discard_segment(segment_index)
             return
 
-        self._segments_completed += 1
-
         # Use popped boundary metadata if available, fall back to peek_next()
         if popped_meta is not None:
             boundary_meta = popped_meta
@@ -684,6 +693,22 @@ class CaptureOrchestrator:
         else:
             boundary_meta = self._get_segment_metadata(segment_index)
             meta_source = "peek_next"
+
+        track_id = str(
+            boundary_meta.get("spotify_track_id") if boundary_meta else ""
+        )
+        with self._suppression_lock:
+            suppressed = track_id in self._suppressed_track_ids
+        if suppressed:
+            self._logger.log(
+                "INFO", "split", "segment_discarded.reusing_existing_mp3",
+                data={"segment_index": segment_index, "spotify_track_id": track_id},
+                frame_position=end_frame,
+            )
+            self._discard_segment(segment_index)
+            return
+
+        self._segments_completed += 1
 
         self._logger.log(
             "DEBUG", "split", "segment_complete.metadata",

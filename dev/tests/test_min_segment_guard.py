@@ -115,6 +115,28 @@ class TestMinSegmentGuard:
 
         assert orch._segments_completed == 1
 
+    def test_reused_track_segment_is_discarded_before_finalization(self):
+        config = OrchestratorConfig(
+            min_segment_frames=1,
+            output_dir=tempfile.mkdtemp(),
+        )
+        orch = CaptureOrchestrator(config=config)
+        orch.suppress_track("spotify-track")
+        orch._encoders[3] = FakeEncoder("/tmp/duplicate.mp3")
+
+        orch._on_segment_complete(
+            segment_index=3,
+            start_frame=0,
+            end_frame=300_000,
+            popped_meta={
+                "song_title": "Already Captured",
+                "spotify_track_id": "spotify-track",
+            },
+        )
+
+        assert orch._segments_completed == 0
+        assert 3 not in orch._encoders
+
     def test_discard_deletes_temp_file(self):
         """_discard_segment should delete the encoder's temp file."""
         config = OrchestratorConfig(output_dir=tempfile.mkdtemp())

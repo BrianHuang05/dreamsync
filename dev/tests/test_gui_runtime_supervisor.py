@@ -6,6 +6,8 @@ from pathlib import Path
 from dreamsync.gui.models.capture_settings import CaptureSettings
 from dreamsync.gui.models.reactive_settings import ReactiveSettings
 from dreamsync.gui.models.runtime_mode_state import CapturedShowItem
+from dreamsync.gui.models.runtime_routing_state import AudioDeviceOption
+from dreamsync.gui.services.audio_device_service import AudioDeviceService
 from dreamsync.gui.services.runtime_supervisor import RuntimeSupervisor
 from dreamsync.show.models import Show, ShowCue, ShowTimeline, ShowTrack
 
@@ -130,6 +132,17 @@ class FakeSessionService:
             str(kwargs.get("mode", "timeline")),
             FakeSession(mode=str(kwargs.get("mode", "timeline")), current_track=str(audio_path)),
             audio_path,
+            timeline,
+            **kwargs,
+        )
+
+    def start_timeline_preview_session(self, timeline, **kwargs) -> FakeHandle:
+        return self._record(
+            str(kwargs.get("mode", "simulation_preview")),
+            FakeSession(
+                mode=str(kwargs.get("mode", "simulation_preview")),
+                current_track=str(kwargs.get("audio_path", "")),
+            ),
             timeline,
             **kwargs,
         )
@@ -265,7 +278,7 @@ def test_runtime_supervisor_queues_downbeat_nudge_on_reactive_session():
     assert "0.5× detector BPM" in supervisor.snapshot().status_message
 
 
-def test_runtime_supervisor_arms_pipeline_playback_then_starts_when_ready(tmp_path: Path):
+def test_runtime_supervisor_does_not_arm_pipeline_playback_when_capture_becomes_ready(tmp_path: Path):
     session_service = FakeSessionService()
     pipeline = FakePipelineCoordinator()
     supervisor = RuntimeSupervisor(
@@ -275,12 +288,13 @@ def test_runtime_supervisor_arms_pipeline_playback_then_starts_when_ready(tmp_pa
 
     supervisor.start_capture_pipeline(capture_dir=tmp_path / "captures")
 
-    started = supervisor.switch_to_pipeline_playback()
-    armed_snapshot = supervisor.snapshot()
+    started = supervisor.start_next_queue_pipeline_item()
+    idle_snapshot = supervisor.snapshot()
 
     assert started is False
-    assert armed_snapshot.active_output_mode == "pipeline_playback"
-    assert armed_snapshot.playback_status == "armed"
+    assert idle_snapshot.active_output_mode == "idle"
+    assert idle_snapshot.playback_status == "idle"
+    assert idle_snapshot.audio_output_lease.owner == ""
 
     item = _make_ready_item()
     pipeline.items[item.item_id] = item
@@ -289,8 +303,15 @@ def test_runtime_supervisor_arms_pipeline_playback_then_starts_when_ready(tmp_pa
 
     snapshot = supervisor.poll()
 
-    assert snapshot.active_output_mode == "pipeline_playback"
-    assert session_service.calls[-1][0] == "pipeline_playback"
+    assert snapshot.active_output_mode == "idle"
+    assert pipeline.items[item.item_id].state == "ready"
+
+    assert supervisor.start_next_queue_pipeline_item() is True
+    snapshot = supervisor.snapshot()
+
+    assert snapshot.active_output_mode == "queue_pipeline_playback"
+    assert snapshot.audio_output_lease.owner == "queue"
+    assert session_service.calls[-1][0] == "queue_pipeline_playback"
     assert session_service.calls[-1][2]["baked_playback_mode"] == "off"
     assert pipeline.items[item.item_id].state == "playing"
 
@@ -319,6 +340,8 @@ def test_runtime_supervisor_preview_does_not_replace_active_output(tmp_path: Pat
     assert preview_handle is supervisor._preview_handle
     assert snapshot.simulation_target == "captured preview"
     assert session_service.calls[-1][0] == "simulation_preview"
+    assert "audio_device" not in session_service.calls[-1][2]
+    assert snapshot.audio_output_lease.owner == "queue"
 
 
 def test_runtime_supervisor_stop_output_keeps_pipeline_running(tmp_path: Path):
@@ -338,6 +361,21 @@ def test_runtime_supervisor_stop_output_keeps_pipeline_running(tmp_path: Path):
     assert active.stop_called is True
     assert snapshot.capture_state == "running"
     assert snapshot.active_output_mode == "idle"
+
+
+def test_reactive_owns_lighting_but_never_audio() -> None:
+    supervisor = RuntimeSupervisor(session_service=FakeSessionService())
+
+    supervisor.start_reactive_live(effect_mode="raw_visualizer")
+    snapshot = supervisor.snapshot()
+
+    assert snapshot.lighting_output_lease.owner == "raw_visualizer"
+    assert snapshot.audio_output_lease.owner == ""
+
+    supervisor.stop_output_only()
+    stopped = supervisor.snapshot()
+    assert stopped.lighting_output_lease.owner == ""
+    assert stopped.audio_output_lease.owner == ""
 
 
 def test_runtime_supervisor_uses_routing_and_runtime_settings_for_launches(tmp_path: Path):
@@ -429,6 +467,43 @@ def test_runtime_supervisor_uses_routing_and_runtime_settings_for_launches(tmp_p
     assert structure.structure_section_actions_enabled is True
 
 
+def test_reactive_uses_selected_input_native_sample_rate():
+    class NativeRateAudioDeviceService(AudioDeviceService):
+        def list_output_options(self):
+            return (AudioDeviceOption(id=None, name="System default"),)
+
+        def list_input_options(self):
+            return (
+                AudioDeviceOption(id=None, name="System default", kind="input"),
+                AudioDeviceOption(
+                    id=14,
+                    name="CABLE Output",
+                    hostapi="Windows WASAPI",
+                    default_samplerate=48000.0,
+                    channel_count=2,
+                    kind="input",
+                ),
+            )
+
+    session_service = FakeSessionService()
+    supervisor = RuntimeSupervisor(
+        session_service=session_service,
+        audio_device_service=NativeRateAudioDeviceService(),
+    )
+    supervisor.set_selected_live_input_device(14)
+    supervisor.set_reactive_settings(ReactiveSettings(sample_rate=44100))
+
+    supervisor.start_reactive_live()
+
+    reactive_call = session_service.calls[-1]
+    assert reactive_call[2]["audio_device"] == 14
+    assert reactive_call[2]["sample_rate"] == 48000
+    assert any(
+        "44100 Hz to 48000 Hz" in event
+        for event in supervisor.recent_events()
+    )
+
+
 def test_reactive_settings_rejects_dual_structure_ownership():
     settings = ReactiveSettings(
         harmonic_structure_enabled=True,
@@ -516,4 +591,4 @@ def test_runtime_supervisor_passes_timeline_resolver_to_launch_paths(tmp_path: P
     assert local_call[2]["timeline_resolver"] is resolver
     assert saved_call[2]["timeline_resolver"] is resolver
     assert preview_call[2]["timeline_resolver"] is resolver
-    assert preview_call[2]["baked_playback_mode"] == "off"
+    assert preview_call[2]["audio_path"] == Path(item.mp3_path)

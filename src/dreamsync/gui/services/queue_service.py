@@ -200,7 +200,6 @@ class QueueService:
             getattr(playback_state, "progress_ms", 0) / 1000.0
             if playback_state is not None else 0.0
         )
-        songs[0]["observed_start_progress_seconds"] = progress_seconds
         return {
             "song_durations": [track.duration_ms / 1000.0 for track in tracks],
             "current_playback_time": (

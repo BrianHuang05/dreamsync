@@ -76,6 +76,14 @@ class QueuePanelWidgets:
     browse_show_directory_button: object
     queue_directory_edit: object
     browse_queue_directory_button: object
+    captured_audio_root_edit: object
+    browse_captured_audio_root_button: object
+    analysis_root_edit: object
+    browse_analysis_root_button: object
+    compiled_show_root_edit: object
+    browse_compiled_show_root_button: object
+    temp_capture_root_edit: object
+    browse_temp_capture_root_button: object
     apply_file_locations_button: object
     file_locations_status_label: object
     storage_cache_label: object
@@ -85,6 +93,7 @@ class QueuePanelWidgets:
     clear_selected_cache_button: object
     archive_captures_button: object
     capture_dir_edit: object
+    temp_retention_hours_spin: object
     capture_naming_combo: object
     capture_buffer_spin: object
     capture_device_pattern_edit: object
@@ -140,9 +149,12 @@ class QueuePanelWidgets:
     preview_profile_chain_button: object
     local_list: object
     live_queue_toolbar: object
+    live_reactive_toolbar: object
+    live_learning_toolbar: object
     queue_mode_button: object
     reactive_mode_button: object
     raw_visualizer_mode_button: object
+    spotify_learned_live_mode_button: object
     live_queue_group: object
     live_reactive_group: object
     live_raw_visualizer_group: object
@@ -295,6 +307,7 @@ class QueuePanelWidgets:
     spotify_add_button: object
     spotify_learned_live_start_button: object
     spotify_learned_live_stop_button: object
+    spotify_learned_live_status_label: object
     spotify_learning_enabled_check: object
     spotify_retention_combo: object
     spotify_retained_limit_spin: object
@@ -410,8 +423,24 @@ def build_queue_panel(qt_modules):
     stop_show_button = QtWidgets.QPushButton("Stop")
     start_capture_button = QtWidgets.QPushButton("Start Audio Loopback Capture")
     stop_capture_button = QtWidgets.QPushButton("Stop Audio Loopback Capture")
-    switch_pipeline_button = QtWidgets.QPushButton("Auto-play Captured Shows")
+    switch_pipeline_button = QtWidgets.QPushButton("Play Next Captured Show")
     start_reactive_button = QtWidgets.QPushButton("Start Reactive")
+    stop_reactive_button = QtWidgets.QPushButton("Stop Reactive")
+    start_raw_visualizer_button = QtWidgets.QPushButton(
+        "Start Raw Visualizer"
+    )
+    stop_raw_visualizer_button = QtWidgets.QPushButton(
+        "Stop Raw Visualizer"
+    )
+    spotify_learned_live_start_button = QtWidgets.QPushButton(
+        "Start Live — Learning"
+    )
+    spotify_learned_live_stop_button = QtWidgets.QPushButton(
+        "Stop Live — Learning"
+    )
+    spotify_learned_live_status_label = QtWidgets.QLabel(
+        "Learning: stopped"
+    )
     stop_output_button = QtWidgets.QPushButton("Stop Output")
     stop_preview_button = QtWidgets.QPushButton("Stop")
     shuffle_button = QtWidgets.QPushButton("Shuffle Upcoming")
@@ -452,6 +481,22 @@ def build_queue_panel(qt_modules):
     stop_capture_button.setObjectName("stopCaptureButton")
     switch_pipeline_button.setObjectName("switchPipelineButton")
     start_reactive_button.setObjectName("startReactiveButton")
+    stop_reactive_button.setObjectName("stopReactiveButton")
+    start_raw_visualizer_button.setObjectName(
+        "startRawVisualizerButton"
+    )
+    stop_raw_visualizer_button.setObjectName(
+        "stopRawVisualizerButton"
+    )
+    spotify_learned_live_start_button.setObjectName(
+        "spotifyLearnedLiveStartButton"
+    )
+    spotify_learned_live_stop_button.setObjectName(
+        "spotifyLearnedLiveStopButton"
+    )
+    spotify_learned_live_status_label.setObjectName(
+        "spotifyLearnedLiveStatusLabel"
+    )
     stop_output_button.setObjectName("stopOutputButton")
     saved_show_label.setObjectName("savedShowLabel")
     for control in (playlist_label, saved_show_label):
@@ -470,9 +515,18 @@ def build_queue_panel(qt_modules):
     raw_visualizer_mode_button.setToolTip(
         "Frequency-only center visualizer: bass red, mids green, highs violet; no tempo detection."
     )
+    spotify_learned_live_mode_button = QtWidgets.QPushButton("Learning Mode")
+    spotify_learned_live_mode_button.setObjectName(
+        "spotifyLearnedLiveModeButton"
+    )
+    spotify_learned_live_mode_button.setCheckable(True)
+    spotify_learned_live_mode_button.setToolTip(
+        "Spotify Live — Learning: reactive lighting with cache-first background learning."
+    )
     live_mode_row.addWidget(queue_mode_button)
     live_mode_row.addWidget(reactive_mode_button)
     live_mode_row.addWidget(raw_visualizer_mode_button)
+    live_mode_row.addWidget(spotify_learned_live_mode_button)
     live_mode_row.addStretch(1)
     queue_layout.addLayout(live_mode_row)
     live_queue_toolbar = QtWidgets.QWidget()
@@ -492,6 +546,39 @@ def build_queue_panel(qt_modules):
         queue_toolbar.addWidget(button)
     queue_toolbar.addStretch(1)
     queue_layout.addWidget(live_queue_toolbar)
+    live_reactive_toolbar = QtWidgets.QWidget()
+    live_reactive_toolbar.setObjectName("liveReactiveToolbar")
+    reactive_toolbar_layout = QtWidgets.QHBoxLayout(
+        live_reactive_toolbar
+    )
+    reactive_toolbar_layout.setContentsMargins(0, 0, 0, 0)
+    reactive_toolbar_layout.addWidget(start_reactive_button)
+    reactive_toolbar_layout.addWidget(stop_reactive_button)
+    reactive_toolbar_layout.addWidget(start_raw_visualizer_button)
+    reactive_toolbar_layout.addWidget(stop_raw_visualizer_button)
+    start_raw_visualizer_button.setVisible(False)
+    stop_raw_visualizer_button.setVisible(False)
+    reactive_toolbar_layout.addStretch(1)
+    live_reactive_toolbar.setVisible(False)
+    queue_layout.addWidget(live_reactive_toolbar)
+    live_learning_toolbar = QtWidgets.QWidget()
+    live_learning_toolbar.setObjectName("liveLearningToolbar")
+    learning_toolbar_layout = QtWidgets.QHBoxLayout(
+        live_learning_toolbar
+    )
+    learning_toolbar_layout.setContentsMargins(0, 0, 0, 0)
+    learning_toolbar_layout.addWidget(
+        spotify_learned_live_start_button
+    )
+    learning_toolbar_layout.addWidget(
+        spotify_learned_live_stop_button
+    )
+    learning_toolbar_layout.addWidget(
+        spotify_learned_live_status_label
+    )
+    learning_toolbar_layout.addStretch(1)
+    live_learning_toolbar.setVisible(False)
+    queue_layout.addWidget(live_learning_toolbar)
     queue_layout.addWidget(playlist_label)
 
     runtime_strip = QtWidgets.QGridLayout()
@@ -499,7 +586,7 @@ def build_queue_panel(qt_modules):
     capture_status_label = QtWidgets.QLabel("Capture: Off")
     pipeline_status_label = QtWidgets.QLabel("Pipeline: Idle")
     routing_status_label = QtWidgets.QLabel("Routing: Simulation only.")
-    active_owner_label = QtWidgets.QLabel("Active owner: idle")
+    active_owner_label = QtWidgets.QLabel("Lighting owner: none · Audio owner: none")
     armed_owner_label = QtWidgets.QLabel("Armed owner: none")
     output_mode_label.setObjectName("outputModeLabel")
     capture_status_label.setObjectName("captureStatusLabel")
@@ -619,14 +706,26 @@ def build_queue_panel(qt_modules):
         "Local audio / playlist source folder",
         "queueDirectoryEdit",
     )
+    captured_audio_root_edit, browse_captured_audio_root_button = _path_row(
+        4, "Captured audio library root", "capturedAudioRootEdit"
+    )
+    analysis_root_edit, browse_analysis_root_button = _path_row(
+        5, "Analysis library root", "analysisRootEdit"
+    )
+    compiled_show_root_edit, browse_compiled_show_root_button = _path_row(
+        6, "Compiled show library root", "compiledShowRootEdit"
+    )
+    temp_capture_root_edit, browse_temp_capture_root_button = _path_row(
+        7, "Temporary capture root", "tempCaptureRootEdit"
+    )
     apply_file_locations_button = QtWidgets.QPushButton("Apply File Locations")
     apply_file_locations_button.setObjectName("applyFileLocationsButton")
     apply_file_locations_button.setToolTip("Apply the device / room-layout config path now; folders are used by their next file dialog.")
-    file_locations_layout.addWidget(apply_file_locations_button, 4, 0, 1, 3)
+    file_locations_layout.addWidget(apply_file_locations_button, 8, 0, 1, 3)
     file_locations_status_label = QtWidgets.QLabel("")
     file_locations_status_label.setObjectName("fileLocationsStatusLabel")
     file_locations_status_label.setWordWrap(True)
-    file_locations_layout.addWidget(file_locations_status_label, 5, 0, 1, 3)
+    file_locations_layout.addWidget(file_locations_status_label, 9, 0, 1, 3)
     controls_column.addWidget(file_locations_group)
 
     storage_group = QtWidgets.QGroupBox("Storage")
@@ -727,10 +826,16 @@ def build_queue_panel(qt_modules):
     capture_explanation.setWordWrap(True)
     capture_explanation.setObjectName("audioLoopbackCaptureExplanation")
     capture_layout.addWidget(capture_explanation, 0, 0, 1, 2)
-    capture_layout.addWidget(QtWidgets.QLabel("Directory"), 1, 0)
-    capture_dir_edit = QtWidgets.QLineEdit("captured_songs")
+    capture_dir_edit = QtWidgets.QLineEdit("library/temp")
     capture_dir_edit.setObjectName("captureDirEdit")
-    capture_layout.addWidget(capture_dir_edit, 1, 1)
+    capture_dir_edit.setVisible(False)
+    temp_retention_hours_spin = QtWidgets.QSpinBox()
+    temp_retention_hours_spin.setRange(1, 24 * 365)
+    temp_retention_hours_spin.setValue(24)
+    temp_retention_hours_spin.setSuffix(" hours")
+    temp_retention_hours_spin.setObjectName("tempRetentionHoursSpin")
+    capture_layout.addWidget(QtWidgets.QLabel("Temporary file retention"), 1, 0)
+    capture_layout.addWidget(temp_retention_hours_spin, 1, 1)
     capture_layout.addWidget(QtWidgets.QLabel("Naming"), 2, 0)
     capture_naming_combo = QtWidgets.QComboBox()
     capture_naming_combo.addItem("Timestamp", "timestamp")
@@ -774,11 +879,11 @@ def build_queue_panel(qt_modules):
         spin.setObjectName(name)
         capture_sizes_row.addWidget(spin)
     capture_layout.addLayout(capture_sizes_row, 7, 1)
-    capture_layout.addWidget(QtWidgets.QLabel("Captured-show playback device"), 8, 0)
+    capture_layout.addWidget(QtWidgets.QLabel("Queue playback output"), 8, 0)
     pipeline_playback_device_combo = QtWidgets.QComboBox()
     pipeline_playback_device_combo.setObjectName("pipelinePlaybackDeviceCombo")
     capture_layout.addWidget(pipeline_playback_device_combo, 8, 1)
-    purge_after_playback_check = QtWidgets.QCheckBox("Purge items after pipeline playback")
+    purge_after_playback_check = QtWidgets.QCheckBox("Purge items after Queue playback")
     purge_after_playback_check.setObjectName("purgeAfterPlaybackCheck")
     capture_layout.addWidget(purge_after_playback_check, 9, 0, 1, 2)
     debug_pipeline_check = QtWidgets.QCheckBox("Verbose pipeline debug")
@@ -2212,13 +2317,6 @@ def build_queue_panel(qt_modules):
         )
     )
     reactive_live_content_layout.addStretch(1)
-    reactive_actions = QtWidgets.QHBoxLayout()
-    start_reactive_button.setText("Start Reactive")
-    reactive_actions.addWidget(start_reactive_button)
-    stop_reactive_button = QtWidgets.QPushButton("Stop Reactive")
-    stop_reactive_button.setObjectName("stopReactiveButton")
-    reactive_actions.addWidget(stop_reactive_button)
-    reactive_live_layout.addLayout(reactive_actions)
     reactive_live_group.setVisible(False)
     queue_left_layout.addWidget(reactive_live_group, 3)
 
@@ -2541,22 +2639,6 @@ def build_queue_panel(qt_modules):
     )
     raw_visualizer_layout.addWidget(raw_threshold_group)
 
-    raw_actions = QtWidgets.QHBoxLayout()
-    start_raw_visualizer_button = QtWidgets.QPushButton(
-        "Start Raw Visualizer"
-    )
-    start_raw_visualizer_button.setObjectName(
-        "startRawVisualizerButton"
-    )
-    stop_raw_visualizer_button = QtWidgets.QPushButton(
-        "Stop Raw Visualizer"
-    )
-    stop_raw_visualizer_button.setObjectName(
-        "stopRawVisualizerButton"
-    )
-    raw_actions.addWidget(start_raw_visualizer_button)
-    raw_actions.addWidget(stop_raw_visualizer_button)
-    raw_visualizer_layout.addLayout(raw_actions)
     raw_visualizer_group.setVisible(False)
     queue_left_layout.addWidget(raw_visualizer_group, 3)
 
@@ -2585,17 +2667,9 @@ def build_queue_panel(qt_modules):
     spotify_refresh_button = QtWidgets.QPushButton("Refresh")
     spotify_skip_button = QtWidgets.QPushButton("Skip")
     spotify_shuffle_button = QtWidgets.QPushButton("Shuffle")
-    spotify_learned_live_start_button = QtWidgets.QPushButton("Start Live — Learning")
-    spotify_learned_live_start_button.setObjectName("spotifyLearnedLiveStartButton")
-    spotify_learned_live_stop_button = QtWidgets.QPushButton("Stop Live — Learning")
-    spotify_learned_live_stop_button.setObjectName("spotifyLearnedLiveStopButton")
     for button in (spotify_refresh_button, spotify_skip_button, spotify_shuffle_button):
         spotify_actions.addWidget(button)
     spotify_layout.addLayout(spotify_actions)
-    spotify_learning_actions = QtWidgets.QHBoxLayout()
-    spotify_learning_actions.addWidget(spotify_learned_live_start_button)
-    spotify_learning_actions.addWidget(spotify_learned_live_stop_button)
-    spotify_layout.addLayout(spotify_learning_actions)
     spotify_add_row = QtWidgets.QHBoxLayout()
     spotify_uri_edit = QtWidgets.QLineEdit()
     spotify_uri_edit.setPlaceholderText("spotify:track:…")
@@ -2834,7 +2908,7 @@ def build_queue_panel(qt_modules):
     ready_list.setObjectName("capturedReadyList")
     ready_layout.addWidget(ready_list)
     ready_actions = QtWidgets.QHBoxLayout()
-    ready_preview_button = QtWidgets.QPushButton("Preview")
+    ready_preview_button = QtWidgets.QPushButton("Lighting Preview (Silent)")
     ready_play_button = QtWidgets.QPushButton("Play Now")
     ready_prioritize_button = QtWidgets.QPushButton("Send To Top")
     ready_discard_button = QtWidgets.QPushButton("Discard")
@@ -3134,6 +3208,14 @@ def build_queue_panel(qt_modules):
         browse_show_directory_button=browse_show_directory_button,
         queue_directory_edit=queue_directory_edit,
         browse_queue_directory_button=browse_queue_directory_button,
+        captured_audio_root_edit=captured_audio_root_edit,
+        browse_captured_audio_root_button=browse_captured_audio_root_button,
+        analysis_root_edit=analysis_root_edit,
+        browse_analysis_root_button=browse_analysis_root_button,
+        compiled_show_root_edit=compiled_show_root_edit,
+        browse_compiled_show_root_button=browse_compiled_show_root_button,
+        temp_capture_root_edit=temp_capture_root_edit,
+        browse_temp_capture_root_button=browse_temp_capture_root_button,
         apply_file_locations_button=apply_file_locations_button,
         file_locations_status_label=file_locations_status_label,
         storage_cache_label=storage_cache_label,
@@ -3143,6 +3225,7 @@ def build_queue_panel(qt_modules):
         clear_selected_cache_button=clear_selected_cache_button,
         archive_captures_button=archive_captures_button,
         capture_dir_edit=capture_dir_edit,
+        temp_retention_hours_spin=temp_retention_hours_spin,
         capture_naming_combo=capture_naming_combo,
         capture_buffer_spin=capture_buffer_spin,
         capture_device_pattern_edit=capture_device_pattern_edit,
@@ -3198,9 +3281,14 @@ def build_queue_panel(qt_modules):
         preview_profile_chain_button=preview_profile_chain_button,
         local_list=local_list,
         live_queue_toolbar=live_queue_toolbar,
+        live_reactive_toolbar=live_reactive_toolbar,
+        live_learning_toolbar=live_learning_toolbar,
         queue_mode_button=queue_mode_button,
         reactive_mode_button=reactive_mode_button,
         raw_visualizer_mode_button=raw_visualizer_mode_button,
+        spotify_learned_live_mode_button=(
+            spotify_learned_live_mode_button
+        ),
         live_queue_group=local_group,
         live_reactive_group=reactive_live_group,
         live_raw_visualizer_group=raw_visualizer_group,
@@ -3403,6 +3491,9 @@ def build_queue_panel(qt_modules):
         spotify_add_button=spotify_add_button,
         spotify_learned_live_start_button=spotify_learned_live_start_button,
         spotify_learned_live_stop_button=spotify_learned_live_stop_button,
+        spotify_learned_live_status_label=(
+            spotify_learned_live_status_label
+        ),
         spotify_learning_enabled_check=spotify_learning_enabled_check,
         spotify_retention_combo=spotify_retention_combo,
         spotify_retained_limit_spin=spotify_retained_limit_spin,

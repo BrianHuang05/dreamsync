@@ -45,6 +45,15 @@ STDERR_EMPTY = """\
 dummy: Immediate exit requested
 """
 
+STDERR_FFMPEG_8_FLAT = """\
+[in#0 @ 000001] "Integrated Webcam" (video)
+[in#0 @ 000001]   Alternative name "@device_pnp_camera"
+[in#0 @ 000001] "CABLE Output (VB-Audio Virtual Cable)" (audio)
+[in#0 @ 000001]   Alternative name "@device_cm_cable"
+[in#0 @ 000001] "Microphone Array (Intel Audio)" (audio)
+Error opening input file dummy.
+"""
+
 
 # ---------------------------------------------------------------------------
 # _parse_device_list unit tests
@@ -82,6 +91,10 @@ class TestParseDeviceList:
     def test_returns_none_for_empty_stderr(self):
         result = _parse_device_list("", "CABLE Output")
         assert result is None
+
+    def test_finds_cable_output_in_ffmpeg_8_flat_listing(self):
+        result = _parse_device_list(STDERR_FFMPEG_8_FLAT, "CABLE Output")
+        assert result == "CABLE Output (VB-Audio Virtual Cable)"
 
 
 # ---------------------------------------------------------------------------

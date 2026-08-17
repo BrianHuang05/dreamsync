@@ -12,12 +12,22 @@ from typing import Any, Callable
 
 from dreamsync.cache import ShowCache
 from dreamsync.capture.orchestrator import CaptureOrchestrator, OrchestratorConfig
+from dreamsync.capture.scanner import CaptureDirectoryScanner
 from dreamsync.gui.models.capture_settings import CaptureSettings, LearnedLiveSettings
 from dreamsync.gui.models.reactive_settings import ReactiveSettings
-from dreamsync.gui.models.runtime_mode_state import CapturedShowItem, OutputLease, RuntimeModeState
+from dreamsync.gui.models.runtime_mode_state import (
+    AudioOutputLease,
+    CapturedShowItem,
+    LightingOutputLease,
+    RuntimeModeState,
+)
 from dreamsync.gui.models.runtime_routing_state import OutputTarget, RuntimeRoutingState
 from dreamsync.gui.services.audio_device_service import AudioDeviceService
 from dreamsync.gui.services.session_service import SessionHandle, SessionService
+from dreamsync.gui.services.output_lease_service import (
+    OutputLeaseService,
+    QUEUE_AUDIO_OWNER,
+)
 from dreamsync.show.models import Show, ShowTimeline
 from dreamsync.show_pipeline_worker import ShowPipelineWorker
 from dreamsync.spotify.learned_live_session import SpotifyLearnedLiveSession
@@ -49,6 +59,10 @@ class PipelineCoordinator:
         self._capture_invalidation_reason = ""
         self._learning_state_callback = None
         self._item_track_ids: dict[str, str] = {}
+        self._reused_capture_paths: dict[str, Path] = {}
+        self._queued_existing_paths: set[Path] = set()
+        self._temp_cleanup_stop: threading.Event | None = None
+        self._temp_cleanup_thread: threading.Thread | None = None
 
     @property
     def running(self) -> bool:
@@ -67,12 +81,16 @@ class PipelineCoordinator:
         learned_live: bool = False,
         retention_policy: str = "keep_recent",
         retained_mp3_limit: int = 10,
+        audio_root: Path | None = None,
+        analysis_root: Path | None = None,
+        compiled_show_root: Path | str = "~/.dreamsync/cache",
+        temp_retention_hours: int = 24,
     ) -> None:
         if self._running:
             return
         ready_queue: queue.Queue = queue.Queue()
         worker = self._worker_factory(
-            cache=self._cache_factory("~/.dreamsync/cache"),
+            cache=self._cache_factory(compiled_show_root),
             profile=profile,
             sample_rate=sample_rate,
             ready_queue=ready_queue,
@@ -82,7 +100,10 @@ class PipelineCoordinator:
             learned_live=learned_live,
             retention_policy=retention_policy,
             retained_mp3_limit=retained_mp3_limit,
+            audio_root=audio_root,
+            analysis_root=analysis_root,
         )
+        self._purge_expired_temp_files(capture_dir, temp_retention_hours)
         capture = self._capture_factory(
             config=OrchestratorConfig(
                 output_dir=str(capture_dir),
@@ -100,7 +121,19 @@ class PipelineCoordinator:
             self._worker = worker
             self._ready_queue = ready_queue
             self._running = True
+            self._temp_root = Path(capture_dir).resolve()
+            self._temp_retention_hours = max(1, int(temp_retention_hours))
+            cleanup_stop = threading.Event()
+            cleanup_thread = threading.Thread(
+                target=self._run_temp_cleanup,
+                args=(cleanup_stop, self._temp_root, self._temp_retention_hours),
+                name="capture-temp-cleanup",
+                daemon=True,
+            )
+            self._temp_cleanup_stop = cleanup_stop
+            self._temp_cleanup_thread = cleanup_thread
             timing_fetcher = self._timing_fetcher
+        cleanup_thread.start()
         if timing_fetcher is not None:
             try:
                 self._activate_timing_source(capture, timing_fetcher)
@@ -116,6 +149,16 @@ class PipelineCoordinator:
             self._worker = None
             self._ready_queue = None
             self._running = False
+            cleanup_stop = self._temp_cleanup_stop
+            cleanup_thread = self._temp_cleanup_thread
+            self._temp_cleanup_stop = None
+            self._temp_cleanup_thread = None
+            self._reused_capture_paths.clear()
+            self._queued_existing_paths.clear()
+        if cleanup_stop is not None:
+            cleanup_stop.set()
+        if cleanup_thread is not None:
+            cleanup_thread.join(timeout=1.0)
         if capture is not None:
             capture.shutdown()
         if worker is not None:
@@ -151,6 +194,24 @@ class PipelineCoordinator:
     def set_learning_state_callback(self, callback) -> None:
         with self._lock:
             self._learning_state_callback = callback
+
+    def queue_existing_capture(self, mp3_path: Path | str, metadata: dict) -> bool:
+        """Compile an existing eligible MP3 and suppress its duplicate live segment."""
+
+        path = Path(mp3_path).resolve()
+        track_id = str(metadata.get("spotify_track_id") or "")
+        with self._lock:
+            if path in self._queued_existing_paths:
+                return False
+            self._queued_existing_paths.add(path)
+            if track_id:
+                self._reused_capture_paths[track_id] = path
+            capture = self._capture
+        suppress = getattr(capture, "suppress_track", None)
+        if track_id and callable(suppress):
+            suppress(track_id)
+        self._submit_segment(str(path), metadata, existing=True)
+        return True
 
     @staticmethod
     def _activate_timing_source(capture, fetcher: Callable[[], dict | None]) -> None:
@@ -232,9 +293,49 @@ class PipelineCoordinator:
 
     def _on_segment_saved(self, mp3_path: str, metadata: dict) -> None:
         metadata = dict(metadata)
+        path = Path(mp3_path).resolve()
+        track_id = str(metadata.get("spotify_track_id") or "")
         with self._lock:
-            invalidation_reason = self._capture_invalidation_reason
-            self._capture_invalidation_reason = ""
+            reused_path = self._reused_capture_paths.get(track_id)
+        if reused_path is not None and path != reused_path:
+            path.unlink(missing_ok=True)
+            path.with_suffix(".json").unlink(missing_ok=True)
+            return
+        self._submit_segment(mp3_path, metadata, existing=False)
+        self._purge_expired_temp_files(
+            getattr(self, "_temp_root", Path(mp3_path).parent),
+            getattr(self, "_temp_retention_hours", 24),
+        )
+
+    @staticmethod
+    def _purge_expired_temp_files(directory: Path, retention_hours: int) -> int:
+        root = Path(directory).expanduser().resolve()
+        if not root.is_dir():
+            return 0
+        cutoff = time.time() - max(1, int(retention_hours)) * 3600
+        removed = 0
+        for path in root.rglob("*"):
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+                removed += 1
+        return removed
+
+    @classmethod
+    def _run_temp_cleanup(
+        cls,
+        stop_event: threading.Event,
+        directory: Path,
+        retention_hours: int,
+    ) -> None:
+        while not stop_event.wait(3600.0):
+            cls._purge_expired_temp_files(directory, retention_hours)
+
+    def _submit_segment(self, mp3_path: str, metadata: dict, *, existing: bool) -> None:
+        metadata = dict(metadata)
+        with self._lock:
+            invalidation_reason = "" if existing else self._capture_invalidation_reason
+            if not existing:
+                self._capture_invalidation_reason = ""
         if invalidation_reason == "seek_detected":
             metadata["seek_detected"] = True
         elif invalidation_reason == "paused":
@@ -263,7 +364,11 @@ class PipelineCoordinator:
             worker = self._worker
             learning_callback = self._learning_state_callback
         if learning_callback is not None and track_id:
-            learning_callback(track_id, "queued", "")
+            learning_callback(
+                track_id,
+                "queued_existing_mp3" if existing else "queued_new_capture",
+                str(path) if existing else "",
+            )
         if worker is not None:
             worker.on_segment_saved(mp3_path, metadata)
 
@@ -304,15 +409,21 @@ class RuntimeSupervisor:
         session_service: SessionService | None = None,
         pipeline_factory=PipelineCoordinator,
         audio_device_service: AudioDeviceService | None = None,
+        output_lease_service: OutputLeaseService | None = None,
     ) -> None:
-        self._session_service = session_service or SessionService()
+        self._output_leases = output_lease_service or OutputLeaseService()
+        self._session_service = session_service or SessionService(
+            output_leases=self._output_leases
+        )
+        bind_output_leases = getattr(self._session_service, "bind_output_leases", None)
+        if callable(bind_output_leases):
+            bind_output_leases(self._output_leases)
         self._pipeline_factory = pipeline_factory
         self._audio_device_service = audio_device_service or AudioDeviceService()
         self._pipeline: PipelineCoordinator | None = None
         self._output_handle: SessionHandle | None = None
         self._preview_handle: SessionHandle | None = None
         self._pipeline_current_item_id: str | None = None
-        self._pipeline_playback_enabled = False
         self._armed_output_mode = ""
         self._local_source_path = ""
         self._saved_show_path = ""
@@ -450,26 +561,33 @@ class RuntimeSupervisor:
         precompiled_timelines=None,
         precompiled_timeline_sources=None,
     ) -> SessionHandle:
-        self._pipeline_playback_enabled = False
         self._armed_output_mode = ""
         self._local_source_path = str(audio_path)
         self._saved_show_path = ""
         self._selected_show_path = ""
         self._reactive_effect_mode = ""
         self._stop_output_handle()
-        handle = self._session_service.start_local_preview_session(
-            audio_path,
-            playlist=playlist,
-            config_path=config_path,
-            profile=profile,
-            profile_resolver=profile_resolver,
-            timeline_resolver=self._timeline_resolver,
-            simulation_only=self._simulation_only(simulation_only),
-            fallback_to_simulation=self._fallback_to_simulation(),
-            audio_device=self._routing_state.selected_output_audio_device_id,
-            precompiled_timelines=precompiled_timelines,
-            precompiled_timeline_sources=precompiled_timeline_sources,
+        simulation = self._simulation_only(simulation_only)
+        self._acquire_output_leases(
+            owner="queue", mode="local", simulation_only=simulation, audible=True
         )
+        try:
+            handle = self._session_service.start_local_preview_session(
+                audio_path,
+                playlist=playlist,
+                config_path=config_path,
+                profile=profile,
+                profile_resolver=profile_resolver,
+                timeline_resolver=self._timeline_resolver,
+                simulation_only=simulation,
+                fallback_to_simulation=self._fallback_to_simulation(),
+                audio_device=self._routing_state.selected_output_audio_device_id,
+                precompiled_timelines=precompiled_timelines,
+                precompiled_timeline_sources=precompiled_timeline_sources,
+            )
+        except BaseException:
+            self._release_output_leases()
+            raise
         self._output_handle = handle
         self._update_routing_resolution(config_path=config_path, session_handle=handle)
         self._status_message = f"Local playlist started for {audio_path.name}."
@@ -485,26 +603,33 @@ class RuntimeSupervisor:
         config_path: Path | None = None,
         simulation_only: bool | None = None,
     ) -> SessionHandle:
-        self._pipeline_playback_enabled = False
         self._armed_output_mode = ""
         self._local_source_path = str(audio_path)
         self._saved_show_path = str(show_path)
         self._selected_show_path = str(show_path)
         self._reactive_effect_mode = ""
         self._stop_output_handle()
-        handle = self._session_service.start_precompiled_show_session(
-            audio_path,
-            show_path,
-            config_path=config_path,
-            simulation_only=self._simulation_only(simulation_only),
-            fallback_to_simulation=self._fallback_to_simulation(),
-            audio_device=self._routing_state.selected_output_audio_device_id,
-            input_device_label=self._selected_input_label(),
-            routing_mode=self._routing_state.output_target.mode,
-            routing_status=self._routing_state.routing_status,
-            timeline_resolver=self._timeline_resolver,
-            baked_playback_mode=self._baked_playback_mode,
+        simulation = self._simulation_only(simulation_only)
+        self._acquire_output_leases(
+            owner="queue", mode="saved_show", simulation_only=simulation, audible=True
         )
+        try:
+            handle = self._session_service.start_precompiled_show_session(
+                audio_path,
+                show_path,
+                config_path=config_path,
+                simulation_only=simulation,
+                fallback_to_simulation=self._fallback_to_simulation(),
+                audio_device=self._routing_state.selected_output_audio_device_id,
+                input_device_label=self._selected_input_label(),
+                routing_mode=self._routing_state.output_target.mode,
+                routing_status=self._routing_state.routing_status,
+                timeline_resolver=self._timeline_resolver,
+                baked_playback_mode=self._baked_playback_mode,
+            )
+        except BaseException:
+            self._release_output_leases()
+            raise
         self._output_handle = handle
         self._push_recent_saved_show(show_path)
         self._update_routing_resolution(config_path=config_path, session_handle=handle)
@@ -524,29 +649,36 @@ class RuntimeSupervisor:
         start_seconds: float = 0.0,
         mode: str = "saved_show",
     ) -> SessionHandle:
-        self._pipeline_playback_enabled = False
         self._armed_output_mode = ""
         self._local_source_path = str(audio_path)
         self._saved_show_path = str(show_path) if show_path is not None else ""
         self._selected_show_path = str(show_path) if show_path is not None else ""
         self._reactive_effect_mode = ""
         self._stop_output_handle()
-        handle = self._session_service.start_timeline_playback_session(
-            audio_path,
-            timeline,
-            config_path=config_path,
-            simulation_only=self._simulation_only(simulation_only),
-            fallback_to_simulation=self._fallback_to_simulation(),
-            mode=mode,
-            show_path=show_path,
-            audio_device=self._routing_state.selected_output_audio_device_id,
-            input_device_label=self._selected_input_label(),
-            routing_mode=self._routing_state.output_target.mode,
-            routing_status=self._routing_state.routing_status,
-            timeline_resolver=self._timeline_resolver,
-            start_seconds=start_seconds,
-            baked_playback_mode=self._baked_playback_mode,
+        simulation = self._simulation_only(simulation_only)
+        self._acquire_output_leases(
+            owner="queue", mode=mode, simulation_only=simulation, audible=True
         )
+        try:
+            handle = self._session_service.start_timeline_playback_session(
+                audio_path,
+                timeline,
+                config_path=config_path,
+                simulation_only=simulation,
+                fallback_to_simulation=self._fallback_to_simulation(),
+                mode=mode,
+                show_path=show_path,
+                audio_device=self._routing_state.selected_output_audio_device_id,
+                input_device_label=self._selected_input_label(),
+                routing_mode=self._routing_state.output_target.mode,
+                routing_status=self._routing_state.routing_status,
+                timeline_resolver=self._timeline_resolver,
+                start_seconds=start_seconds,
+                baked_playback_mode=self._baked_playback_mode,
+            )
+        except BaseException:
+            self._release_output_leases()
+            raise
         self._output_handle = handle
         if show_path is not None:
             self._push_recent_saved_show(show_path)
@@ -568,21 +700,28 @@ class RuntimeSupervisor:
         if not show.tracks:
             raise ValueError("Add at least one Track before playing this Show.")
         first_track = Path(show.tracks[0].audio_path)
-        self._pipeline_playback_enabled = False
         self._armed_output_mode = ""
         self._local_source_path = str(first_track)
         self._saved_show_path = str(show_path) if show_path is not None else ""
         self._selected_show_path = str(show_path) if show_path is not None else ""
         self._reactive_effect_mode = ""
         self._stop_output_handle()
-        handle = self._session_service.start_compiled_show_session(
-            show,
-            show_path=show_path,
-            config_path=config_path,
-            simulation_only=self._simulation_only(simulation_only),
-            fallback_to_simulation=self._fallback_to_simulation(),
-            audio_device=self._routing_state.selected_output_audio_device_id,
+        simulation = self._simulation_only(simulation_only)
+        self._acquire_output_leases(
+            owner="queue", mode="saved_show", simulation_only=simulation, audible=True
         )
+        try:
+            handle = self._session_service.start_compiled_show_session(
+                show,
+                show_path=show_path,
+                config_path=config_path,
+                simulation_only=simulation,
+                fallback_to_simulation=self._fallback_to_simulation(),
+                audio_device=self._routing_state.selected_output_audio_device_id,
+            )
+        except BaseException:
+            self._release_output_leases()
+            raise
         self._output_handle = handle
         if show_path is not None:
             self._push_recent_saved_show(show_path)
@@ -619,11 +758,22 @@ class RuntimeSupervisor:
     ) -> SessionHandle:
         from dreamsync.live import LiveStructureConfig
 
-        self._pipeline_playback_enabled = False
         self._armed_output_mode = ""
         self._saved_show_path = ""
         self._reactive_effect_mode = effect_mode
         self._stop_output_handle()
+        requested_sample_rate = self._reactive_settings.sample_rate
+        sample_rate = self._audio_device_service.resolve_input_sample_rate(
+            self._routing_state.available_input_devices,
+            self._routing_state.selected_live_input_device_id,
+            requested_sample_rate,
+        )
+        if sample_rate != requested_sample_rate:
+            self._record_event(
+                "Reactive input sample rate adjusted "
+                f"from {requested_sample_rate} Hz to {sample_rate} Hz "
+                f"for {self._selected_input_label()}."
+            )
         handle = self._session_service.start_reactive_live_session(
             config_path=config_path,
             profile=profile,
@@ -657,7 +807,7 @@ class RuntimeSupervisor:
                 raw_visualizer_palette_interval
             ),
             render_mode=self._reactive_settings.render_mode,
-            sample_rate=self._reactive_settings.sample_rate,
+            sample_rate=sample_rate,
             channels=self._reactive_settings.channels,
             frame_size=self._reactive_settings.frame_size,
             hop_size=self._reactive_settings.hop_size,
@@ -775,6 +925,16 @@ class RuntimeSupervisor:
                 ),
             ),
         )
+        try:
+            self._acquire_output_leases(
+                owner=effect_mode,
+                mode=handle.mode,
+                simulation_only=self._simulation_only(simulation_only),
+                audible=False,
+            )
+        except BaseException:
+            handle.stop()
+            raise
         self._output_handle = handle
         self._update_routing_resolution(config_path=config_path, session_handle=handle)
         self._status_message = (
@@ -790,7 +950,7 @@ class RuntimeSupervisor:
         self,
         watcher,
         *,
-        cache_dir: Path | str = "~/.dreamsync/cache",
+        cache_dir: Path | str | None = None,
         capture_dir: Path | None = None,
         config_path: Path | None = None,
         profile=None,
@@ -799,9 +959,12 @@ class RuntimeSupervisor:
         """Start cache-first Spotify output plus background learning capture."""
         self.stop_spotify_learned_live()
         settings = self._learned_live_settings
-        capture_root = capture_dir or Path(self._capture_settings.capture_dir)
-        cache = ShowCache(cache_dir)
-        self._learned_store = LearnedTrackStore(cache)
+        capture_root = capture_dir or Path(self._capture_settings.temp_capture_root)
+        audio_root = Path(self._capture_settings.captured_audio_root)
+        analysis_root = Path(self._capture_settings.analysis_root)
+        compiled_root = Path(cache_dir or self._capture_settings.compiled_show_root)
+        cache = ShowCache(compiled_root)
+        self._learned_store = LearnedTrackStore(cache, analysis_root=analysis_root)
         if settings.learning_enabled:
             self.start_capture_pipeline(
                 capture_dir=Path(capture_root),
@@ -814,18 +977,33 @@ class RuntimeSupervisor:
                 learned_live=True,
                 retention_policy=settings.mp3_retention_policy,
                 retained_mp3_limit=settings.retained_mp3_limit,
+                audio_root=audio_root,
+                analysis_root=analysis_root,
+                compiled_show_root=compiled_root,
+                temp_retention_hours=self._capture_settings.temp_retention_hours,
             )
 
         def start_compiled(timeline, interpolator) -> None:
             self._stop_output_handle()
             self._reactive_effect_mode = ""
-            self._output_handle = self._session_service.start_spotify_timeline_session(
+            handle = self._session_service.start_spotify_timeline_session(
                 timeline,
                 interpolator,
                 config_path=config_path,
                 simulation_only=self._simulation_only(simulation_only),
                 fallback_to_simulation=self._fallback_to_simulation(),
             )
+            try:
+                self._acquire_output_leases(
+                    owner="spotify_learned_live",
+                    mode="spotify_compiled_live",
+                    simulation_only=self._simulation_only(simulation_only),
+                    audible=False,
+                )
+            except BaseException:
+                handle.stop()
+                raise
+            self._output_handle = handle
             self._record_event("learned_live_runtime_switched:compiled")
 
         def start_reactive() -> None:
@@ -835,6 +1013,23 @@ class RuntimeSupervisor:
                 simulation_only=simulation_only,
             )
             self._record_event("learned_live_runtime_switched:reactive")
+
+        def find_existing_capture(track) -> tuple[str, dict] | None:
+            try:
+                match = CaptureDirectoryScanner(audio_root).find_reusable_capture(
+                    track.track_id
+                )
+            except FileNotFoundError:
+                return None
+            if match is None:
+                return None
+            capture_track, metadata = match
+            return str(capture_track.mp3_path), metadata
+
+        queue_existing = (
+            getattr(self._pipeline, "queue_existing_capture", None)
+            if self._pipeline is not None else None
+        )
 
         session = SpotifyLearnedLiveSession(
             watcher,
@@ -847,10 +1042,15 @@ class RuntimeSupervisor:
                 (lambda _track, _progress: self._pipeline.begin_learning_candidate())
                 if settings.learning_enabled and self._pipeline is not None else None
             ),
+            find_existing_capture=(
+                find_existing_capture if settings.learning_enabled else None
+            ),
+            queue_existing_capture=queue_existing,
             invalidate_capture=(
                 self._pipeline.invalidate_learning_candidate
                 if settings.learning_enabled and self._pipeline is not None else None
             ),
+            diagnostic_callback=self._record_event,
             learning_enabled=settings.learning_enabled,
             learned_store=self._learned_store,
         )
@@ -904,6 +1104,10 @@ class RuntimeSupervisor:
         learned_live: bool = False,
         retention_policy: str = "keep_recent",
         retained_mp3_limit: int = 10,
+        audio_root: Path | None = None,
+        analysis_root: Path | None = None,
+        compiled_show_root: Path | str = "~/.dreamsync/cache",
+        temp_retention_hours: int = 24,
     ) -> None:
         if self._pipeline is None:
             self._pipeline = self._pipeline_factory()
@@ -911,6 +1115,7 @@ class RuntimeSupervisor:
         settings = replace(
             self._capture_settings,
             capture_dir=str(capture_dir),
+            temp_capture_root=str(capture_dir),
             sample_rate=sample_rate,
             naming_mode=capture_naming,
             max_capture_buffer=capture_buffer,
@@ -929,6 +1134,10 @@ class RuntimeSupervisor:
             learned_live=learned_live,
             retention_policy=retention_policy,
             retained_mp3_limit=retained_mp3_limit,
+            audio_root=audio_root,
+            analysis_root=analysis_root,
+            compiled_show_root=compiled_show_root,
+            temp_retention_hours=temp_retention_hours,
         )
         self._status_message = f"Audio loopback capture running in {capture_dir}."
         self._error_message = ""
@@ -951,19 +1160,19 @@ class RuntimeSupervisor:
     def stop_capture_pipeline(self) -> None:
         if self._pipeline is not None:
             self._pipeline.stop()
-        self._pipeline_playback_enabled = False
         if self._output_handle is None:
             self._armed_output_mode = ""
         self._status_message = "Audio loopback capture stopped."
         self._record_event(self._status_message)
 
-    def switch_to_pipeline_playback(
+    def start_next_queue_pipeline_item(
         self,
         *,
         config_path: Path | None = None,
         simulation_only: bool | None = None,
     ) -> bool:
-        self._pipeline_playback_enabled = True
+        """Explicitly play one ready capture as a Queue-owned item."""
+
         self._saved_show_path = ""
         self._reactive_effect_mode = ""
         self._stop_output_handle()
@@ -972,10 +1181,23 @@ class RuntimeSupervisor:
             simulation_only=self._simulation_only(simulation_only),
         )
         if not started:
-            self._armed_output_mode = "pipeline_playback"
-            self._status_message = "Captured-show playback armed for the next ready capture."
+            self._armed_output_mode = ""
+            self._status_message = "No captured show is ready for Queue playback."
             self._record_event(self._status_message)
         return started
+
+    def switch_to_pipeline_playback(
+        self,
+        *,
+        config_path: Path | None = None,
+        simulation_only: bool | None = None,
+    ) -> bool:
+        """Compatibility alias for explicit, non-arming Queue playback."""
+
+        return self.start_next_queue_pipeline_item(
+            config_path=config_path,
+            simulation_only=simulation_only,
+        )
 
     def preview_captured_show(
         self,
@@ -990,14 +1212,12 @@ class RuntimeSupervisor:
         if item is None or timeline is None:
             raise RuntimeError("Selected captured show is not ready for preview.")
         self.stop_preview()
-        handle = self._session_service.start_timeline_playback_session(
-            Path(item.mp3_path),
+        handle = self._session_service.start_timeline_preview_session(
             timeline,
             config_path=config_path,
-            simulation_only=True,
             mode="simulation_preview",
             timeline_resolver=self._timeline_resolver,
-            baked_playback_mode="off",
+            audio_path=Path(item.mp3_path),
         )
         self._preview_handle = handle
         self._status_message = f"Simulation preview started for {Path(item.mp3_path).name}."
@@ -1021,7 +1241,6 @@ class RuntimeSupervisor:
     def stop_output_only(self) -> None:
         if self._learned_live_handle is not None:
             self.stop_spotify_learned_live()
-        self._pipeline_playback_enabled = False
         self._armed_output_mode = ""
         self._pipeline_current_item_id = None
         self._stop_output_handle()
@@ -1194,8 +1413,6 @@ class RuntimeSupervisor:
     def poll(self) -> RuntimeModeState:
         self._reap_finished_preview()
         self._reap_finished_output()
-        if self._pipeline_playback_enabled and self._output_handle is None:
-            self._start_next_pipeline_item()
         return self.snapshot()
 
     def snapshot(self) -> RuntimeModeState:
@@ -1232,10 +1449,18 @@ class RuntimeSupervisor:
             pipeline_state = self._pipeline.snapshot_state()
             ready_items = self._pipeline.snapshot_items()
             ready_queue_count = self._pipeline.ready_queue_count()
-        lease = OutputLease(
-            owner=output_mode if self._output_handle is not None else "",
-            mode=output_mode or active_mode,
-            simulation_only=bool(device_status.startswith("simulation") or device_status.startswith("preview")),
+        lighting_snapshot = self._output_leases.lighting_snapshot()
+        audio_snapshot = self._output_leases.audio_snapshot()
+        lighting_lease = LightingOutputLease(
+            owner=lighting_snapshot.owner,
+            mode=lighting_snapshot.mode,
+            simulation_only=lighting_snapshot.simulation_only,
+        )
+        audio_lease = AudioOutputLease(
+            owner=audio_snapshot.owner,
+            mode=audio_snapshot.mode,
+            violation_count=audio_snapshot.violation_count,
+            last_violation=audio_snapshot.last_violation,
         )
         return RuntimeModeState(
             active_output_mode=active_mode,
@@ -1249,10 +1474,17 @@ class RuntimeSupervisor:
             ),
             learned_live_badge=(
                 "PAUSED" if learned_snapshot is not None and learned_snapshot.paused
-                else "PRECOMPILED" if learned_snapshot is not None and learned_snapshot.active_strategy == "compiled"
-                else "REACTIVE · LEARNING" if learned_snapshot is not None and learned_snapshot.active_learning_state == "capturing"
+                else "SAVED SHOW" if learned_snapshot is not None and learned_snapshot.active_source == "saved_show"
+                else "REACTIVE · COMPILING EXISTING MP3" if learned_snapshot is not None and learned_snapshot.active_source == "existing_mp3"
+                else "REACTIVE · CAPTURING NEW MP3" if learned_snapshot is not None and learned_snapshot.active_source == "new_mp3"
                 else "REACTIVE · NOT LEARNING" if learned_snapshot is not None and learned_snapshot.active_strategy == "reactive"
                 else ""
+            ),
+            learned_track_source=(
+                learned_snapshot.active_source if learned_snapshot is not None else "waiting"
+            ),
+            learned_track_source_detail=(
+                learned_snapshot.active_source_detail if learned_snapshot is not None else ""
             ),
             learning_state=(learned_snapshot.learning_state if learned_snapshot is not None else "idle"),
             learning_reason=(learned_snapshot.learning_reason if learned_snapshot is not None else ""),
@@ -1261,6 +1493,9 @@ class RuntimeSupervisor:
             ),
             learned_cache_hits=(learned_snapshot.cache_hits if learned_snapshot is not None else 0),
             learned_cache_misses=(learned_snapshot.cache_misses if learned_snapshot is not None else 0),
+            learned_existing_mp3_reuses=(
+                learned_snapshot.existing_mp3_reuses if learned_snapshot is not None else 0
+            ),
             background_learning_items=(
                 tuple(
                     f"{track_id}: {state}" + (f" · {reason}" if reason else "")
@@ -1269,7 +1504,9 @@ class RuntimeSupervisor:
             ),
             ready_queue_count=ready_queue_count,
             ready_items=ready_items,
-            output_lease=lease,
+            lighting_output_lease=lighting_lease,
+            audio_output_lease=audio_lease,
+            output_lease=lighting_lease,
             playback_status=playback_status,
             current_track=str(current_track or ""),
             local_source_path=self._local_source_path,
@@ -1301,7 +1538,7 @@ class RuntimeSupervisor:
             return False
         item = self._pipeline.next_ready_item()
         if item is None:
-            self._armed_output_mode = "pipeline_playback" if self._pipeline_playback_enabled else ""
+            self._armed_output_mode = ""
             return False
         timeline = self._pipeline.timeline_for_id(item.item_id)
         if timeline is None:
@@ -1309,20 +1546,33 @@ class RuntimeSupervisor:
         self._pipeline.mark_playing(item.item_id)
         self._pipeline_current_item_id = item.item_id
         self._armed_output_mode = ""
-        self._output_handle = self._session_service.start_timeline_playback_session(
-            Path(item.mp3_path),
-            timeline,
-            config_path=config_path,
-            simulation_only=self._simulation_only(simulation_only),
-            fallback_to_simulation=self._fallback_to_simulation(),
-            mode="pipeline_playback",
-            audio_device=self._capture_settings.pipeline_playback_device_id,
-            input_device_label=self._selected_input_label(),
-            routing_mode=self._routing_state.output_target.mode,
-            routing_status=self._routing_state.routing_status,
-            timeline_resolver=self._timeline_resolver,
-            baked_playback_mode="off",
+        simulation = self._simulation_only(simulation_only)
+        self._acquire_output_leases(
+            owner="queue",
+            mode="queue_pipeline_playback",
+            simulation_only=simulation,
+            audible=True,
         )
+        try:
+            self._output_handle = self._session_service.start_timeline_playback_session(
+                Path(item.mp3_path),
+                timeline,
+                config_path=config_path,
+                simulation_only=simulation,
+                fallback_to_simulation=self._fallback_to_simulation(),
+                mode="queue_pipeline_playback",
+                audio_device=self._capture_settings.pipeline_playback_device_id,
+                input_device_label=self._selected_input_label(),
+                routing_mode=self._routing_state.output_target.mode,
+                routing_status=self._routing_state.routing_status,
+                timeline_resolver=self._timeline_resolver,
+                baked_playback_mode="off",
+            )
+        except BaseException:
+            self._pipeline.mark_ready(item.item_id)
+            self._pipeline_current_item_id = None
+            self._release_output_leases()
+            raise
         self._update_routing_resolution(config_path=config_path, session_handle=self._output_handle)
         self._status_message = f"Pipeline playback started for {Path(item.mp3_path).name}."
         self._error_message = ""
@@ -1344,16 +1594,14 @@ class RuntimeSupervisor:
             return
         if self._pipeline_current_item_id and self._pipeline is not None:
             item_id = self._pipeline_current_item_id
-            if handle.mode == "pipeline_playback" and self._capture_settings.purge_after_playback:
+            if handle.mode == "queue_pipeline_playback" and self._capture_settings.purge_after_playback:
                 self._pipeline.discard(item_id)
             else:
                 self._pipeline.mark_ready(item_id)
             self._pipeline_current_item_id = None
-        if handle.summary is not None and handle.mode != "pipeline_playback":
+        if handle.summary is not None:
             self._status_message = f"{handle.mode.replace('_', ' ')} finished."
             self._record_event(self._status_message)
-        elif handle.mode == "pipeline_playback" and self._pipeline_playback_enabled:
-            self._armed_output_mode = "pipeline_playback"
         self._clear_output_handle()
 
     def _reap_finished_preview(self) -> None:
@@ -1370,9 +1618,39 @@ class RuntimeSupervisor:
         if self._pipeline_current_item_id and self._pipeline is not None:
             self._pipeline.mark_ready(self._pipeline_current_item_id)
             self._pipeline_current_item_id = None
+        self._release_output_leases()
 
     def _clear_output_handle(self) -> None:
         self._output_handle = None
+        self._release_output_leases()
+
+    def _acquire_output_leases(
+        self,
+        *,
+        owner: str,
+        mode: str,
+        simulation_only: bool,
+        audible: bool,
+    ) -> None:
+        self._output_leases.acquire_lighting(
+            owner=owner,
+            mode=mode,
+            simulation_only=simulation_only,
+        )
+        if not audible:
+            return
+        try:
+            self._output_leases.acquire_audio(
+                owner=QUEUE_AUDIO_OWNER,
+                mode=mode,
+            )
+        except BaseException:
+            self._output_leases.release_lighting(owner=owner)
+            raise
+
+    def _release_output_leases(self) -> None:
+        self._output_leases.release_audio()
+        self._output_leases.release_lighting()
 
     def _simulation_only(self, override: bool | None = None) -> bool:
         if override is not None:
