@@ -249,6 +249,16 @@ On its first run it uses the current default physical sink, then remembers that 
 
 Then route the desired application to **DreamSync Capture** in `pavucontrol` and run capture with `--capture-source dreamsync_capture.monitor`.
 
+For a cold-boot, one-command startup, use the launcher instead. It creates the route, makes DreamSync Capture the Pulse default for new application streams, opens Firefox, then starts the DreamSync command after `--`:
+
+```bash
+./dev/scripts/start_linux_dreamsync.sh \
+  --browser-url https://open.spotify.com/ \
+  -- python -m dreamsync gui --config devices.yaml
+```
+
+Pass `--physical-sink` when the saved/default physical sink is not the desired speakers or headphones. The browser opens ready for you to cue audio; its new audio stream is routed automatically, so no `pavucontrol` selection is required after a cold boot.
+
 > **Note:** No VB-Cable loopback ("Listen to this device") is needed. The streaming pipeline captures audio from VB-Cable, processes it (analyze + compile), and plays it back through `--playback-device`. DreamSync itself handles the routing between capture and playback — the only delay is the pipeline processing time between songs.
 >
 > If you're using `govee-live` without `--pipeline` (real-time beat detection only, no show playback), you'll need to hear the music through other means — either enable "Listen to this device" on CABLE Output in the Recording tab, or use a hardware splitter.
