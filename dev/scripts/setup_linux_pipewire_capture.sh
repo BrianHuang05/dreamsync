@@ -4,8 +4,9 @@
 # Usage:
 #   ./dev/scripts/setup_linux_pipewire_capture.sh [physical-sink-name]
 #
-# Run this as the logged-in desktop user, never through sudo.  If the optional
-# physical sink name is omitted, the current default sink is used.
+# Run this as the logged-in desktop user, never through sudo. If the optional
+# physical sink name is omitted, the helper remembers the last physical sink
+# used and falls back to the current default sink on its first run.
 
 set -euo pipefail
 
@@ -20,19 +21,38 @@ if ! pactl info >/dev/null 2>&1; then
     exit 1
 fi
 
-physical_sink="${1:-$(pactl get-default-sink)}"
-if [[ "$physical_sink" == "dreamsync_capture" ]]; then
-    echo "The selected output is already DreamSync Capture, not a physical sink." >&2
-    echo "Pass the physical sink explicitly; find it with: pactl list short sinks" >&2
-    exit 1
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/dreamsync"
+state_file="$state_dir/pipewire-capture-sink"
+default_sink="$(pactl get-default-sink)"
+
+sink_exists() {
+    pactl list short sinks | awk -v sink="$1" '$2 == sink { found = 1 } END { exit !found }'
+}
+
+if [[ $# -gt 0 ]]; then
+    physical_sink="$1"
+elif [[ "$default_sink" != "dreamsync_capture" ]]; then
+    physical_sink="$default_sink"
+elif [[ -r "$state_file" ]] && sink_exists "$(<"$state_file")"; then
+    physical_sink="$(<"$state_file")"
+else
+    # A prior route can make the virtual sink the Pulse default. Prefer a
+    # non-HDMI ALSA output, then any remaining non-DreamSync sink.
+    physical_sink="$(pactl list short sinks | awk '$2 != "dreamsync_capture" && $2 ~ /^alsa_output/ && $2 !~ /hdmi/ { print $2; exit }')"
+    if [[ -z "$physical_sink" ]]; then
+        physical_sink="$(pactl list short sinks | awk '$2 != "dreamsync_capture" { print $2; exit }')"
+    fi
 fi
 
-if ! pactl list short sinks | awk -v sink="$physical_sink" '$2 == sink { found = 1 } END { exit !found }'; then
+if ! sink_exists "$physical_sink"; then
     echo "Physical sink not found: $physical_sink" >&2
     echo "Available sinks:" >&2
     pactl list short sinks >&2
     exit 1
 fi
+
+mkdir -p "$state_dir"
+printf '%s\n' "$physical_sink" > "$state_file"
 
 # Remove only routes created by a prior run of this helper.  Loopbacks are
 # removed before their source sink so PipeWire can tear down cleanly.

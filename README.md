@@ -241,7 +241,7 @@ For each login/session, run the helper as the logged-in desktop user (never with
 ./dev/scripts/setup_linux_pipewire_capture.sh
 ```
 
-It uses the current default physical sink. If that is not your speakers/headphones, pass the exact sink name from `pactl list short sinks`:
+On its first run it uses the current default physical sink, then remembers that physical sink for later runs even though the virtual capture sink becomes the Pulse default. If the saved sink is not your speakers/headphones, pass the exact sink name from `pactl list short sinks`:
 
 ```bash
 ./dev/scripts/setup_linux_pipewire_capture.sh alsa_output.REPLACE_WITH_PHYSICAL_SINK
