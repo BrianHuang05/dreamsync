@@ -233,7 +233,21 @@ The audio path is: App -> CABLE Input -> CABLE Output -> FFmpeg capture -> Dream
 
 ### Audio routing setup (Linux PipeWire)
 
-DreamSync captures a PipeWire PulseAudio monitor source, by default `dreamsync_capture.monitor`. Create a virtual `dreamsync_capture` sink, route the desired application to it, and configure PipeWire's loopback to your physical speakers/headphones. PipeWire—not DreamSync—keeps the audio audible. Confirm the source with `pactl list short sources`, then run capture with `--capture-source dreamsync_capture.monitor`.
+DreamSync captures a PipeWire PulseAudio monitor source, by default `dreamsync_capture.monitor`. Route the desired application to the virtual `dreamsync_capture` sink while PipeWire forwards that sink to your physical speakers/headphones. PipeWire—not DreamSync—keeps the audio audible.
+
+For each login/session, run the helper as the logged-in desktop user (never with `sudo`):
+
+```bash
+./dev/scripts/setup_linux_pipewire_capture.sh
+```
+
+It uses the current default physical sink. If that is not your speakers/headphones, pass the exact sink name from `pactl list short sinks`:
+
+```bash
+./dev/scripts/setup_linux_pipewire_capture.sh alsa_output.REPLACE_WITH_PHYSICAL_SINK
+```
+
+Then route the desired application to **DreamSync Capture** in `pavucontrol` and run capture with `--capture-source dreamsync_capture.monitor`.
 
 > **Note:** No VB-Cable loopback ("Listen to this device") is needed. The streaming pipeline captures audio from VB-Cable, processes it (analyze + compile), and plays it back through `--playback-device`. DreamSync itself handles the routing between capture and playback — the only delay is the pipeline processing time between songs.
 >
