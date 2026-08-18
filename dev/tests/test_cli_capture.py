@@ -2,12 +2,21 @@
 
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+from dreamsync import cli
 from dreamsync.cli import build_parser
 
 
 class CaptureCommandTests(unittest.TestCase):
+    def test_devices_command_does_not_shadow_sys_on_linux(self) -> None:
+        with patch("dreamsync.cli._sys.platform", "linux"), \
+             patch("dreamsync.cli.list_input_devices", return_value=[]), \
+             patch("dreamsync.audio.system_input.list_output_devices", return_value=[]), \
+             patch("dreamsync.audio.system_input.format_device_table", return_value=""), \
+             patch("dreamsync.cli.list_pulse_sources", return_value=[]):
+            self.assertEqual(cli.main(["devices"]), 0)
+
     def test_devices_command_parses(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["devices"])

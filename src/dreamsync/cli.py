@@ -2,6 +2,7 @@ import argparse
 import json
 import signal
 import sys
+import sys as _sys
 import threading
 from pathlib import Path
 
@@ -1321,7 +1322,9 @@ def main(argv: list[str] | None = None) -> int:
             print("  Audio Output Devices (for --playback-device / --audio-device)")
             print(format_device_table(outputs, kind="output", mark_capture=True))
             print()
-        if sys.platform != "win32":
+        # ``main`` imports ``sys`` in later command branches, making that name
+        # local to the whole function. Use the module alias for this early path.
+        if _sys.platform != "win32":
             try:
                 pulse_sources = list_pulse_sources()
             except CaptureDiscoveryError as exc:
