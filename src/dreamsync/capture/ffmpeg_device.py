@@ -54,7 +54,7 @@ def capture_backend(platform: str | None = None) -> CaptureBackend:
 
 
 def default_capture_pattern(platform: str | None = None) -> str:
-    return "CABLE Output" if capture_backend(platform) is CaptureBackend.DIRECTSHOW else "dreamsync_capture.monitor"
+    return "CABLE Output" if capture_backend(platform) is CaptureBackend.DIRECTSHOW else "dreamsync_live_capture.monitor"
 
 
 def discover_capture_device(

@@ -135,6 +135,15 @@ class TestGoveeLiveCaptureFlags(unittest.TestCase):
 
 
 class TestSessionOrchestratorConfig(unittest.TestCase):
+    def test_queue_pipeline_args_require_queue_route(self):
+        parser = build_parser()
+        args = parser.parse_args([
+            "session", "--config", "devices.yaml", "--capture", "--pipeline",
+            "--audio-route", "spotify-queue", "--physical-sink", "alsa_output.test",
+        ])
+        self.assertEqual(args.audio_route, "spotify-queue")
+        self.assertEqual(args.physical_sink, "alsa_output.test")
+
     def test_orchestrator_config_from_session_args(self):
         """OrchestratorConfig constructed correctly from session-style args."""
         from dreamsync.capture.orchestrator import OrchestratorConfig

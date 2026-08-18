@@ -16,6 +16,7 @@ repo_root="$(cd "$script_dir/../.." && pwd)"
 browser="firefox"
 browser_url=""
 physical_sink=""
+route_mode="spotify-queue"
 
 usage() {
     sed -n '2,13p' "$0"
@@ -34,6 +35,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --physical-sink)
             physical_sink="${2:?--physical-sink requires a sink name}"
+            shift 2
+            ;;
+        --route-mode)
+            route_mode="${2:?--route-mode requires live-learning or spotify-queue}"
+            if [[ "$route_mode" != "live-learning" && "$route_mode" != "spotify-queue" ]]; then
+                echo "--route-mode must be live-learning or spotify-queue" >&2
+                exit 2
+            fi
             shift 2
             ;;
         --)
@@ -68,15 +77,28 @@ if [[ "$1" == "python" || "$1" == "python3" ]]; then
     set -- "$venv_python" "${@:2}"
 fi
 
-setup_args=()
+setup_args=("$route_mode")
 if [[ -n "$physical_sink" ]]; then
     setup_args+=("$physical_sink")
 fi
 "$script_dir/setup_linux_pipewire_capture.sh" "${setup_args[@]}"
+route_active=true
+cleanup() {
+    if [[ "${route_active:-false}" == true ]]; then
+        "$script_dir/setup_linux_pipewire_capture.sh" --teardown || true
+    fi
+}
+trap cleanup EXIT INT TERM
 
 # New browser streams inherit this sink. This replaces the pavucontrol Playback
 # selection for the normal cold-boot case.
-pactl set-default-sink dreamsync_capture
+if [[ "$route_mode" == "live-learning" ]]; then
+    browser_sink="dreamsync_live_capture"
+else
+    browser_sink="dreamsync_queue_capture"
+fi
+desktop_default="$(pactl get-default-sink)"
+pactl set-default-sink "$browser_sink"
 
 if ! command -v "$browser" >/dev/null; then
     echo "Browser command not found: $browser" >&2
@@ -91,4 +113,7 @@ fi
 
 echo "Firefox/new browser audio will route to DreamSync Capture."
 echo "Starting DreamSync: $*"
-exec "$@"
+# Restore the desktop default immediately; only the browser stream launched
+# above inherits the temporary DreamSync target.
+pactl set-default-sink "$desktop_default" 2>/dev/null || true
+"$@"

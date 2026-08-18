@@ -145,6 +145,44 @@ class RunSessionTests(unittest.TestCase):
             mock_monitor.start.assert_called_once()
             mock_monitor.stop.assert_called_once()
 
+    @patch("dreamsync.session.run_live_to_govee")
+    @patch("dreamsync.session.build_multi_adapter")
+    @patch("dreamsync.session.detect_all_devices")
+    @patch("dreamsync.session.load_device_config")
+    @patch("dreamsync.session.print_detection_report")
+    def test_queue_pipeline_uses_consumer_not_reactive_loop(
+        self, mock_report, mock_load, mock_detect, mock_build, mock_live
+    ) -> None:
+        mock_load.return_value = [DeviceConfig(name="Test", address="192.168.1.10")]
+        mock_detect.return_value = self._make_detected()
+        mock_build.return_value = MagicMock(spec=MultiGoveeLanAdapter)
+
+        from dreamsync.audio.route import resolve_audio_route
+        from dreamsync.session import run_session
+
+        with patch("dreamsync.capture.writer.check_ffmpeg", return_value=True), \
+             patch("dreamsync.capture.orchestrator.CaptureOrchestrator") as MockOrchestrator, \
+             patch("dreamsync.show_pipeline_worker.ShowPipelineWorker"), \
+             patch("dreamsync.show_playback_consumer.ShowPlaybackConsumer") as MockConsumer:
+            orchestrator = MockOrchestrator.return_value
+            orchestrator.stats = {
+                "segments_completed": 0,
+                "elapsed_seconds": 0.0,
+                "drift_corrections": 0,
+            }
+            consumer = MagicMock()
+            MockConsumer.return_value = consumer
+            consumer.run.side_effect = lambda stop: stop.set()
+            run_session(
+                config_path=Path("test.yaml"), capture=True, pipeline=True,
+                playback_device=7,
+                audio_route=resolve_audio_route("spotify-queue"),
+            )
+
+        mock_live.assert_not_called()
+        MockConsumer.assert_called_once()
+        self.assertEqual(MockConsumer.call_args.kwargs["audio_device"], 7)
+
 
 if __name__ == "__main__":
     unittest.main()
