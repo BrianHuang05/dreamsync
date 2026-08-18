@@ -12,6 +12,7 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/../.." && pwd)"
 browser="firefox"
 browser_url=""
 physical_sink=""
@@ -52,6 +53,19 @@ done
 if [[ $# -eq 0 ]]; then
     echo "A DreamSync command is required after --." >&2
     usage
+fi
+
+# Desktop autostart does not activate the project's virtual environment, and
+# Ubuntu commonly has ``python3`` but no ``python`` command. Let the documented
+# ``-- python -m dreamsync ...`` form reliably use this checkout's venv.
+if [[ "$1" == "python" || "$1" == "python3" ]]; then
+    venv_python="$repo_root/.venv/bin/python"
+    if [[ ! -x "$venv_python" ]]; then
+        echo "DreamSync virtual environment not found: $venv_python" >&2
+        echo "Create it first with: python3 -m venv .venv && .venv/bin/pip install -e '.[gui,session]'" >&2
+        exit 1
+    fi
+    set -- "$venv_python" "${@:2}"
 fi
 
 setup_args=()
