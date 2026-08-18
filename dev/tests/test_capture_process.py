@@ -31,7 +31,7 @@ class TestCaptureConfig:
 class TestBuildCommand:
     def test_command_structure(self, manager):
         cmd = manager._build_command("CABLE Output (VB-Audio Virtual Cable)")
-        assert cmd[0] == "ffmpeg"
+        assert cmd[0].lower().endswith(("ffmpeg", "ffmpeg.exe"))
         assert "-hide_banner" in cmd
         assert "pipe:1" in cmd
         assert "audio=CABLE Output (VB-Audio Virtual Cable)" in cmd
