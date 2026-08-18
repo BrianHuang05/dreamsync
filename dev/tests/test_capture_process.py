@@ -7,6 +7,16 @@ import subprocess
 import pytest
 
 from dreamsync.capture.capture_process import CaptureProcessManager, CaptureConfig
+from dreamsync.capture.ffmpeg_device import CaptureBackend, CaptureDevice
+
+
+@pytest.fixture(autouse=True)
+def windows_capture_test_environment(monkeypatch):
+    """Keep legacy lifecycle tests explicitly on the DirectShow backend."""
+    monkeypatch.setattr("dreamsync.capture.capture_process.sys.platform", "win32")
+    monkeypatch.setattr("dreamsync.capture.ffmpeg_device.sys.platform", "win32")
+    monkeypatch.setattr("dreamsync.capture.capture_process.resolve_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr("dreamsync.capture.capture_process.subprocess.CREATE_NEW_PROCESS_GROUP", 0, raising=False)
 
 
 @pytest.fixture
@@ -46,8 +56,34 @@ class TestBuildCommand:
         idx = cmd.index("-ar")
         assert cmd[idx + 1] == "44100"
 
+    def test_pulse_command_preserves_source_and_pcm_contract(self, manager):
+        cmd = manager._build_command(CaptureDevice(CaptureBackend.PULSE, "dreamsync_capture.monitor"))
+        assert cmd[cmd.index("-f", 4) + 1] == "pulse"
+        assert cmd[cmd.index("-i") + 1] == "dreamsync_capture.monitor"
+        assert cmd[cmd.index("-acodec") + 1] == "pcm_s16le"
+        assert cmd[cmd.index("-ar") + 1] == "44100"
+
 
 class TestLifecycle:
+    @patch("dreamsync.capture.capture_process.subprocess.Popen")
+    @patch("dreamsync.capture.capture_process.discover_capture_device")
+    def test_linux_start_uses_resolved_pulse_source(self, mock_discover, mock_popen, manager, monkeypatch):
+        monkeypatch.setattr("dreamsync.capture.capture_process.sys.platform", "linux")
+        mock_discover.return_value = CaptureDevice(
+            CaptureBackend.PULSE, "dreamsync_capture.monitor", sample_rate=48000,
+        )
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.stderr = io.BytesIO(b"")
+        mock_popen.return_value = mock_proc
+
+        manager.start()
+
+        mock_discover.assert_called_once_with("CABLE Output")
+        command = mock_popen.call_args.args[0]
+        assert command[command.index("-f", 4) + 1] == "pulse"
+        assert command[command.index("-i") + 1] == "dreamsync_capture.monitor"
+
     @patch("dreamsync.capture.capture_process.subprocess.Popen")
     @patch("dreamsync.capture.capture_process.discover_audio_device")
     def test_start_with_explicit_device(self, mock_discover, mock_popen, manager):

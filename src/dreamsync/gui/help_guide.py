@@ -33,6 +33,18 @@ _SECTIONS: tuple[tuple[str, str], ...] = (
         """,
     ),
     (
+        "Linux PipeWire loopback",
+        """
+        <h1>Linux system-audio capture with PipeWire</h1>
+        <p>DreamSync captures a PulseAudio-compatible PipeWire monitor source, normally <b>dreamsync_capture.monitor</b>. Install and run WirePlumber so PipeWire exposes real devices and the PulseAudio compatibility service.</p>
+        <h2>Route audio</h2>
+        <p>Create a PipeWire/Pulse virtual sink named <b>dreamsync_capture</b>, route the application to that sink, and use PipeWire's loopback to keep it audible through your real speakers/headphones. Set DreamSync's system-loopback capture source to <b>dreamsync_capture.monitor</b>.</p>
+        <p><b>Important:</b> DreamSync only captures PCM from the monitor source. It does not replay captured audio to your speakers; PipeWire owns the audible loopback route.</p>
+        <h2>Verify</h2>
+        <p>Run <code>pactl list short sources</code> and confirm the monitor source appears. If it does not, check that PipeWire, pipewire-pulse, and WirePlumber are running.</p>
+        """,
+    ),
+    (
         "Config and devices",
         """
         <h1>Configuration and devices</h1>

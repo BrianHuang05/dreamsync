@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from dreamsync.capture.ffmpeg_device import default_capture_pattern
 
 
 @dataclass(frozen=True)
@@ -18,7 +20,7 @@ class CaptureSettings:
     temp_retention_hours: int = 24
     naming_mode: str = "timestamp"
     max_capture_buffer: int = 0
-    device_pattern: str = "CABLE Output"
+    device_pattern: str = field(default_factory=default_capture_pattern)
     sample_rate: int = 44100
     channels: int = 2
     frame_size: int = 2048

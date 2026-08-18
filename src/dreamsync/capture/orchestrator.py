@@ -6,11 +6,12 @@ import collections
 import os
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Callable
 
 from dreamsync.capture.boundary_queue import BoundaryEntry, BoundaryQueue
 from dreamsync.capture.capture_process import CaptureConfig, CaptureProcessManager
+from dreamsync.capture.ffmpeg_device import default_capture_pattern
 from dreamsync.capture.drift_detector import DriftDetector
 from dreamsync.capture.encoder_process import EncoderProcess
 from dreamsync.capture.file_namer import FileNamer
@@ -33,7 +34,8 @@ class OrchestratorConfig:
     # --- Capture process (-> CaptureConfig) ---
     sample_rate: int = 44100
     channels: int = 2
-    device_pattern: str = "CABLE Output"
+    device_pattern: str = field(default_factory=default_capture_pattern)
+    capture_source: str | None = None
 
     # --- PCM reader ---
     chunk_ms: int = 100
@@ -73,6 +75,7 @@ class OrchestratorConfig:
             sample_rate=self.sample_rate,
             channels=self.channels,
             device_pattern=self.device_pattern,
+            capture_source=self.capture_source,
         )
 
     def to_recovery_config(self) -> RecoveryConfig:

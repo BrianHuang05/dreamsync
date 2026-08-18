@@ -66,6 +66,11 @@ class TestCaptureMp3Args(unittest.TestCase):
         self.assertEqual(args.naming, "metadata")
         self.assertEqual(args.device_pattern, "Stereo Mix")
 
+    def test_capture_source_overrides_legacy_pattern(self):
+        parser = build_parser()
+        args = parser.parse_args(["capture", "--duration", "1", "--mp3", "--capture-source", "dreamsync_capture.monitor"])
+        self.assertEqual(args.capture_source, "dreamsync_capture.monitor")
+
     def test_capture_without_mp3_unchanged(self):
         parser = build_parser()
         args = parser.parse_args(["capture", "--duration", "10"])

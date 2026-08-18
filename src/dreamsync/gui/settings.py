@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from dreamsync.gui.models.capture_settings import CaptureSettings, LearnedLiveSettings
+from dreamsync.capture.ffmpeg_device import default_capture_pattern
 from dreamsync.gui.models.reactive_settings import ReactiveSettings
 from dreamsync.raw_visualizer import DEFAULT_RAW_VISUALIZER_GRADIENT
 
@@ -266,7 +267,7 @@ class GuiSettingsStore:
                 ),
                 naming_mode=str(capture_raw.get("naming_mode", "timestamp")),
                 max_capture_buffer=int(capture_raw.get("max_capture_buffer", 0)),
-                device_pattern=str(capture_raw.get("device_pattern", "CABLE Output")),
+                device_pattern=str(capture_raw.get("device_pattern", default_capture_pattern())),
                 sample_rate=int(capture_raw.get("sample_rate", 44100)),
                 channels=int(capture_raw.get("channels", 2)),
                 frame_size=int(capture_raw.get("frame_size", 2048)),

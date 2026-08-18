@@ -6,6 +6,7 @@ import threading
 from pathlib import Path
 
 from .audio.system_input import list_input_devices
+from .capture.ffmpeg_device import CaptureDiscoveryError, default_capture_pattern, list_pulse_sources
 from .director import DirectorConfig
 from .live import LiveStructureConfig, run_live_to_govee
 from .output.govee_lan import GoveeLanAdapter, GoveeLanConfig, MultiGoveeLanAdapter, TransportMode, parse_device_spec
@@ -104,8 +105,14 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument(
         "--device-pattern",
         type=str,
-        default="CABLE Output",
-        help="DirectShow audio device name pattern for FFmpeg (default: CABLE Output).",
+        default=default_capture_pattern(),
+        help="Legacy capture-source pattern (Windows DirectShow / Linux PulseAudio).",
+    )
+    capture.add_argument(
+        "--capture-source",
+        type=str,
+        default=None,
+        help="Exact or matching backend-neutral capture source; overrides --device-pattern.",
     )
     # -- Govee LAN direct commands ----------------------------------------
     sub.add_parser("govee-scan", help="Scan for Govee devices on the local network.")
@@ -1314,6 +1321,18 @@ def main(argv: list[str] | None = None) -> int:
             print("  Audio Output Devices (for --playback-device / --audio-device)")
             print(format_device_table(outputs, kind="output", mark_capture=True))
             print()
+        if sys.platform != "win32":
+            try:
+                pulse_sources = list_pulse_sources()
+            except CaptureDiscoveryError as exc:
+                print(f"Pulse capture sources unavailable: {exc}")
+            else:
+                print("  Pulse capture sources (for --capture-source)")
+                for source in pulse_sources:
+                    marker = " [monitor]" if source.is_monitor else ""
+                    details = " ".join(part for part in (source.sample_format, source.state) if part)
+                    print(f"  {source.index}: {source.name}{marker}" + (f" ({details})" if details else ""))
+                print()
         return 0
 
     if args.command == "gui":
@@ -1338,6 +1357,7 @@ def main(argv: list[str] | None = None) -> int:
                 sample_rate=getattr(args, "sample_rate", 48000),
                 channels=getattr(args, "channels", 2),
                 device_pattern=args.device_pattern,
+                capture_source=args.capture_source,
                 output_dir=args.output_dir,
                 naming=args.naming,
                 max_capture_files=getattr(args, "capture_buffer", 0),

@@ -231,6 +231,10 @@ The capture pipeline uses FFmpeg to read from VB-Cable's output device. You must
 
 The audio path is: App -> CABLE Input -> CABLE Output -> FFmpeg capture -> DreamSync -> `--playback-device` (speakers/aux out).
 
+### Audio routing setup (Linux PipeWire)
+
+DreamSync captures a PipeWire PulseAudio monitor source, by default `dreamsync_capture.monitor`. Create a virtual `dreamsync_capture` sink, route the desired application to it, and configure PipeWire's loopback to your physical speakers/headphones. PipeWire—not DreamSync—keeps the audio audible. Confirm the source with `pactl list short sources`, then run capture with `--capture-source dreamsync_capture.monitor`.
+
 > **Note:** No VB-Cable loopback ("Listen to this device") is needed. The streaming pipeline captures audio from VB-Cable, processes it (analyze + compile), and plays it back through `--playback-device`. DreamSync itself handles the routing between capture and playback — the only delay is the pipeline processing time between songs.
 >
 > If you're using `govee-live` without `--pipeline` (real-time beat detection only, no show playback), you'll need to hear the music through other means — either enable "Listen to this device" on CABLE Output in the Recording tab, or use a hardware splitter.
@@ -504,7 +508,8 @@ All flags in one table, grouped by category. Not every flag applies to every sub
 | `--capture` | off | Enable MP3 capture pipeline (session/govee-live) |
 | `--output-dir` / `--capture-dir` | `captured_songs` | Output directory for MP3 files |
 | `--naming` / `--capture-naming` | `timestamp` | Filename scheme: `timestamp` or `metadata` |
-| `--device-pattern` | `CABLE Output` | DirectShow audio device for FFmpeg |
+| `--capture-source` | platform default | Backend-neutral capture source; use `dreamsync_capture.monitor` on Linux |
+| `--device-pattern` | platform default | Legacy capture-source pattern (DirectShow on Windows, PulseAudio on Linux) |
 | `--spotify` | off | Use Spotify queue API for song boundary detection |
 | `--capture-buffer` | off | Max MP3 files to keep on disk (rotating buffer) |
 | `--archive` | off | Archive MP3 files in capture directory on clean shutdown (session) |

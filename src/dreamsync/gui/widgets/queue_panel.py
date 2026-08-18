@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dreamsync.capture.ffmpeg_device import default_capture_pattern
+
 from dataclasses import dataclass
 
 from dreamsync.gui.widgets.reactive_chord_history_view import (
@@ -847,8 +849,8 @@ def build_queue_panel(qt_modules):
     capture_buffer_spin.setRange(0, 9999)
     capture_buffer_spin.setObjectName("captureBufferSpin")
     capture_layout.addWidget(capture_buffer_spin, 3, 1)
-    capture_layout.addWidget(QtWidgets.QLabel("System-loopback device pattern"), 4, 0)
-    capture_device_pattern_edit = QtWidgets.QLineEdit("CABLE Output")
+    capture_layout.addWidget(QtWidgets.QLabel("System-loopback capture source"), 4, 0)
+    capture_device_pattern_edit = QtWidgets.QLineEdit(default_capture_pattern())
     capture_device_pattern_edit.setObjectName("captureDevicePatternEdit")
     capture_layout.addWidget(capture_device_pattern_edit, 4, 1)
     capture_layout.addWidget(QtWidgets.QLabel("Sample rate"), 5, 0)
