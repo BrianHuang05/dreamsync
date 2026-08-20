@@ -8,7 +8,9 @@ playing, without treating the absence of a protocol ACK as proof of failure.
 ## Design
 
 - Keep the detailed configured-device rows in the existing Devices/Config
-  health surface; discovery remains a separate manual operation.
+  health surface; discovery remains a separate manual operation. Populate the
+  Devices table from configured devices when needed, then update its Status
+  cells without rescanning.
 - Add a compact, permanent status-bar summary visible from every tab while
   hardware output is active.
 - Merge passive LAN probes with the active output adapter's observations:

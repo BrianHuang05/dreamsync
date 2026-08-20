@@ -11253,6 +11253,14 @@ def create_main_window(
             queue_panel.device_health_label.setText("Waiting for passive health check…")
             hardware_health_indicator.setText("Hardware: checking…" if hardware_playing else "Hardware: idle")
             return
+        if hardware_enabled and not discovery_entries_state["entries"] and config_path is not None:
+            try:
+                _set_discovery_entries(
+                    device_discovery_service.merge_with_config([], config_path),
+                    status="Configured devices — runtime health updates while playback is active.",
+                )
+            except Exception:
+                pass
         counts = snapshot.counts()
         queue_panel.device_health_label.setText(
             f"{counts['online']} online · {counts['degraded']} degraded · "
@@ -11279,6 +11287,27 @@ def create_main_window(
                 "Open Config for per-device health."
             )
         health_warning_state["degraded"] = degraded
+        health_by_address = {entry.address.upper(): entry for entry in snapshot.entries}
+        table = device_discovery_panel.devices_table
+        for row, entry in enumerate(discovery_entries_state["entries"]):
+            health = health_by_address.get(str(entry.address).upper())
+            if health is None:
+                continue
+            if health.status == "online":
+                label, color = "Healthy (runtime)", "#DCFCE7"
+            elif health.status == "degraded":
+                label, color = "Degraded (runtime)", "#FEF3C7"
+            elif health.status == "offline":
+                label, color = "Offline (runtime)", "#FEE2E2"
+            else:
+                label, color = "Unknown (runtime)", "#E5E7EB"
+            item = table.item(row, 0)
+            if item is None:
+                item = QtWidgets.QTableWidgetItem()
+                table.setItem(row, 0, item)
+            item.setText(label)
+            item.setBackground(QtGui.QColor(color))
+            item.setToolTip(health.error or "Runtime transport health has no stronger device acknowledgement.")
 
     def _sync_device_health_monitoring(*, refresh: bool = False) -> None:  # pragma: no cover - Qt only
         hardware_enabled = str(queue_panel.output_target_combo.currentData() or "simulation") == "hardware"
