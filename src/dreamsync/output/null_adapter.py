@@ -149,6 +149,21 @@ class PreviewMirrorAdapter:
         finally:
             self._preview_adapter.deactivate()
 
+    def keep_ble_connected(self, enabled: bool = True) -> None:
+        setter = getattr(self._output_adapter, "keep_ble_connected", None)
+        if callable(setter):
+            setter(enabled)
+
+    def connect_ble_followers(self) -> None:
+        connect = getattr(self._output_adapter, "connect_ble_followers", None)
+        if callable(connect):
+            connect()
+
+    def shutdown(self) -> None:
+        shutdown = getattr(self._output_adapter, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+
     def configure_frame_trace(
         self,
         *,

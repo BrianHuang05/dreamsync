@@ -452,6 +452,7 @@ def detect_all_devices(
     lan_rate_hz: float = 20.0,
     ble_rate_hz: float = 10.0,
     parallel: bool = True,
+    probe_ble: bool = True,
 ) -> list[DetectedDevice]:
     """Probe all configured devices and classify their roles.
 
@@ -474,9 +475,49 @@ def detect_all_devices(
         _lan_hz = rate_hz
         _ble_hz = rate_hz
 
+    if not probe_ble:
+        # A running GoveeBleAdapter owns one dedicated asyncio loop.  Do not
+        # create short-lived Bleak clients immediately before starting that
+        # adapter: on BlueZ this can leave D-Bus event objects attached to the
+        # probe loop and make the real client fail with a cross-loop error.
+        return _detect_without_ble_probes(configs, _lan_pkt, _lan_hz)
     if parallel and len(configs) > 1:
         return _detect_parallel(configs, _lan_pkt, _ble_pkt, _lan_hz, _ble_hz)
     return _detect_sequential(configs, _lan_pkt, _ble_pkt, _lan_hz, _ble_hz)
+
+
+def _detect_without_ble_probes(
+    configs: list[DeviceConfig], lan_packets: int, lan_rate_hz: float
+) -> list[DetectedDevice]:
+    """Probe LAN devices only and reserve BLE connection for its adapter.
+
+    BLE availability is established by the long-lived adapter rather than by a
+    second, disposable Bleak connection during show preparation.
+    """
+    lan_configs = [
+        config for config in configs
+        if config.type == "lan" or (config.type == "auto" and _is_ip_address(config.address))
+    ]
+    lan_results = _probe_lan_batch(
+        [config.address for config in lan_configs], lan_packets, lan_rate_hz
+    ) if lan_configs else {}
+    detected: list[DetectedDevice] = []
+    for config in configs:
+        is_ip = _is_ip_address(config.address)
+        if config.type == "ble" or (config.type == "auto" and not is_ip):
+            detected.append(DetectedDevice(
+                name=config.name,
+                address=config.address,
+                connection_type="ble",
+                latency=LatencyStats(samples=[]),
+                role="follower",
+                config=config,
+                ble_protocol=config.protocol or "segment",
+            ))
+            continue
+        stats = lan_results.get(config.address, LatencyStats(samples=[]))
+        detected.append(_classify_lan(config, stats))
+    return detected
 
 
 def _classify_lan(cfg: DeviceConfig, stats: LatencyStats) -> DetectedDevice:

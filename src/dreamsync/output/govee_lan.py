@@ -593,6 +593,22 @@ class MultiGoveeLanAdapter:
 
     def deactivate(self) -> None:
         """Stop BLE follower threads."""
+        if getattr(self, "_keep_ble_connected", False):
+            return
+        for follower in self._ble_followers:
+            self._ble_adapter_for(follower).stop()
+
+    def connect_ble_followers(self) -> None:
+        """Start BLE connections without changing any light state."""
+        for follower in self._ble_followers:
+            self._ble_adapter_for(follower).start()
+
+    def keep_ble_connected(self, enabled: bool = True) -> None:
+        """Keep BLE followers alive between GUI shows for fast restart."""
+        self._keep_ble_connected = bool(enabled)
+
+    def shutdown(self) -> None:
+        """Disconnect BLE followers when replacing the hardware configuration."""
         for follower in self._ble_followers:
             self._ble_adapter_for(follower).stop()
 

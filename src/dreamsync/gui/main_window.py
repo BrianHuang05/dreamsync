@@ -4091,6 +4091,14 @@ def create_main_window(
         )
 
     def _reload_spatial_scene(*, status: str | None = None) -> None:
+        nonlocal config_path
+        # The Config tab owns the editable path.  Room Layout reload must use
+        # that current value even if the user has not pressed Apply yet.
+        requested_text = str(queue_panel.device_room_config_path_edit.text()).strip()
+        requested_path = Path(requested_text).expanduser() if requested_text else None
+        if requested_path is not None and requested_path != config_path:
+            config_path = requested_path
+            runtime_supervisor.set_config_path(config_path)
         if config_path is None or not config_path.exists():
             queue_panel.raw_visualizer_origin_table.setRowCount(0)
             spatial_entries_state["entries"] = []
@@ -11248,6 +11256,10 @@ def create_main_window(
             device_health_service.start(config_file)
             if refresh:
                 device_health_service.request_refresh()
+                try:
+                    runtime_supervisor.warm_hardware_connections(config_file)
+                except Exception as exc:
+                    queue_controller.set_status(f"Hardware preflight failed: {exc}")
         else:
             device_health_service.stop()
         _render_device_health()

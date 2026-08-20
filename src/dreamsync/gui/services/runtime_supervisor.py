@@ -480,6 +480,13 @@ class RuntimeSupervisor:
         )
         self._routing_state = replace(self._routing_state, output_target=target)
 
+    def warm_hardware_connections(self, config_path: Path | None) -> None:
+        """Open the reusable BLE adapter after a hardware health preflight."""
+        if self._simulation_only() or config_path is None:
+            return
+        self._session_service.warm_hardware_adapter(config_path)
+        self._record_event("Hardware connections prepared for fast show playback.")
+
     def set_capture_settings(self, settings: CaptureSettings) -> None:
         self._capture_settings = settings
 
