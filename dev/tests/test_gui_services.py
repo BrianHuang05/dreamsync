@@ -853,6 +853,32 @@ def test_session_service_exposes_live_session_ref(tmp_path: Path):
     assert handle.session_ref is not None
 
 
+def test_session_service_returns_persistent_hardware_adapter(tmp_path: Path):
+    config = tmp_path / "devices.yaml"
+    config.write_text("devices:\n  - name: Test\n    address: 192.0.2.1\n", encoding="utf-8")
+    service = SessionService()
+    output_adapter = MagicMock()
+
+    with patch(
+        "dreamsync.output.auto_detect.detect_all_devices", return_value=[]
+    ), patch(
+        "dreamsync.output.auto_detect.build_multi_adapter", return_value=output_adapter
+    ):
+        adapter = service.build_output_adapter(
+            config,
+            simulation_only=False,
+            fallback_to_simulation=False,
+        )
+        reused_adapter = service.build_output_adapter(
+            config,
+            simulation_only=False,
+            fallback_to_simulation=False,
+        )
+
+    assert adapter is not None
+    assert reused_adapter is adapter
+
+
 def test_session_service_passes_timeline_resolver_to_local_preview(tmp_path: Path):
     song = tmp_path / "song.mp3"
     song.touch()

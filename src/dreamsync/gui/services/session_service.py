@@ -1126,6 +1126,12 @@ class SessionService:
                     mirror=mirror,
                 ),
             )
+            keep_connected = getattr(result, "keep_ble_connected", None)
+            if callable(keep_connected):
+                keep_connected(True)
+            self._hardware_adapter_key = adapter_key
+            self._hardware_adapter = result
+            return result
         except Exception:
             if not fallback_to_simulation:
                 raise
