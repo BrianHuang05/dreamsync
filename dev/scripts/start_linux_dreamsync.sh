@@ -116,4 +116,5 @@ echo "Starting DreamSync: $*"
 # Restore the desktop default immediately; only the browser stream launched
 # above inherits the temporary DreamSync target.
 pactl set-default-sink "$desktop_default" 2>/dev/null || true
+cd "$repo_root"
 "$@"
