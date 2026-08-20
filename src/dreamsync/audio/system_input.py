@@ -1,10 +1,76 @@
 from __future__ import annotations
 
+import os
+from contextlib import contextmanager
 import time
 from dataclasses import dataclass
 from typing import Callable
 
 import numpy as np
+
+
+_PULSE_SOURCE_DEVICE_PREFIX = "pulse-source:"
+
+
+def pulse_source_device_id(source_name: str) -> str:
+    """Return the persisted device ID for a named PipeWire/Pulse source."""
+    return f"{_PULSE_SOURCE_DEVICE_PREFIX}{source_name}"
+
+
+def _pulse_source_name(device: int | str | None) -> str | None:
+    if isinstance(device, str) and device.startswith(_PULSE_SOURCE_DEVICE_PREFIX):
+        return device.removeprefix(_PULSE_SOURCE_DEVICE_PREFIX)
+    return None
+
+
+def _pulse_alsa_device_id(sd) -> int:
+    """Find PortAudio's PulseAudio ALSA endpoint used to open Pulse sources."""
+    devices = sd.query_devices()
+    hostapis = sd.query_hostapis()
+    for index, info in enumerate(devices):
+        if int(info.get("max_input_channels", 0)) <= 0:
+            continue
+        hostapi_index = int(info.get("hostapi", -1))
+        hostapi = (
+            str(hostapis[hostapi_index].get("name", ""))
+            if 0 <= hostapi_index < len(hostapis)
+            else ""
+        )
+        name = str(info.get("name", "")).strip().lower()
+        if hostapi.lower() == "alsa" and name in {"pulse", "pulse alsa"}:
+            return index
+    raise RuntimeError(
+        "This PipeWire/Pulse source needs PortAudio's Pulse ALSA input endpoint, "
+        "but it is not available. Install the PulseAudio ALSA plugin and restart the app."
+    )
+
+
+@contextmanager
+def open_input_stream(sd, *, device: int | str | None = None, **kwargs):
+    """Open an input stream, including a specifically selected Pulse source.
+
+    PortAudio exposes PipeWire's Pulse server as one ALSA device (usually
+    ``pulse``), which hides its individual microphones.  ``PULSE_SOURCE`` is
+    read when that stream is opened, allowing the GUI to present the actual
+    PipeWire sources without changing the user's system default source.
+    """
+    source_name = _pulse_source_name(device)
+    old_source = None
+    if source_name is not None:
+        if not source_name:
+            raise ValueError("The selected PipeWire/Pulse source is empty.")
+        device = _pulse_alsa_device_id(sd)
+        old_source = os.environ.get("PULSE_SOURCE")
+        os.environ["PULSE_SOURCE"] = source_name
+    try:
+        with sd.InputStream(device=device, **kwargs) as stream:
+            yield stream
+    finally:
+        if source_name is not None:
+            if old_source is None:
+                os.environ.pop("PULSE_SOURCE", None)
+            else:
+                os.environ["PULSE_SOURCE"] = old_source
 
 
 @dataclass(frozen=True)
@@ -194,7 +260,7 @@ def capture_mono_audio(
     duration_seconds: float,
     sample_rate: int = 44100,
     channels: int = 1,
-    device: int | None = None,
+    device: int | str | None = None,
     blocksize: int = 1024,
     progress_interval_seconds: float | None = None,
     progress_callback: Callable[[CaptureProgress], None] | None = None,
@@ -220,7 +286,8 @@ def capture_mono_audio(
         captured.append(indata.copy())
         captured_samples += int(indata.shape[0])
 
-    with sd.InputStream(
+    with open_input_stream(
+        sd,
         samplerate=sample_rate,
         channels=channels,
         device=device,

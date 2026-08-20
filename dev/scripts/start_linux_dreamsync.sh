@@ -83,7 +83,15 @@ if [[ -n "$physical_sink" ]]; then
 fi
 "$script_dir/setup_linux_pipewire_capture.sh" "${setup_args[@]}"
 route_active=true
+browser_pid=""
 cleanup() {
+    if [[ -n "${browser_pid:-}" ]] && kill -0 "$browser_pid" 2>/dev/null; then
+        # The browser runs in its own session, so this only closes the process
+        # tree started by this launcher (not an unrelated desktop browser).
+        kill -- "-$browser_pid" 2>/dev/null || kill "$browser_pid" 2>/dev/null || true
+        wait "$browser_pid" 2>/dev/null || true
+    fi
+    browser_pid=""
     if [[ "${route_active:-false}" == true ]]; then
         "$script_dir/setup_linux_pipewire_capture.sh" --teardown || true
     fi
@@ -106,10 +114,11 @@ if ! command -v "$browser" >/dev/null; then
 fi
 
 if [[ -n "$browser_url" ]]; then
-    "$browser" --new-window "$browser_url" >/dev/null 2>&1 &
+    setsid "$browser" --new-window "$browser_url" >/dev/null 2>&1 &
 else
-    "$browser" --new-window >/dev/null 2>&1 &
+    setsid "$browser" --new-window >/dev/null 2>&1 &
 fi
+browser_pid=$!
 
 echo "Firefox/new browser audio will route to DreamSync Capture."
 echo "Starting DreamSync: $*"

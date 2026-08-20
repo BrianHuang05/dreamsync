@@ -32,7 +32,7 @@ class GuiSettings:
     output_target_mode: str = "simulation"
     dark_mode: bool = False
     selected_output_audio_device_id: int | None = None
-    selected_live_input_device_id: int | None = None
+    selected_live_input_device_id: int | str | None = None
     hardware_fallback_to_simulation: bool = True
     baked_playback_mode: str = "auto"
     live_loopback_enabled: bool = False
@@ -129,10 +129,8 @@ class GuiSettingsStore:
                 if raw.get("selected_output_audio_device_id") is not None
                 else None
             ),
-            selected_live_input_device_id=(
-                int(raw["selected_live_input_device_id"])
-                if raw.get("selected_live_input_device_id") is not None
-                else None
+            selected_live_input_device_id=_parse_input_device_id(
+                raw.get("selected_live_input_device_id")
             ),
             hardware_fallback_to_simulation=bool(raw.get("hardware_fallback_to_simulation", True)),
             baked_playback_mode=str(raw.get("baked_playback_mode", "auto")),
@@ -246,8 +244,8 @@ class GuiSettingsStore:
             capture_settings=CaptureSettings(
                 capture_dir=str(
                     capture_raw.get(
-                        "temp_capture_root",
-                        capture_raw.get("capture_dir", "library/temp"),
+                        "capture_dir",
+                        capture_raw.get("temp_capture_root", "library/temp"),
                     )
                 ),
                 captured_audio_root=str(
@@ -461,3 +459,12 @@ class GuiSettingsStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         payload: dict[str, Any] = asdict(settings)
         self._path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _parse_input_device_id(value: object) -> int | str | None:
+    """Keep legacy numeric IDs while persisting named PipeWire sources."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return int(value)

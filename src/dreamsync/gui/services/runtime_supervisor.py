@@ -470,7 +470,7 @@ class RuntimeSupervisor:
     def set_selected_output_audio_device(self, device_id: int | None) -> None:
         self._routing_state = replace(self._routing_state, selected_output_audio_device_id=device_id)
 
-    def set_selected_live_input_device(self, device_id: int | None) -> None:
+    def set_selected_live_input_device(self, device_id: int | str | None) -> None:
         self._routing_state = replace(self._routing_state, selected_live_input_device_id=device_id)
 
     def set_config_path(self, config_path: Path | None) -> None:

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class AudioDeviceOption:
-    id: int | None = None
+    id: int | str | None = None
     name: str = ""
     hostapi: str = ""
     default_samplerate: float = 0.0
@@ -36,9 +36,8 @@ class RuntimeRoutingState:
     available_output_devices: tuple[AudioDeviceOption, ...] = field(default_factory=tuple)
     available_input_devices: tuple[AudioDeviceOption, ...] = field(default_factory=tuple)
     selected_output_audio_device_id: int | None = None
-    selected_live_input_device_id: int | None = None
+    selected_live_input_device_id: int | str | None = None
     selected_output_owner: str = ""
     resolved_output_mode: str = "simulation"
     resolved_config_path: str = ""
     routing_status: str = "Simulation only."
-

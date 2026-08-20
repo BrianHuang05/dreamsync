@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 
 from dreamsync.audio.ring import AudioBlockRing, PcmFrameBuffer
-from dreamsync.audio.system_input import _require_sounddevice
+from dreamsync.audio.system_input import _require_sounddevice, open_input_stream
 from dreamsync.color_utils import nearest_palette_color
 from dreamsync.director import Director, DirectorConfig, EffectMode
 from dreamsync.groups.models import GroupRuntimeState
@@ -3762,7 +3762,7 @@ def run_live_to_govee(
     duration_seconds: float | None,
     sample_rate: int = 44100,
     channels: int = 1,
-    device: int | None = None,
+    device: int | str | None = None,
     frame_size: int = 2048,
     hop_size: int = 512,
     telemetry_interval_seconds: float = 1.0,
@@ -4522,7 +4522,8 @@ def run_live_to_govee(
         )
     multi_adapter.activate(brightness=100)
 
-    with sd.InputStream(
+    with open_input_stream(
+        sd,
         samplerate=sample_rate,
         channels=channels,
         device=device,
