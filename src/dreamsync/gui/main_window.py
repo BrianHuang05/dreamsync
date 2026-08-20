@@ -854,6 +854,9 @@ def create_main_window(
     queue_panel.captured_audio_root_edit.setText(
         settings.capture_settings.captured_audio_root
     )
+    device_health_service.set_runtime_health_provider(
+        session_service.hardware_health_snapshot
+    )
     queue_panel.analysis_root_edit.setText(settings.capture_settings.analysis_root)
     queue_panel.compiled_show_root_edit.setText(
         settings.capture_settings.compiled_show_root
@@ -1108,7 +1111,11 @@ def create_main_window(
         f"profile={active_profile_ref['path'] or settings.last_profile_path or 'none'} | "
         f"config={config_path or settings.last_config_path or 'none'}"
     )
+    hardware_health_indicator = QtWidgets.QLabel("Hardware: inactive")
+    hardware_health_indicator.setObjectName("hardwareHealthIndicator")
+    status_bar.addPermanentWidget(hardware_health_indicator)
     window.setStatusBar(status_bar)
+    health_warning_state = {"degraded": False}
 
     error_toast_state = {"widget": None, "message": ""}
     error_toast_timer = QtCore.QTimer(window)
@@ -11225,16 +11232,26 @@ def create_main_window(
 
     def _render_device_health() -> None:  # pragma: no cover - Qt only
         hardware_enabled = str(queue_panel.output_target_combo.currentData() or "simulation") == "hardware"
+        runtime_state = runtime_supervisor.snapshot()
+        hardware_playing = (
+            hardware_enabled
+            and runtime_state.active_output_mode != "idle"
+            and not runtime_state.lighting_output_lease.simulation_only
+        )
         queue_panel.refresh_device_health_button.setEnabled(hardware_enabled)
         if not hardware_enabled:
             queue_panel.device_health_label.setText("Off in simulation mode.")
+            hardware_health_indicator.setText("Hardware: inactive")
+            health_warning_state["degraded"] = False
             return
         snapshot = device_health_service.snapshot()
         if snapshot.error:
             queue_panel.device_health_label.setText(f"Health unavailable: {snapshot.error}")
+            hardware_health_indicator.setText("Hardware: health unavailable")
             return
         if not snapshot.entries:
             queue_panel.device_health_label.setText("Waiting for passive health check…")
+            hardware_health_indicator.setText("Hardware: checking…" if hardware_playing else "Hardware: idle")
             return
         counts = snapshot.counts()
         queue_panel.device_health_label.setText(
@@ -11248,11 +11265,27 @@ def create_main_window(
             for entry in snapshot.entries
         )
         queue_panel.device_health_label.setToolTip(detail)
+        summary = (
+            f"{counts['online']} healthy · {counts['degraded']} degraded · "
+            f"{counts['offline']} offline · {counts['unknown']} unknown"
+        )
+        hardware_health_indicator.setText(
+            f"Hardware: {summary}" if hardware_playing else "Hardware: ready"
+        )
+        degraded = hardware_playing and (counts["degraded"] + counts["offline"] > 0)
+        if degraded and not health_warning_state["degraded"]:
+            _show_error(
+                "Hardware connectivity degraded; playback is continuing on available devices. "
+                "Open Config for per-device health."
+            )
+        health_warning_state["degraded"] = degraded
 
     def _sync_device_health_monitoring(*, refresh: bool = False) -> None:  # pragma: no cover - Qt only
         hardware_enabled = str(queue_panel.output_target_combo.currentData() or "simulation") == "hardware"
         config_file = _device_health_config_path()
         if hardware_enabled and config_file is not None:
+            active = runtime_supervisor.snapshot().active_output_mode != "idle"
+            device_health_service.set_interval_seconds(5.0 if active else 30.0)
             device_health_service.start(config_file)
             if refresh:
                 device_health_service.request_refresh()
@@ -11398,7 +11431,7 @@ def create_main_window(
     preview_timer.setInterval(33)
     device_health_timer = QtCore.QTimer(window)
     device_health_timer.setInterval(1000)
-    device_health_timer.timeout.connect(_render_device_health)
+    device_health_timer.timeout.connect(_sync_device_health_monitoring)
     device_health_timer.start()
 
     _initialize_show_columns_menu()

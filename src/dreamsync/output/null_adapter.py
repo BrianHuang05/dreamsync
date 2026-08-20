@@ -164,6 +164,10 @@ class PreviewMirrorAdapter:
         if callable(shutdown):
             shutdown()
 
+    def device_health_snapshot(self) -> dict:
+        snapshot = getattr(self._output_adapter, "device_health_snapshot", None)
+        return dict(snapshot()) if callable(snapshot) else {}
+
     def configure_frame_trace(
         self,
         *,

@@ -612,6 +612,24 @@ class MultiGoveeLanAdapter:
         for follower in self._ble_followers:
             self._ble_adapter_for(follower).stop()
 
+    def device_health_snapshot(self) -> dict[str, dict[str, str | int]]:
+        """Expose passive transport observations without issuing new I/O."""
+        health: dict[str, dict[str, str | int]] = {}
+        for adapter, _renderer, _role, _scale, _placement in self.devices:
+            address = adapter.config.device_ip
+            if adapter.last_send_ok:
+                health[address] = {"status": "unknown", "error": ""}
+            else:
+                health[address] = {
+                    "status": "degraded",
+                    "error": "Recent LAN UDP send failed locally.",
+                }
+        for follower in self._ble_followers:
+            adapter = self._ble_adapter_for(follower)
+            snapshot = getattr(adapter, "health_snapshot", lambda: {})()
+            health[adapter.config.address] = dict(snapshot)
+        return health
+
     def replace_devices(
         self,
         new_devices: list[tuple],

@@ -1055,6 +1055,12 @@ class SessionService:
         if callable(connect):
             connect()
 
+    def hardware_health_snapshot(self) -> dict[str, dict[str, str | int]]:
+        """Read observations from the active persistent adapter; never probe."""
+        adapter = self._hardware_adapter
+        snapshot = getattr(adapter, "device_health_snapshot", None)
+        return dict(snapshot()) if callable(snapshot) else {}
+
     def build_output_adapter(
         self,
         config_path: Path | None,

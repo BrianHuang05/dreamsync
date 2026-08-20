@@ -52,6 +52,24 @@ def test_passive_health_reports_config_errors_without_raising(tmp_path: Path):
     assert snapshot.error == "invalid config"
 
 
+def test_runtime_ble_health_overrides_passive_unknown(tmp_path: Path):
+    config = DeviceConfig(name="BLE Strip", address="AA:BB:CC:DD:EE:FF", type="ble")
+    service = DeviceHealthService(
+        config_loader=lambda _path: [config],
+        runtime_health_provider=lambda: {
+            "AA:BB:CC:DD:EE:FF": {
+                "status": "degraded",
+                "error": "BLE reconnecting (attempt 2).",
+            }
+        },
+    )
+
+    snapshot = service.refresh_once(tmp_path / "devices.yaml")
+
+    assert snapshot.entries[0].status == "degraded"
+    assert "reconnecting" in snapshot.entries[0].error
+
+
 def test_passive_health_turns_probe_errors_into_offline_entries(tmp_path: Path):
     config = DeviceConfig(name="LAN", address="192.0.2.20", type="lan")
 

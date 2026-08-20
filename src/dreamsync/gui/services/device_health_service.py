@@ -42,10 +42,12 @@ class DeviceHealthService:
         *,
         config_loader=load_device_config,
         lan_probe: Callable[..., object] = probe_lan_device,
+        runtime_health_provider: Callable[[], dict[str, dict[str, str | int]]] | None = None,
         interval_seconds: float = 30.0,
     ) -> None:
         self._config_loader = config_loader
         self._lan_probe = lan_probe
+        self._runtime_health_provider = runtime_health_provider
         self._interval_seconds = max(1.0, float(interval_seconds))
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
@@ -85,6 +87,17 @@ class DeviceHealthService:
     def request_refresh(self) -> None:
         self._refresh_event.set()
 
+    def set_runtime_health_provider(self, provider: Callable[[], dict[str, dict[str, str | int]]] | None) -> None:
+        self._runtime_health_provider = provider
+
+    def set_interval_seconds(self, value: float) -> None:
+        value = max(1.0, float(value))
+        with self._lock:
+            changed = self._interval_seconds != value
+            self._interval_seconds = value
+        if changed:
+            self._refresh_event.set()
+
     def snapshot(self) -> DeviceHealthSnapshot:
         with self._lock:
             return self._snapshot
@@ -101,18 +114,24 @@ class DeviceHealthService:
             with self._lock:
                 self._snapshot = snapshot
             return snapshot
+        try:
+            runtime_health = self._runtime_health_provider() if self._runtime_health_provider else {}
+        except Exception:
+            runtime_health = {}
         for config in configs:
+            observation = runtime_health.get(config.address, {})
             device_type = str(config.type or "").lower()
             if device_type == "auto":
                 device_type = "ble" if ":" in config.address else "lan"
             if device_type == "ble":
+                status = str(observation.get("status") or "unknown")
                 entries.append(
                     DeviceHealthEntry(
                         name=config.name,
                         address=config.address,
                         device_type="ble",
-                        status="unknown",
-                        error="BLE health is available while an output session is connected.",
+                        status=status,
+                        error=str(observation.get("error") or "BLE health is available while an output session is connected."),
                     )
                 )
                 continue
@@ -126,6 +145,9 @@ class DeviceHealthService:
                 latency = None
                 status = "offline"
                 error = str(exc).strip() or type(exc).__name__
+            if observation.get("status") in {"degraded", "offline"}:
+                status = str(observation["status"])
+                error = str(observation.get("error") or error)
             entries.append(
                 DeviceHealthEntry(
                     name=config.name,
