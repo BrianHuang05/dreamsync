@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from dreamsync.output.govee_cloud import shutdown_active_dreamviews
 
 
@@ -80,17 +82,19 @@ def test_shutdown_disables_scenic_and_physical_dreamviews():
 def test_shutdown_skips_when_no_key(monkeypatch):
     monkeypatch.delenv("GOVEE_API_KEY", raising=False)
     monkeypatch.delenv("DREAMSYNC_SECRETS_FILE", raising=False)
+    monkeypatch.chdir(Path(__file__).parent)
 
     result = shutdown_active_dreamviews()
 
     assert result.attempted is False
 
 
-def test_shutdown_reads_key_from_configured_secrets_file(tmp_path, monkeypatch):
+def test_shutdown_reads_key_from_default_secrets_file(tmp_path, monkeypatch):
     secrets_file = tmp_path / "dreamsync.secrets.env"
     secrets_file.write_text("# Local only\nexport GOVEE_API_KEY='file-key'\n", encoding="utf-8")
     monkeypatch.delenv("GOVEE_API_KEY", raising=False)
-    monkeypatch.setenv("DREAMSYNC_SECRETS_FILE", str(secrets_file))
+    monkeypatch.delenv("DREAMSYNC_SECRETS_FILE", raising=False)
+    monkeypatch.chdir(tmp_path)
     observed_headers = []
 
     def request(method, path, headers, body):

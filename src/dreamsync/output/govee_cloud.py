@@ -23,6 +23,7 @@ _LOGGER = logging.getLogger(__name__)
 _API_ROOT = "https://openapi.api.govee.com/router/api/v1"
 _API_KEY_ENV = "GOVEE_API_KEY"
 _SECRETS_FILE_ENV = "DREAMSYNC_SECRETS_FILE"
+_DEFAULT_SECRETS_FILE = "dreamsync.secrets.env"
 
 ApiRequest = Callable[[str, str, dict[str, str], dict[str, Any] | None], dict[str, Any]]
 
@@ -118,11 +119,14 @@ def _resolve_api_key(api_key: str | None) -> str:
     from_environment = os.environ.get(_API_KEY_ENV, "").strip()
     if from_environment:
         return from_environment
-    raw_path = os.environ.get(_SECRETS_FILE_ENV, "").strip()
+    raw_path = os.environ.get(_SECRETS_FILE_ENV, _DEFAULT_SECRETS_FILE).strip()
     if not raw_path:
         return ""
     try:
-        return _read_api_key_file(Path(raw_path).expanduser())
+        path = Path(raw_path).expanduser()
+        if not path.is_file():
+            return ""
+        return _read_api_key_file(path)
     except OSError as exc:
         _LOGGER.warning("Could not read DreamSync secrets file: %s", exc)
         return ""

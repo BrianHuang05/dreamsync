@@ -122,14 +122,15 @@ This is required for devices that remain locked to a Govee DreamView session
 after the Govee app closes.
 
 Keep the key out of `devices.yaml` and source control. Set it directly in the
-process environment, or create a local `dreamsync.secrets.env` file (ignored
-by Git) and point DreamSync at it:
+process environment, or create this local file in the repository root (it is
+loaded automatically and ignored by Git):
 
 ```bash
 printf "GOVEE_API_KEY='your-key-here'\\n" > dreamsync.secrets.env
-export DREAMSYNC_SECRETS_FILE="$PWD/dreamsync.secrets.env"
 python -m dreamsync session --config devices.yaml
 ```
+
+To keep the file elsewhere, set `DREAMSYNC_SECRETS_FILE` to its path.
 
 If the key is absent or Govee's cloud API is unreachable, DreamSync logs the
 preflight failure and continues with local device control.
