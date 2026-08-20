@@ -17,5 +17,6 @@ dev_tests_test_preview_simulation_*/
 captured_songs/
 library/
 .audio_route_state.json
+*.secrets.env
 dreamsync-v1.0.0.zip
 dreamsync-v1.0.0/

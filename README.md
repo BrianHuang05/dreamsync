@@ -113,6 +113,27 @@ For production use with a device config file. Runs until Ctrl+C, auto-detects de
 python -m dreamsync session --config devices.yaml --debug-mood
 ```
 
+### DreamView shutdown preflight
+
+When `GOVEE_API_KEY` is set, DreamSync uses Govee's cloud API immediately before
+it activates real lights. It exits every account-visible Scenic DreamView and
+every Movie or Music DreamView sync center that advertises `dreamViewToggle`.
+This is required for devices that remain locked to a Govee DreamView session
+after the Govee app closes.
+
+Keep the key out of `devices.yaml` and source control. Set it directly in the
+process environment, or create a local `dreamsync.secrets.env` file (ignored
+by Git) and point DreamSync at it:
+
+```bash
+printf "GOVEE_API_KEY='your-key-here'\\n" > dreamsync.secrets.env
+export DREAMSYNC_SECRETS_FILE="$PWD/dreamsync.secrets.env"
+python -m dreamsync session --config devices.yaml
+```
+
+If the key is absent or Govee's cloud API is unreachable, DreamSync logs the
+preflight failure and continues with local device control.
+
 ### Device config
 
 ```yaml

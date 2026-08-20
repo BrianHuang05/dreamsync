@@ -440,6 +440,7 @@ class MultiGoveeLanAdapter:
         self._frame_trace_sample_every = 1
         self._frame_trace_counter = 0
         self._frame_trace: deque[dict[str, Any]] = deque(maxlen=120)
+        self._dreamview_preflight_complete = False
 
     def configure_frame_trace(
         self,
@@ -570,6 +571,7 @@ class MultiGoveeLanAdapter:
         power-on before receiving brightness and color data.
         BLE followers are started (background threads launched).
         """
+        self._shutdown_cloud_dreamviews_once()
         for adapter, _renderer, _role, _bs, _placement in self.devices:
             adapter.turn_on()
         time.sleep(0.8)
@@ -579,6 +581,15 @@ class MultiGoveeLanAdapter:
         # Start BLE follower threads
         for follower in self._ble_followers:
             self._ble_adapter_for(follower).start()
+
+    def _shutdown_cloud_dreamviews_once(self) -> None:
+        """Exit cloud-managed DreamViews before taking local device control."""
+        if self._dreamview_preflight_complete:
+            return
+        from dreamsync.output.govee_cloud import shutdown_active_dreamviews
+
+        shutdown_active_dreamviews()
+        self._dreamview_preflight_complete = True
 
     def deactivate(self) -> None:
         """Stop BLE follower threads."""

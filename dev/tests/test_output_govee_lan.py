@@ -1,6 +1,7 @@
 import base64
 import json
 import unittest
+from unittest.mock import patch
 
 from dreamsync.director import EffectMode, LightingIntent
 from dreamsync.output.govee_lan import (
@@ -711,6 +712,15 @@ class MultiGoveeLanAdapterTests(unittest.TestCase):
         p3 = json.loads(sent1[2][0])
         self.assertEqual(p3["msg"]["cmd"], "brightness")
         self.assertEqual(p3["msg"]["data"]["value"], 80)
+
+    @patch("dreamsync.output.govee_cloud.shutdown_active_dreamviews")
+    def test_activate_runs_cloud_dreamview_preflight_once(self, shutdown_mock) -> None:
+        multi = MultiGoveeLanAdapter([])
+
+        multi.activate()
+        multi.activate()
+
+        shutdown_mock.assert_called_once_with()
 
     def test_different_segment_counts_per_device(self) -> None:
         sent1: list = []
