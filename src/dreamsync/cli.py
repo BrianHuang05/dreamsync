@@ -2,10 +2,12 @@ import argparse
 import json
 import signal
 import sys
+import sys as _sys
 import threading
 from pathlib import Path
 
 from .audio.system_input import list_input_devices
+from .capture.ffmpeg_device import CaptureDiscoveryError, default_capture_pattern, list_pulse_sources
 from .director import DirectorConfig
 from .live import LiveStructureConfig, run_live_to_govee
 from .output.govee_lan import GoveeLanAdapter, GoveeLanConfig, MultiGoveeLanAdapter, TransportMode, parse_device_spec
@@ -104,8 +106,14 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument(
         "--device-pattern",
         type=str,
-        default="CABLE Output",
-        help="DirectShow audio device name pattern for FFmpeg (default: CABLE Output).",
+        default=default_capture_pattern(),
+        help="Legacy capture-source pattern (Windows DirectShow / Linux PulseAudio).",
+    )
+    capture.add_argument(
+        "--capture-source",
+        type=str,
+        default=None,
+        help="Exact or matching backend-neutral capture source; overrides --device-pattern.",
     )
     # -- Govee LAN direct commands ----------------------------------------
     sub.add_parser("govee-scan", help="Scan for Govee devices on the local network.")
@@ -751,7 +759,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--pipeline",
         action="store_true",
         default=False,
-        help="Compile captured songs into Queue-ready artifacts without autoplay.",
+        help="Capture, compile, and automatically replay Queue items with synchronized lights.",
+    )
+    session.add_argument(
+        "--audio-route",
+        choices=["live-learning", "spotify-queue"],
+        default="live-learning",
+        help="Linux PipeWire route mode (default: live-learning).",
+    )
+    session.add_argument(
+        "--capture-source",
+        default=None,
+        help="Advanced capture-source override (for example dreamsync_queue_capture.monitor).",
+    )
+    session.add_argument(
+        "--physical-sink",
+        default=None,
+        help="Selected Linux physical PipeWire sink; rejects capture sinks as playback targets.",
     )
     session.add_argument(
         "--playback-device",
@@ -1314,6 +1338,20 @@ def main(argv: list[str] | None = None) -> int:
             print("  Audio Output Devices (for --playback-device / --audio-device)")
             print(format_device_table(outputs, kind="output", mark_capture=True))
             print()
+        # ``main`` imports ``sys`` in later command branches, making that name
+        # local to the whole function. Use the module alias for this early path.
+        if _sys.platform != "win32":
+            try:
+                pulse_sources = list_pulse_sources()
+            except CaptureDiscoveryError as exc:
+                print(f"Pulse capture sources unavailable: {exc}")
+            else:
+                print("  Pulse capture sources (for --capture-source)")
+                for source in pulse_sources:
+                    marker = " [monitor]" if source.is_monitor else ""
+                    details = " ".join(part for part in (source.sample_format, source.state) if part)
+                    print(f"  {source.index}: {source.name}{marker}" + (f" ({details})" if details else ""))
+                print()
         return 0
 
     if args.command == "gui":
@@ -1338,6 +1376,7 @@ def main(argv: list[str] | None = None) -> int:
                 sample_rate=getattr(args, "sample_rate", 48000),
                 channels=getattr(args, "channels", 2),
                 device_pattern=args.device_pattern,
+                capture_source=args.capture_source,
                 output_dir=args.output_dir,
                 naming=args.naming,
                 max_capture_files=getattr(args, "capture_buffer", 0),
@@ -1903,6 +1942,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "session":
         from .session import run_session
+        from .audio.route import resolve_audio_route
+
+        try:
+            route = resolve_audio_route(
+                args.audio_route,
+                capture_source=args.capture_source,
+                physical_sink=args.physical_sink,
+            )
+            if args.pipeline and route.mode.value != "spotify-queue":
+                raise ValueError("--pipeline requires --audio-route spotify-queue.")
+            if args.pipeline and not args.capture:
+                raise ValueError("--pipeline requires --capture.")
+            route.validate_playback_target(getattr(args, "playback_device", None))
+        except ValueError as exc:
+            parser.error(str(exc))
 
         # Resolve interactive device picker early (before threads start)
         args.playback_device = _resolve_output_device(getattr(args, "playback_device", None))
@@ -1987,6 +2041,7 @@ def main(argv: list[str] | None = None) -> int:
             pipeline=getattr(args, "pipeline", False),
             playback_device=getattr(args, "playback_device", None),
             purge=getattr(args, "purge", False),
+            audio_route=route,
             profile_chain=session_profile_chain,
             structure_config=LiveStructureConfig(
                 harmonic_structure_enabled=bool(args.harmonic_structure),

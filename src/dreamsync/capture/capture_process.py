@@ -6,9 +6,12 @@ import logging
 import subprocess
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from dreamsync.capture.ffmpeg_device import discover_audio_device
+from dreamsync.capture.ffmpeg_device import (
+    CaptureBackend, CaptureDevice, CaptureDiscoveryError, default_capture_pattern,
+    discover_audio_device, discover_capture_device,
+)
 from dreamsync.ffmpeg import resolve_ffmpeg
 
 logger = logging.getLogger(__name__)
@@ -21,14 +24,15 @@ class CaptureConfig:
     sample_rate: int = 44100
     channels: int = 2
     thread_queue_size: int = 1024
-    device_pattern: str = "CABLE Output"
+    device_pattern: str = field(default_factory=default_capture_pattern)
+    capture_source: str | None = None
 
 
 class CaptureProcessManager:
     """Spawn, monitor, and terminate the FFmpeg capture process.
 
-    The process reads from a DirectShow audio device and writes raw PCM
-    (s16le) to its stdout pipe.
+    The process reads from a platform capture source and writes raw PCM (s16le)
+    to its stdout pipe.
     """
 
     def __init__(self, config: CaptureConfig | None = None) -> None:
@@ -58,20 +62,29 @@ class CaptureProcessManager:
         Parameters
         ----------
         device_name:
-            Full DirectShow device name.  If ``None``, runs device
-            discovery automatically using the configured pattern.
+            Full backend-specific source name. If ``None``, runs discovery using
+            ``capture_source`` (when supplied) or the legacy ``device_pattern``.
         """
         if self._process is not None and self._process.poll() is None:
             raise RuntimeError("Capture process is already running")
 
         if device_name is None:
-            device_name = discover_audio_device(self._config.device_pattern)
-            if device_name is None:
-                raise RuntimeError(
-                    f"No audio device matching {self._config.device_pattern!r} found"
-                )
+            pattern = self._config.capture_source or self._config.device_pattern
+            if sys.platform == "win32":
+                # Preserve the established DirectShow seam (and its callers).
+                name = discover_audio_device(pattern)
+                if name is None:
+                    raise RuntimeError(f"No audio device matching {pattern!r} found (DirectShow backend)")
+                device = CaptureDevice(CaptureBackend.DIRECTSHOW, name, match_rule="substring")
+            else:
+                try:
+                    device = discover_capture_device(pattern)
+                except CaptureDiscoveryError as exc:
+                    raise RuntimeError(str(exc)) from exc
+        else:
+            device = CaptureDevice(CaptureBackend.DIRECTSHOW if sys.platform == "win32" else CaptureBackend.PULSE, device_name)
 
-        cmd = self._build_command(device_name)
+        cmd = self._build_command(device)
         logger.info("Starting capture: %s", " ".join(cmd))
 
         # On Windows, CREATE_NEW_PROCESS_GROUP prevents Ctrl+C from
@@ -134,18 +147,27 @@ class CaptureProcessManager:
     # Internals
     # ------------------------------------------------------------------
 
-    def _build_command(self, device_name: str) -> list[str]:
+    def _build_command(self, device: CaptureDevice | str) -> list[str]:
         cfg = self._config
         ffmpeg = resolve_ffmpeg()
         if ffmpeg is None:
             raise RuntimeError("ffmpeg not found on PATH")
+        if isinstance(device, str):
+            device = CaptureDevice(
+                CaptureBackend.DIRECTSHOW if sys.platform == "win32" else CaptureBackend.PULSE,
+                device,
+            )
+        input_args = (
+            ["-f", "dshow", "-i", f"audio={device.name}"]
+            if device.backend is CaptureBackend.DIRECTSHOW
+            else ["-f", "pulse", "-i", device.name]
+        )
         return [
             ffmpeg,
             "-hide_banner",
             "-loglevel", "warning",
             "-thread_queue_size", str(cfg.thread_queue_size),
-            "-f", "dshow",
-            "-i", f"audio={device_name}",
+            *input_args,
             "-ac", str(cfg.channels),
             "-ar", str(cfg.sample_rate),
             "-f", "s16le",

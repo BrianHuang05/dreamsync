@@ -71,6 +71,17 @@ def test_settings_round_trip(tmp_path: Path):
     assert loaded == settings
 
 
+def test_settings_round_trip_named_pipewire_input(tmp_path: Path):
+    store = GuiSettingsStore(tmp_path / "gui-settings.json")
+    settings = GuiSettings(
+        selected_live_input_device_id="pulse-source:alsa_input.surface_mic",
+    )
+
+    store.save(settings)
+
+    assert store.load() == settings
+
+
 def test_reactive_auto_cycle_does_not_install_fixed_palette_override():
     assert _reactive_live_palette_override(
         "neon",

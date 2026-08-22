@@ -113,6 +113,28 @@ For production use with a device config file. Runs until Ctrl+C, auto-detects de
 python -m dreamsync session --config devices.yaml --debug-mood
 ```
 
+### DreamView shutdown preflight
+
+When `GOVEE_API_KEY` is set, DreamSync uses Govee's cloud API immediately before
+it activates real lights. It exits every account-visible Scenic DreamView and
+every Movie or Music DreamView sync center that advertises `dreamViewToggle`.
+This is required for devices that remain locked to a Govee DreamView session
+after the Govee app closes.
+
+Keep the key out of `devices.yaml` and source control. Set it directly in the
+process environment, or create this local file in the repository root (it is
+loaded automatically and ignored by Git):
+
+```bash
+printf "GOVEE_API_KEY='your-key-here'\\n" > dreamsync.secrets.env
+python -m dreamsync session --config devices.yaml
+```
+
+To keep the file elsewhere, set `DREAMSYNC_SECRETS_FILE` to its path.
+
+If the key is absent or Govee's cloud API is unreachable, DreamSync logs the
+preflight failure and continues with local device control.
+
 ### Device config
 
 ```yaml
@@ -230,6 +252,34 @@ The capture pipeline uses FFmpeg to read from VB-Cable's output device. You must
 3. **Verify:** Run `ffmpeg -hide_banner -list_devices true -f dshow -i dummy 2>&1` and confirm `CABLE Output (VB-Audio Virtual Cable)` appears as an available audio device.
 
 The audio path is: App -> CABLE Input -> CABLE Output -> FFmpeg capture -> DreamSync -> `--playback-device` (speakers/aux out).
+
+### Audio routing setup (Linux PipeWire)
+
+DreamSync captures a PipeWire PulseAudio monitor source, by default `dreamsync_capture.monitor`. Route the desired application to the virtual `dreamsync_capture` sink while PipeWire forwards that sink to your physical speakers/headphones. PipeWire—not DreamSync—keeps the audio audible.
+
+For each login/session, run the helper as the logged-in desktop user (never with `sudo`):
+
+```bash
+./dev/scripts/setup_linux_pipewire_capture.sh
+```
+
+On its first run it uses the current default physical sink, then remembers that physical sink for later runs even though the virtual capture sink becomes the Pulse default. If the saved sink is not your speakers/headphones, pass the exact sink name from `pactl list short sinks`:
+
+```bash
+./dev/scripts/setup_linux_pipewire_capture.sh alsa_output.REPLACE_WITH_PHYSICAL_SINK
+```
+
+Then route the desired application to **DreamSync Capture** in `pavucontrol` and run capture with `--capture-source dreamsync_capture.monitor`.
+
+For a cold-boot, one-command startup, use the launcher instead. It creates the route, makes DreamSync Capture the Pulse default for new application streams, opens Firefox, then starts the DreamSync command after `--`:
+
+```bash
+./dev/scripts/start_linux_dreamsync.sh \
+  --browser-url https://open.spotify.com/ \
+  -- python -m dreamsync gui --config devices.yaml
+```
+
+Pass `--physical-sink` when the saved/default physical sink is not the desired speakers or headphones. The browser opens ready for you to cue audio; its new audio stream is routed automatically, so no `pavucontrol` selection is required after a cold boot.
 
 > **Note:** No VB-Cable loopback ("Listen to this device") is needed. The streaming pipeline captures audio from VB-Cable, processes it (analyze + compile), and plays it back through `--playback-device`. DreamSync itself handles the routing between capture and playback — the only delay is the pipeline processing time between songs.
 >
@@ -504,7 +554,8 @@ All flags in one table, grouped by category. Not every flag applies to every sub
 | `--capture` | off | Enable MP3 capture pipeline (session/govee-live) |
 | `--output-dir` / `--capture-dir` | `captured_songs` | Output directory for MP3 files |
 | `--naming` / `--capture-naming` | `timestamp` | Filename scheme: `timestamp` or `metadata` |
-| `--device-pattern` | `CABLE Output` | DirectShow audio device for FFmpeg |
+| `--capture-source` | platform default | Backend-neutral capture source; use `dreamsync_capture.monitor` on Linux |
+| `--device-pattern` | platform default | Legacy capture-source pattern (DirectShow on Windows, PulseAudio on Linux) |
 | `--spotify` | off | Use Spotify queue API for song boundary detection |
 | `--capture-buffer` | off | Max MP3 files to keep on disk (rotating buffer) |
 | `--archive` | off | Archive MP3 files in capture directory on clean shutdown (session) |

@@ -272,6 +272,19 @@ class GoveeBleAdapter:
     def connected(self) -> bool:
         return self._state.connected
 
+    def health_snapshot(self) -> dict[str, str | int]:
+        """Return connection state owned by this adapter's existing BLE loop."""
+        attempts = self._state.reconnect_attempts
+        if self._state.connected:
+            return {"status": "online", "error": "", "reconnect_attempts": attempts}
+        if self._started:
+            return {
+                "status": "degraded",
+                "error": f"BLE reconnecting (attempt {attempts + 1}).",
+                "reconnect_attempts": attempts,
+            }
+        return {"status": "unknown", "error": "BLE output is not active.", "reconnect_attempts": attempts}
+
     # -- Public API (called from main thread) -------------------------------
 
     def start(self) -> None:

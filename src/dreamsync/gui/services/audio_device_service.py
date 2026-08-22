@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from dreamsync.audio.system_input import is_capture_device, list_input_devices, list_output_devices
+import sys
+
+from dreamsync.audio.system_input import (
+    is_capture_device,
+    list_input_devices,
+    list_output_devices,
+    pulse_source_device_id,
+)
+from dreamsync.capture.ffmpeg_device import CaptureDiscoveryError, list_pulse_sources
 from dreamsync.gui.models.runtime_routing_state import AudioDeviceOption
 
 
@@ -39,6 +47,23 @@ class AudioDeviceService:
                     is_capture_device=is_capture_device(str(row["name"])),
                 )
             )
+        if sys.platform != "win32":
+            try:
+                for source in list_pulse_sources():
+                    options.append(
+                        AudioDeviceOption(
+                            id=pulse_source_device_id(source.name),
+                            name=source.name,
+                            hostapi="PipeWire/Pulse",
+                            default_samplerate=float(source.sample_rate or 0.0),
+                            channel_count=int(source.channels or 0),
+                            kind="input",
+                        )
+                    )
+            except CaptureDiscoveryError:
+                # ALSA input discovery remains useful when PipeWire/Pulse is
+                # unavailable or pactl is not installed.
+                pass
         return tuple(options)
 
     @staticmethod
@@ -51,7 +76,7 @@ class AudioDeviceService:
     @staticmethod
     def resolve_input_sample_rate(
         options: tuple[AudioDeviceOption, ...],
-        device_id: int | None,
+        device_id: int | str | None,
         requested_sample_rate: int,
     ) -> int:
         """Return the selected endpoint's native input rate when known."""

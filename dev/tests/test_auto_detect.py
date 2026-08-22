@@ -718,6 +718,20 @@ class DetectAllDevicesDefaultsTests(unittest.TestCase):
 
         mock_seq.assert_called_once()
 
+    @patch("dreamsync.output.auto_detect._detect_parallel")
+    @patch("dreamsync.output.auto_detect._detect_without_ble_probes")
+    def test_probe_free_ble_mode_uses_only_the_long_lived_adapter(
+        self, mock_without_ble, mock_parallel
+    ) -> None:
+        """GUI playback must not create a disposable Bleak probe loop first."""
+        configs = [DeviceConfig(name="BLE", address="AA:BB:CC:DD:EE:FF", type="ble")]
+        mock_without_ble.return_value = []
+
+        detect_all_devices(configs, probe_ble=False)
+
+        mock_without_ble.assert_called_once_with(configs, 5, 20.0)
+        mock_parallel.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

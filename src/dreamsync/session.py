@@ -22,6 +22,7 @@ from dreamsync.output.auto_detect import (
     print_detection_report,
 )
 from dreamsync.render import RenderMode
+from dreamsync.audio.route import AudioRoute, AudioRouteMode
 
 
 def run_session(
@@ -67,6 +68,7 @@ def run_session(
     pipeline: bool = False,
     playback_device: int | None = None,
     purge: bool = False,
+    audio_route: AudioRoute | None = None,
     profile_chain: Any | None = None,
     structure_config: LiveStructureConfig | None = None,
 ) -> dict[str, Any]:
@@ -74,6 +76,11 @@ def run_session(
 
     Returns a summary dict when the session ends (via signal or error).
     """
+    if pipeline and not capture:
+        raise ValueError("Queue pipeline playback requires capture=True")
+    if pipeline and audio_route is not None and audio_route.mode is not AudioRouteMode.SPOTIFY_QUEUE:
+        raise ValueError("Queue pipeline playback requires the spotify-queue audio route")
+
     # 1. Load YAML config
     configs = load_device_config(config_path)
     print(f"Loaded {len(configs)} device(s) from {config_path}")
@@ -180,6 +187,8 @@ def run_session(
     capture_orchestrator = None
     pipeline_worker = None
     pipeline_ready_queue = None
+    playback_consumer = None
+    playback_thread = None
     if capture:
         from dreamsync.capture.writer import check_ffmpeg
 
@@ -194,6 +203,11 @@ def run_session(
                 naming=capture_naming,
                 max_capture_files=capture_buffer,
                 log_dir=str(Path(capture_dir) / "logs"),
+                capture_source=(
+                    audio_route.capture_source
+                    if audio_route is not None and sys.platform != "win32"
+                    else None
+                ),
             )
             def _safe_segment_msg(path, meta):
                 enc = sys.stdout.encoding or "utf-8"
@@ -224,10 +238,7 @@ def run_session(
 
                 segment_callback = _pipeline_segment_callback
 
-                print(
-                    "Pipeline: compile-only ingestion enabled; ready captures remain "
-                    "silent until started by Queue playback."
-                )
+                print("Pipeline: queue capture, compile, and automatic physical-output playback enabled.")
 
             capture_orchestrator = CaptureOrchestrator(
                 config=orch_cfg,
@@ -333,9 +344,40 @@ def run_session(
                 }
             capture_orchestrator.start_periodic_timing(_fetch_timing)
 
+    if pipeline_ready_queue is not None:
+        from dreamsync.show_playback_consumer import ShowPlaybackConsumer
+
+        playback_consumer = ShowPlaybackConsumer(
+            pipeline_ready_queue,
+            multi_adapter,
+            sample_rate=sample_rate,
+            audio_device=playback_device,
+            purge=purge,
+            debug=debug_mood,
+        )
+        playback_thread = threading.Thread(
+            target=playback_consumer.run,
+            args=(stop_event,),
+            name="queue-playback-consumer",
+            daemon=True,
+        )
+        playback_thread.start()
+        print(f"Pipeline: queue playback consumer owns audio output device {playback_device!r}.")
+
     # 6. Run live loop (local, v3, or v2 session)
     try:
-        if local and local_audio is not None:
+        if pipeline_ready_queue is not None:
+            # Queue capture is intentionally not reactive: the browser feeds a
+            # capture-only PipeWire sink and the consumer is the sole audio and
+            # lighting owner once a completed item is ready.
+            while not stop_event.wait(0.2):
+                pass
+            summary = {
+                "mode": "queue_pipeline",
+                "audio_output_owner": "queue",
+                "tracks_played": playback_consumer.tracks_played if playback_consumer else 0,
+            }
+        elif local and local_audio is not None:
             from dreamsync.local_session import run_local_session
 
             summary = run_local_session(
@@ -421,6 +463,11 @@ def run_session(
                 f"{stats['elapsed_seconds']:.0f}s captured, "
                 f"{stats['drift_corrections']} drift corrections"
             )
+        if playback_thread is not None:
+            stop_event.set()
+            playback_thread.join(timeout=5.0)
+        if playback_consumer is not None:
+            print(f"Pipeline: {playback_consumer.tracks_played} tracks played.")
         if pipeline_worker is not None:
             pipeline_worker.shutdown()
             p_stats = pipeline_worker.stats()

@@ -854,6 +854,9 @@ def create_main_window(
     queue_panel.captured_audio_root_edit.setText(
         settings.capture_settings.captured_audio_root
     )
+    device_health_service.set_runtime_health_provider(
+        session_service.hardware_health_snapshot
+    )
     queue_panel.analysis_root_edit.setText(settings.capture_settings.analysis_root)
     queue_panel.compiled_show_root_edit.setText(
         settings.capture_settings.compiled_show_root
@@ -1108,7 +1111,11 @@ def create_main_window(
         f"profile={active_profile_ref['path'] or settings.last_profile_path or 'none'} | "
         f"config={config_path or settings.last_config_path or 'none'}"
     )
+    hardware_health_indicator = QtWidgets.QLabel("Hardware: inactive")
+    hardware_health_indicator.setObjectName("hardwareHealthIndicator")
+    status_bar.addPermanentWidget(hardware_health_indicator)
     window.setStatusBar(status_bar)
+    health_warning_state = {"degraded": False}
 
     error_toast_state = {"widget": None, "message": ""}
     error_toast_timer = QtCore.QTimer(window)
@@ -4091,6 +4098,14 @@ def create_main_window(
         )
 
     def _reload_spatial_scene(*, status: str | None = None) -> None:
+        nonlocal config_path
+        # The Config tab owns the editable path.  Room Layout reload must use
+        # that current value even if the user has not pressed Apply yet.
+        requested_text = str(queue_panel.device_room_config_path_edit.text()).strip()
+        requested_path = Path(requested_text).expanduser() if requested_text else None
+        if requested_path is not None and requested_path != config_path:
+            config_path = requested_path
+            runtime_supervisor.set_config_path(config_path)
         if config_path is None or not config_path.exists():
             queue_panel.raw_visualizer_origin_table.setRowCount(0)
             spatial_entries_state["entries"] = []
@@ -11217,17 +11232,35 @@ def create_main_window(
 
     def _render_device_health() -> None:  # pragma: no cover - Qt only
         hardware_enabled = str(queue_panel.output_target_combo.currentData() or "simulation") == "hardware"
+        runtime_state = runtime_supervisor.snapshot()
+        hardware_playing = (
+            hardware_enabled
+            and runtime_state.active_output_mode != "idle"
+            and not runtime_state.lighting_output_lease.simulation_only
+        )
         queue_panel.refresh_device_health_button.setEnabled(hardware_enabled)
         if not hardware_enabled:
             queue_panel.device_health_label.setText("Off in simulation mode.")
+            hardware_health_indicator.setText("Hardware: inactive")
+            health_warning_state["degraded"] = False
             return
         snapshot = device_health_service.snapshot()
         if snapshot.error:
             queue_panel.device_health_label.setText(f"Health unavailable: {snapshot.error}")
+            hardware_health_indicator.setText("Hardware: health unavailable")
             return
         if not snapshot.entries:
             queue_panel.device_health_label.setText("Waiting for passive health check…")
+            hardware_health_indicator.setText("Hardware: checking…" if hardware_playing else "Hardware: idle")
             return
+        if hardware_enabled and not discovery_entries_state["entries"] and config_path is not None:
+            try:
+                _set_discovery_entries(
+                    device_discovery_service.merge_with_config([], config_path),
+                    status="Configured devices — runtime health updates while playback is active.",
+                )
+            except Exception:
+                pass
         counts = snapshot.counts()
         queue_panel.device_health_label.setText(
             f"{counts['online']} online · {counts['degraded']} degraded · "
@@ -11240,14 +11273,55 @@ def create_main_window(
             for entry in snapshot.entries
         )
         queue_panel.device_health_label.setToolTip(detail)
+        summary = (
+            f"{counts['online']} healthy · {counts['degraded']} degraded · "
+            f"{counts['offline']} offline · {counts['unknown']} unknown"
+        )
+        hardware_health_indicator.setText(
+            f"Hardware: {summary}" if hardware_playing else "Hardware: ready"
+        )
+        degraded = hardware_playing and (counts["degraded"] + counts["offline"] > 0)
+        if degraded and not health_warning_state["degraded"]:
+            _show_error(
+                "Hardware connectivity degraded; playback is continuing on available devices. "
+                "Open Config for per-device health."
+            )
+        health_warning_state["degraded"] = degraded
+        health_by_address = {entry.address.upper(): entry for entry in snapshot.entries}
+        table = device_discovery_panel.devices_table
+        for row, entry in enumerate(discovery_entries_state["entries"]):
+            health = health_by_address.get(str(entry.address).upper())
+            if health is None:
+                continue
+            if health.status == "online":
+                label, color = "Healthy (runtime)", "#DCFCE7"
+            elif health.status == "degraded":
+                label, color = "Degraded (runtime)", "#FEF3C7"
+            elif health.status == "offline":
+                label, color = "Offline (runtime)", "#FEE2E2"
+            else:
+                label, color = "Unknown (runtime)", "#E5E7EB"
+            item = table.item(row, 0)
+            if item is None:
+                item = QtWidgets.QTableWidgetItem()
+                table.setItem(row, 0, item)
+            item.setText(label)
+            item.setBackground(QtGui.QColor(color))
+            item.setToolTip(health.error or "Runtime transport health has no stronger device acknowledgement.")
 
     def _sync_device_health_monitoring(*, refresh: bool = False) -> None:  # pragma: no cover - Qt only
         hardware_enabled = str(queue_panel.output_target_combo.currentData() or "simulation") == "hardware"
         config_file = _device_health_config_path()
         if hardware_enabled and config_file is not None:
+            active = runtime_supervisor.snapshot().active_output_mode != "idle"
+            device_health_service.set_interval_seconds(5.0 if active else 30.0)
             device_health_service.start(config_file)
             if refresh:
                 device_health_service.request_refresh()
+                try:
+                    runtime_supervisor.warm_hardware_connections(config_file)
+                except Exception as exc:
+                    queue_controller.set_status(f"Hardware preflight failed: {exc}")
         else:
             device_health_service.stop()
         _render_device_health()
@@ -11386,7 +11460,7 @@ def create_main_window(
     preview_timer.setInterval(33)
     device_health_timer = QtCore.QTimer(window)
     device_health_timer.setInterval(1000)
-    device_health_timer.timeout.connect(_render_device_health)
+    device_health_timer.timeout.connect(_sync_device_health_monitoring)
     device_health_timer.start()
 
     _initialize_show_columns_menu()

@@ -470,7 +470,7 @@ class RuntimeSupervisor:
     def set_selected_output_audio_device(self, device_id: int | None) -> None:
         self._routing_state = replace(self._routing_state, selected_output_audio_device_id=device_id)
 
-    def set_selected_live_input_device(self, device_id: int | None) -> None:
+    def set_selected_live_input_device(self, device_id: int | str | None) -> None:
         self._routing_state = replace(self._routing_state, selected_live_input_device_id=device_id)
 
     def set_config_path(self, config_path: Path | None) -> None:
@@ -479,6 +479,13 @@ class RuntimeSupervisor:
             config_path=str(config_path) if config_path is not None else "",
         )
         self._routing_state = replace(self._routing_state, output_target=target)
+
+    def warm_hardware_connections(self, config_path: Path | None) -> None:
+        """Open the reusable BLE adapter after a hardware health preflight."""
+        if self._simulation_only() or config_path is None:
+            return
+        self._session_service.warm_hardware_adapter(config_path)
+        self._record_event("Hardware connections prepared for fast show playback.")
 
     def set_capture_settings(self, settings: CaptureSettings) -> None:
         self._capture_settings = settings

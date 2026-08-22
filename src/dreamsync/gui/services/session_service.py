@@ -196,7 +196,7 @@ class TimelinePlaybackSession:
         *,
         mode: str,
         show_path: Path | None = None,
-        audio_device: int | None = None,
+        audio_device: int | str | None = None,
         input_device_label: str = "",
         routing_mode: str = "simulation",
         routing_status: str = "",
@@ -431,7 +431,7 @@ class ReactiveLiveSession:
         self,
         multi_adapter,
         *,
-        audio_device: int | None = None,
+        audio_device: int | str | None = None,
         director_config=None,
         profile=None,
         effect_mode: str = "reactive",
@@ -994,6 +994,8 @@ class SessionService:
 
     def __init__(self, *, output_leases: OutputLeaseService | None = None) -> None:
         self._output_leases = output_leases or OutputLeaseService()
+        self._hardware_adapter_key: tuple | None = None
+        self._hardware_adapter = None
 
     def bind_output_leases(self, output_leases: OutputLeaseService) -> None:
         """Use the supervisor's lease registry for subsequent session starts."""
@@ -1042,6 +1044,23 @@ class SessionService:
                 "Install ffmpeg and confirm 'ffmpeg -version' works in this shell."
             )
 
+    def warm_hardware_adapter(self, config_path: Path | None) -> None:
+        """Create the persistent hardware adapter during health checking."""
+        adapter = self.build_output_adapter(
+            config_path,
+            simulation_only=False,
+            fallback_to_simulation=False,
+        )
+        connect = getattr(adapter, "connect_ble_followers", None)
+        if callable(connect):
+            connect()
+
+    def hardware_health_snapshot(self) -> dict[str, dict[str, str | int]]:
+        """Read observations from the active persistent adapter; never probe."""
+        adapter = self._hardware_adapter
+        snapshot = getattr(adapter, "device_health_snapshot", None)
+        return dict(snapshot()) if callable(snapshot) else {}
+
     def build_output_adapter(
         self,
         config_path: Path | None,
@@ -1070,7 +1089,27 @@ class SessionService:
         try:
             from dreamsync.output.auto_detect import build_multi_adapter, detect_all_devices
 
-            detected = detect_all_devices(configs, parallel=True)
+            adapter_key = (
+                str(config_path.resolve()),
+                config_path.stat().st_mtime_ns,
+                render_mode,
+                mirror,
+                brightness,
+            )
+            if (
+                self._hardware_adapter_key == adapter_key
+                and self._hardware_adapter is not None
+            ):
+                return self._hardware_adapter
+
+            previous_adapter = self._hardware_adapter
+            self._hardware_adapter = None
+            self._hardware_adapter_key = None
+            shutdown = getattr(previous_adapter, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
+
+            detected = detect_all_devices(configs, parallel=True, probe_ble=False)
             adapter = build_multi_adapter(
                 detected,
                 render_mode=RenderMode(render_mode),
@@ -1085,7 +1124,7 @@ class SessionService:
                     render_mode=RenderMode(render_mode),
                     mirror=mirror,
                 )
-            return PreviewMirrorAdapter(
+            result = PreviewMirrorAdapter(
                 adapter,
                 SimulationMultiAdapter.from_configs(
                     configs,
@@ -1093,6 +1132,12 @@ class SessionService:
                     mirror=mirror,
                 ),
             )
+            keep_connected = getattr(result, "keep_ble_connected", None)
+            if callable(keep_connected):
+                keep_connected(True)
+            self._hardware_adapter_key = adapter_key
+            self._hardware_adapter = result
+            return result
         except Exception:
             if not fallback_to_simulation:
                 raise

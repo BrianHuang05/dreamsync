@@ -5,7 +5,10 @@ import subprocess
 
 import pytest
 
-from dreamsync.capture.ffmpeg_device import discover_audio_device, _parse_device_list
+from dreamsync.capture.ffmpeg_device import (
+    CaptureBackend, CaptureDiscoveryError, discover_audio_device,
+    discover_capture_device, parse_pulse_sources, select_pulse_source, _parse_device_list,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -144,3 +147,39 @@ class TestDiscoverAudioDevice:
         )
         result = discover_audio_device("Stereo Mix")
         assert result == "Stereo Mix (Realtek(R) Audio)"
+
+
+PULSE_SOURCES = """\
+42\tdreamsync_capture.monitor\tPipeWire\ts16le 2ch 48000Hz\tIDLE
+43\talsa_input.pci-0000_00_1f.3.analog-stereo\tPipeWire\ts16le 2ch 48000Hz\tRUNNING
+"""
+
+
+class TestPulseSources:
+    def test_parser_preserves_source_details(self):
+        sources = parse_pulse_sources(PULSE_SOURCES)
+        assert sources[0].name == "dreamsync_capture.monitor"
+        assert sources[0].sample_rate == 48000
+        assert sources[0].channels == 2
+        assert sources[0].state == "IDLE"
+        assert sources[0].is_monitor
+
+    def test_parser_ignores_malformed_rows(self):
+        assert len(parse_pulse_sources("bad row\nnot-an-index\tname\n" + PULSE_SOURCES)) == 2
+
+    def test_exact_match_wins_over_substring(self):
+        source, rule = select_pulse_source(parse_pulse_sources(PULSE_SOURCES), "dreamsync_capture.monitor")
+        assert source.name == "dreamsync_capture.monitor"
+        assert rule == "exact"
+
+    def test_ambiguous_match_is_descriptive(self):
+        sources = parse_pulse_sources(PULSE_SOURCES + "44\tdreamsync_capture.other\tPipeWire\ts16le 2ch 48000Hz\tIDLE\n")
+        with pytest.raises(CaptureDiscoveryError, match="ambiguous"):
+            select_pulse_source(sources, "dreamsync_capture")
+
+    @patch("dreamsync.capture.ffmpeg_device.list_pulse_sources")
+    def test_linux_resolution_records_pulse_backend(self, mock_list):
+        mock_list.return_value = parse_pulse_sources(PULSE_SOURCES)
+        device = discover_capture_device("dreamsync_capture.monitor", platform="linux")
+        assert device.backend is CaptureBackend.PULSE
+        assert device.sample_rate == 48000
