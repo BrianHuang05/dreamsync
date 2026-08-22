@@ -22,4 +22,6 @@ def test_linux_launcher_supports_spotify_desktop_and_closes_its_audio_source():
     assert 'setsid "$spotify_command"' in script
     assert 'audio_source_pid=""' in script
     assert 'setsid "$browser" --new-window' in script
+    assert 'setsid pavucontrol' in script
+    assert 'pavucontrol is not installed' in script
     assert 'kill -- "-$audio_source_pid"' in script

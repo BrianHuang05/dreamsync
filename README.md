@@ -294,6 +294,10 @@ metadata and capture boundaries. Start Spotify Desktop from this launcher (or
 move its stream to DreamSync Capture in pavucontrol) so the app's audio is
 capture-only until Queue playback begins.
 
+The launcher opens pavucontrol automatically when it is installed, so you can
+confirm the source app is routed to DreamSync Queue Capture and the recorder is
+using `dreamsync_queue_capture.monitor`.
+
 Pass `--physical-sink` when the saved/default physical sink is not the desired speakers or headphones. The launched browser or Spotify Desktop stream is routed automatically, so no `pavucontrol` selection is required after a cold boot.
 
 > **Note:** No VB-Cable loopback ("Listen to this device") is needed. The streaming pipeline captures audio from VB-Cable, processes it (analyze + compile), and plays it back through `--playback-device`. DreamSync itself handles the routing between capture and playback — the only delay is the pipeline processing time between songs.

@@ -150,9 +150,16 @@ else
     echo "Firefox/new browser audio will route to DreamSync Capture."
 fi
 
+if command -v pavucontrol >/dev/null; then
+    setsid pavucontrol >/dev/null 2>&1 &
+    echo "Opening pavucontrol to verify Playback and Recording routes."
+else
+    echo "pavucontrol is not installed; install it to inspect audio routing." >&2
+fi
+
 echo "Starting DreamSync: $*"
-# Restore the desktop default immediately; only the browser stream launched
-# above inherits the temporary DreamSync target.
+# Restore the desktop default immediately; only the audio-source stream
+# launched above inherits the temporary DreamSync target.
 pactl set-default-sink "$desktop_default" 2>/dev/null || true
 cd "$repo_root"
 "$@"
