@@ -499,6 +499,9 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
     runtime_group = window.findChild(QtWidgets.QGroupBox, "runtimeRoutingGroup")
     runtime_override_group = window.findChild(QtWidgets.QGroupBox, "runtimeOverrideGroup")
     capture_group = window.findChild(QtWidgets.QGroupBox, "captureSettingsGroup")
+    capture_source_combo = window.findChild(
+        QtWidgets.QComboBox, "captureSourceCombo"
+    )
     reactive_group = window.findChild(QtWidgets.QGroupBox, "reactiveSettingsGroup")
     reactive_live_settings_group = window.findChild(
         QtWidgets.QGroupBox,
@@ -686,6 +689,8 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
     assert runtime_group is not None
     assert runtime_override_group is not None
     assert capture_group is not None
+    assert capture_source_combo is not None
+    assert not capture_source_combo.isEditable()
     assert reactive_group is not None
     assert reactive_group.title() == "Reactive Technical Settings"
     assert reactive_live_settings_group is not None

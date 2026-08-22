@@ -35,6 +35,7 @@ class RuntimeRoutingState:
     output_target: OutputTarget = field(default_factory=OutputTarget)
     available_output_devices: tuple[AudioDeviceOption, ...] = field(default_factory=tuple)
     available_input_devices: tuple[AudioDeviceOption, ...] = field(default_factory=tuple)
+    available_capture_sources: tuple[str, ...] = field(default_factory=tuple)
     selected_output_audio_device_id: int | None = None
     selected_live_input_device_id: int | str | None = None
     selected_output_owner: str = ""

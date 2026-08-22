@@ -66,6 +66,26 @@ class AudioDeviceService:
                 pass
         return tuple(options)
 
+    def list_capture_source_names(self) -> tuple[str, ...]:
+        """Return exact backend source names suitable for loopback capture."""
+        if sys.platform != "win32":
+            try:
+                sources = list_pulse_sources()
+            except CaptureDiscoveryError:
+                return ()
+            monitors = tuple(source.name for source in sources if source.name.endswith(".monitor"))
+            return monitors or tuple(source.name for source in sources)
+        return tuple(str(row["name"]) for row in list_input_devices())
+
+    @staticmethod
+    def capture_source_names_from_options(
+        options: tuple[AudioDeviceOption, ...],
+    ) -> tuple[str, ...]:
+        """Extract exact loopback choices from an already-discovered input list."""
+        named = tuple(option.name for option in options if option.id is not None)
+        monitors = tuple(name for name in named if name.endswith(".monitor"))
+        return monitors or named
+
     @staticmethod
     def find_label(options: tuple[AudioDeviceOption, ...], device_id: int | None) -> str:
         for option in options:

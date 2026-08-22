@@ -7,12 +7,12 @@
 # Example:
 #   ./dev/scripts/start_linux_dreamsync.sh \
 #     --audio-source spotify-desktop \
-#     -- python -m dreamsync gui --config devices.yaml
+#     -- python -m dreamsync gui --config dev/devices.yaml
 #
 # Or launch Spotify Web in Firefox:
 #   ./dev/scripts/start_linux_dreamsync.sh \
 #     --browser-url https://open.spotify.com/ \
-#     -- python -m dreamsync gui --config devices.yaml
+#     -- python -m dreamsync gui --config dev/devices.yaml
 
 set -euo pipefail
 

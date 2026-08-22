@@ -276,7 +276,7 @@ For a cold-boot, one-command startup, use the launcher instead. It creates the r
 ```bash
 ./dev/scripts/start_linux_dreamsync.sh \
   --browser-url https://open.spotify.com/ \
-  -- python -m dreamsync gui --config devices.yaml
+  -- python -m dreamsync gui --config dev/devices.yaml
 ```
 
 For the Spotify Desktop app (recommended when the browser profile does not
@@ -285,7 +285,7 @@ persist Spotify login), launch it directly into the capture route instead:
 ```bash
 ./dev/scripts/start_linux_dreamsync.sh \
   --audio-source spotify-desktop \
-  -- python -m dreamsync gui --config devices.yaml
+  -- python -m dreamsync gui --config dev/devices.yaml
 ```
 
 Sign in to Spotify Desktop once using its normal persistent application
@@ -297,6 +297,11 @@ capture-only until Queue playback begins.
 The launcher opens pavucontrol automatically when it is installed, so you can
 confirm the source app is routed to DreamSync Queue Capture and the recorder is
 using `dreamsync_queue_capture.monitor`.
+
+Use **Save Configuration** after selecting the capture source and playback
+device. On Linux, these GUI choices persist in
+`~/.dreamsync/gui-settings.json`; `dev/devices.yaml` remains the separate
+hardware/device-layout configuration passed on the command line.
 
 Pass `--physical-sink` when the saved/default physical sink is not the desired speakers or headphones. The launched browser or Spotify Desktop stream is routed automatically, so no `pavucontrol` selection is required after a cold boot.
 

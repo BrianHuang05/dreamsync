@@ -2063,6 +2063,32 @@ def create_main_window(
         _select_combo_data(combo, selected_id)
         combo.blockSignals(False)
 
+    def _populate_capture_source_combo(
+        sources: tuple[str, ...],
+        selected_source: str,
+    ) -> None:
+        combo = queue_panel.capture_source_combo
+        blocker = QtCore.QSignalBlocker(combo)
+        combo.clear()
+        for source in sources:
+            combo.addItem(source, source)
+        preferred = selected_source if selected_source in sources else ""
+        if not preferred and "dreamsync_queue_capture.monitor" in sources:
+            preferred = "dreamsync_queue_capture.monitor"
+        if not preferred and sources:
+            preferred = sources[0]
+        if preferred:
+            _select_combo_data(combo, preferred)
+            combo.setEnabled(True)
+            combo.setToolTip(f"Selected exact capture source: {preferred}")
+        else:
+            combo.addItem("No system-loopback capture sources found", None)
+            combo.setEnabled(False)
+            combo.setToolTip(
+                "No capture source was discovered. Start the Linux spotify-queue route, then refresh devices."
+            )
+        del blocker
+
     def _capture_settings_from_form() -> CaptureSettings:
         temp_root = queue_panel.temp_capture_root_edit.text().strip() or "library/temp"
         return CaptureSettings(
@@ -2080,7 +2106,7 @@ def create_main_window(
             temp_retention_hours=int(queue_panel.temp_retention_hours_spin.value()),
             naming_mode=str(queue_panel.capture_naming_combo.currentData() or "timestamp"),
             max_capture_buffer=int(queue_panel.capture_buffer_spin.value()),
-            device_pattern=queue_panel.capture_device_pattern_edit.text().strip() or "CABLE Output",
+            device_pattern=str(queue_panel.capture_source_combo.currentData() or ""),
             sample_rate=int(queue_panel.capture_sample_rate_spin.value()),
             channels=int(queue_panel.capture_channels_spin.value()),
             frame_size=int(queue_panel.capture_frame_size_spin.value()),
@@ -2101,7 +2127,7 @@ def create_main_window(
             queue_panel.temp_retention_hours_spin,
             queue_panel.capture_naming_combo,
             queue_panel.capture_buffer_spin,
-            queue_panel.capture_device_pattern_edit,
+            queue_panel.capture_source_combo,
             queue_panel.capture_sample_rate_spin,
             queue_panel.capture_channels_spin,
             queue_panel.capture_frame_size_spin,
@@ -2121,7 +2147,10 @@ def create_main_window(
         queue_panel.temp_retention_hours_spin.setValue(settings_state.temp_retention_hours)
         _select_combo_data(queue_panel.capture_naming_combo, settings_state.naming_mode)
         queue_panel.capture_buffer_spin.setValue(settings_state.max_capture_buffer)
-        queue_panel.capture_device_pattern_edit.setText(settings_state.device_pattern)
+        _populate_capture_source_combo(
+            runtime_supervisor.snapshot().routing_state.available_capture_sources,
+            settings_state.device_pattern,
+        )
         queue_panel.capture_sample_rate_spin.setValue(settings_state.sample_rate)
         queue_panel.capture_channels_spin.setValue(settings_state.channels)
         queue_panel.capture_frame_size_spin.setValue(settings_state.frame_size)
@@ -12052,7 +12081,9 @@ def create_main_window(
         lambda _value: _on_runtime_settings_changed()
     )
     queue_panel.capture_buffer_spin.valueChanged.connect(lambda _value: _on_runtime_settings_changed())
-    queue_panel.capture_device_pattern_edit.editingFinished.connect(_on_runtime_settings_changed)
+    queue_panel.capture_source_combo.currentIndexChanged.connect(
+        lambda _index: _on_runtime_settings_changed()
+    )
     queue_panel.capture_sample_rate_spin.valueChanged.connect(lambda _value: _on_runtime_settings_changed())
     queue_panel.capture_channels_spin.valueChanged.connect(lambda _value: _on_runtime_settings_changed())
     queue_panel.capture_frame_size_spin.valueChanged.connect(lambda _value: _on_runtime_settings_changed())

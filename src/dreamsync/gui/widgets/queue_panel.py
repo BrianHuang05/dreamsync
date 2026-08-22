@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from dreamsync.capture.ffmpeg_device import default_capture_pattern
-
 from dataclasses import dataclass
 
 from dreamsync.gui.widgets.reactive_chord_history_view import (
@@ -99,7 +97,7 @@ class QueuePanelWidgets:
     temp_retention_hours_spin: object
     capture_naming_combo: object
     capture_buffer_spin: object
-    capture_device_pattern_edit: object
+    capture_source_combo: object
     capture_sample_rate_spin: object
     capture_channels_spin: object
     capture_frame_size_spin: object
@@ -814,9 +812,14 @@ def build_queue_panel(qt_modules):
     capture_buffer_spin.setObjectName("captureBufferSpin")
     capture_layout.addWidget(capture_buffer_spin, 3, 1)
     capture_layout.addWidget(QtWidgets.QLabel("System-loopback capture source"), 4, 0)
-    capture_device_pattern_edit = QtWidgets.QLineEdit(default_capture_pattern())
-    capture_device_pattern_edit.setObjectName("captureDevicePatternEdit")
-    capture_layout.addWidget(capture_device_pattern_edit, 4, 1)
+    capture_source_combo = QtWidgets.QComboBox()
+    capture_source_combo.setObjectName("captureSourceCombo")
+    capture_source_combo.setEditable(False)
+    capture_source_combo.addItem("Discovering capture sources…", None)
+    capture_source_combo.setToolTip(
+        "Exact system-loopback sources discovered from PipeWire/PulseAudio or the operating system."
+    )
+    capture_layout.addWidget(capture_source_combo, 4, 1)
     capture_layout.addWidget(QtWidgets.QLabel("Sample rate"), 5, 0)
     capture_sample_rate_spin = QtWidgets.QSpinBox()
     capture_sample_rate_spin.setRange(8000, 192000)
@@ -3243,7 +3246,7 @@ def build_queue_panel(qt_modules):
         temp_retention_hours_spin=temp_retention_hours_spin,
         capture_naming_combo=capture_naming_combo,
         capture_buffer_spin=capture_buffer_spin,
-        capture_device_pattern_edit=capture_device_pattern_edit,
+        capture_source_combo=capture_source_combo,
         capture_sample_rate_spin=capture_sample_rate_spin,
         capture_channels_spin=capture_channels_spin,
         capture_frame_size_spin=capture_frame_size_spin,

@@ -461,10 +461,14 @@ class RuntimeSupervisor:
         self.refresh_audio_devices()
 
     def refresh_audio_devices(self) -> RuntimeRoutingState:
+        input_options = self._audio_device_service.list_input_options()
         self._routing_state = replace(
             self._routing_state,
             available_output_devices=self._audio_device_service.list_output_options(),
-            available_input_devices=self._audio_device_service.list_input_options(),
+            available_input_devices=input_options,
+            available_capture_sources=AudioDeviceService.capture_source_names_from_options(
+                input_options
+            ),
         )
         return self._routing_state
 

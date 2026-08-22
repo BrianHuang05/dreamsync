@@ -22,6 +22,7 @@ class GuiSettingsRecoveryTests(unittest.TestCase):
                 compiled_show_root="D:/DreamSync/shows",
                 temp_capture_root="D:/DreamSync/temp",
                 temp_retention_hours=12,
+                device_pattern="dreamsync_queue_capture.monitor",
             )
             store.save(GuiSettings(capture_settings=expected))
 

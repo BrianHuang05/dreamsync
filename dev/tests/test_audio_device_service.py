@@ -26,14 +26,23 @@ def test_linux_input_options_include_named_pipewire_sources():
                     name="alsa_input.surface_mic",
                     channels=2,
                     sample_rate=48_000,
-                )
+                ),
+                PulseSource(
+                    index=43,
+                    name="dreamsync_queue_capture.monitor",
+                    channels=2,
+                    sample_rate=48_000,
+                ),
             ],
         ),
         patch("dreamsync.gui.services.audio_device_service.sys.platform", "linux"),
     ):
-        options = AudioDeviceService().list_input_options()
+        service = AudioDeviceService()
+        options = service.list_input_options()
+        capture_sources = service.list_capture_source_names()
 
     source = options[-1]
-    assert source.id == "pulse-source:alsa_input.surface_mic"
+    assert source.id == "pulse-source:dreamsync_queue_capture.monitor"
     assert source.hostapi == "PipeWire/Pulse"
     assert source.channel_count == 2
+    assert capture_sources == ("dreamsync_queue_capture.monitor",)
