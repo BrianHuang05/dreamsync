@@ -8290,6 +8290,10 @@ def create_main_window(
             raw_mode_selected
         )
         queue_panel.live_queue_group.setVisible(queue_visible)
+        queue_panel.queue_runtime_group.setVisible(selected_mode == "queue")
+        queue_panel.compiled_capture_replay_group.setVisible(
+            selected_mode == "queue"
+        )
         queue_panel.live_palette_group.setVisible(queue_visible)
         queue_panel.show_override_group.setVisible(queue_visible)
         queue_panel.live_reactive_group.setVisible(
@@ -8605,6 +8609,47 @@ def create_main_window(
         finally:
             del blocker
 
+    def _render_queue_runtime_action_state(
+        runtime_state: RuntimeModeState,
+    ) -> None:
+        """Enable Queue Mode actions only when the runtime state permits them."""
+        capture_running = runtime_state.capture_state == "running"
+        output_active = runtime_state.active_output_mode != "idle"
+        audio_owned = bool(runtime_state.audio_output_lease.owner)
+        selected_ready_item = queue_panel.ready_list.currentItem()
+        selected_ready_id = (
+            str(selected_ready_item.data(QtCore.Qt.ItemDataRole.UserRole))
+            if selected_ready_item is not None
+            else ""
+        )
+        selected_item = next(
+            (
+                item
+                for item in runtime_state.ready_items
+                if item.item_id == selected_ready_id
+            ),
+            None,
+        )
+        selected_item_ready = (
+            selected_item is not None and selected_item.state == "ready"
+        )
+        queue_panel.start_capture_button.setEnabled(
+            not capture_running and not output_active and not audio_owned
+        )
+        queue_panel.stop_capture_button.setEnabled(capture_running)
+        queue_panel.switch_pipeline_button.setEnabled(
+            runtime_state.ready_queue_count > 0
+            and not output_active
+            and not audio_owned
+        )
+        queue_panel.stop_output_button.setEnabled(output_active or audio_owned)
+        queue_panel.ready_preview_button.setEnabled(selected_item_ready)
+        queue_panel.ready_play_button.setEnabled(
+            selected_item_ready and not output_active and not audio_owned
+        )
+        queue_panel.ready_prioritize_button.setEnabled(selected_item_ready)
+        queue_panel.ready_discard_button.setEnabled(selected_item is not None)
+
     def _render_runtime_state(runtime_state: RuntimeModeState) -> None:
         output_mode = runtime_state.active_output_mode.replace("_", " ")
         capture_state = runtime_state.capture_state
@@ -8613,6 +8658,24 @@ def create_main_window(
         queue_panel.capture_status_label.setText(f"Capture: {capture_state.title()}")
         queue_panel.pipeline_status_label.setText(
             f"Pipeline: {pipeline_state.title()} / Ready {runtime_state.ready_queue_count}"
+        )
+        ready_durations = [
+            item.duration
+            for item in runtime_state.ready_items
+            if item.state == "ready" and item.duration is not None
+        ]
+        unknown_ready_duration = any(
+            item.state == "ready" and item.duration is None
+            for item in runtime_state.ready_items
+        )
+        if not ready_durations:
+            ready_duration_text = "unknown"
+        else:
+            ready_duration_text = f"{sum(ready_durations):.1f}s"
+            if unknown_ready_duration:
+                ready_duration_text += " + unknown"
+        queue_panel.ready_duration_label.setText(
+            f"Ready duration: {ready_duration_text}"
         )
         queue_panel.routing_status_label.setText(f"Routing: {runtime_state.routing_state.routing_status}")
         lighting_owner = runtime_state.lighting_output_lease.owner or "none"
@@ -8665,6 +8728,7 @@ def create_main_window(
             suffix = f" [{item.state}]{duration_suffix}"
             ready_entries.append((f"{title}{suffix}", item.item_id))
         _sync_list_widget(queue_panel.ready_list, tuple(ready_entries))
+        _render_queue_runtime_action_state(runtime_state)
         _select_combo_data(queue_panel.output_target_combo, runtime_state.routing_state.output_target.mode)
         queue_panel.hardware_fallback_check.setChecked(
             runtime_state.routing_state.output_target.fallback_to_simulation
@@ -11826,6 +11890,9 @@ def create_main_window(
     queue_panel.ready_play_button.clicked.connect(_play_ready_item_now)
     queue_panel.ready_prioritize_button.clicked.connect(_prioritize_ready_item)
     queue_panel.ready_discard_button.clicked.connect(_discard_ready_item)
+    queue_panel.ready_list.itemSelectionChanged.connect(
+        lambda: _render_queue_runtime_action_state(runtime_supervisor.snapshot())
+    )
     queue_panel.recent_saved_list.itemSelectionChanged.connect(_on_recent_saved_selected)
     queue_panel.local_list.itemSelectionChanged.connect(_on_queue_selection_changed)
     queue_panel.local_list.dragStarted.connect(_on_live_queue_drag_started)
