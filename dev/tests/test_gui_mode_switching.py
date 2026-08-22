@@ -445,6 +445,12 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
     )
     routing_status = window.findChild(QtWidgets.QLabel, "routingStatusLabel")
     ready_list = window.findChild(QtWidgets.QListWidget, "capturedReadyList")
+    queue_runtime_group = window.findChild(
+        QtWidgets.QGroupBox, "queueRuntimeGroup"
+    )
+    replay_queue_group = window.findChild(
+        QtWidgets.QGroupBox, "compiledCaptureReplayQueueGroup"
+    )
     recent_saved = window.findChild(QtWidgets.QListWidget, "recentSavedShowsList")
     compile_show_button = window.findChild(QtWidgets.QPushButton, "compileShowButton")
     load_show_button = window.findChild(QtWidgets.QPushButton, "loadShowButton")
@@ -483,7 +489,9 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
     duplicate_show_cue_button = window.findChild(QtWidgets.QPushButton, "duplicateShowCueButton")
     remove_show_cue_button = window.findChild(QtWidgets.QPushButton, "removeShowCueButton")
     start_capture_button = window.findChild(QtWidgets.QPushButton, "startCaptureButton")
+    stop_capture_button = window.findChild(QtWidgets.QPushButton, "stopCaptureButton")
     switch_pipeline_button = window.findChild(QtWidgets.QPushButton, "switchPipelineButton")
+    stop_output_button = window.findChild(QtWidgets.QPushButton, "stopOutputButton")
     start_reactive_button = window.findChild(QtWidgets.QPushButton, "startReactiveButton")
     output_target_combo = window.findChild(QtWidgets.QComboBox, "outputTargetCombo")
     output_device_combo = window.findChild(QtWidgets.QComboBox, "outputAudioDeviceCombo")
@@ -598,6 +606,10 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
     assert show_preview_canvas.strip_render_mode() == "bounds"
     assert routing_status is not None
     assert ready_list is not None
+    assert queue_runtime_group is not None
+    assert replay_queue_group is not None
+    assert not queue_runtime_group.isHidden()
+    assert not replay_queue_group.isHidden()
     assert recent_saved is not None
     assert compile_show_button is not None
     assert load_show_button is not None
@@ -696,6 +708,17 @@ def test_queue_shows_and_config_tabs_expose_runtime_control_room_widgets():
         return False
 
     assert is_descendant(reactive_sample_rate, reactive_group)
+    for queue_control in (
+        start_capture_button,
+        stop_capture_button,
+        switch_pipeline_button,
+        stop_output_button,
+        ready_list,
+    ):
+        assert is_descendant(queue_control, queue_runtime_group) or is_descendant(
+            queue_control, replay_queue_group
+        )
+        assert not is_descendant(queue_control, tabs.widget(5))
     assert reactive_auto_cycle.isHidden()
     assert not is_descendant(reactive_auto_cycle, reactive_live_settings_group)
     for live_control in (

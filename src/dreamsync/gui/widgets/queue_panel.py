@@ -59,6 +59,7 @@ class QueuePanelWidgets:
     output_mode_label: object
     capture_status_label: object
     pipeline_status_label: object
+    ready_duration_label: object
     routing_status_label: object
     active_owner_label: object
     armed_owner_label: object
@@ -158,6 +159,8 @@ class QueuePanelWidgets:
     raw_visualizer_mode_button: object
     spotify_learned_live_mode_button: object
     live_queue_group: object
+    queue_runtime_group: object
+    compiled_capture_replay_group: object
     live_reactive_group: object
     live_raw_visualizer_group: object
     raw_visualizer_status_label: object
@@ -423,9 +426,9 @@ def build_queue_panel(qt_modules):
     play_selected_cue_button = QtWidgets.QPushButton("Play From Cue")
     pause_show_button = QtWidgets.QPushButton("Pause")
     stop_show_button = QtWidgets.QPushButton("Stop")
-    start_capture_button = QtWidgets.QPushButton("Start Audio Loopback Capture")
-    stop_capture_button = QtWidgets.QPushButton("Stop Audio Loopback Capture")
-    switch_pipeline_button = QtWidgets.QPushButton("Play Next Captured Show")
+    start_capture_button = QtWidgets.QPushButton("Start Capture")
+    stop_capture_button = QtWidgets.QPushButton("Stop Capture")
+    switch_pipeline_button = QtWidgets.QPushButton("Start Queue Playback")
     start_reactive_button = QtWidgets.QPushButton("Start Reactive")
     stop_reactive_button = QtWidgets.QPushButton("Stop Reactive")
     start_raw_visualizer_button = QtWidgets.QPushButton(
@@ -583,34 +586,6 @@ def build_queue_panel(qt_modules):
     queue_layout.addWidget(live_learning_toolbar)
     queue_layout.addWidget(playlist_label)
 
-    runtime_strip = QtWidgets.QGridLayout()
-    output_mode_label = QtWidgets.QLabel("Output Mode: idle")
-    capture_status_label = QtWidgets.QLabel("Capture: Off")
-    pipeline_status_label = QtWidgets.QLabel("Pipeline: Idle")
-    routing_status_label = QtWidgets.QLabel("Routing: Simulation only.")
-    active_owner_label = QtWidgets.QLabel("Lighting owner: none · Audio owner: none")
-    armed_owner_label = QtWidgets.QLabel("Armed owner: none")
-    output_mode_label.setObjectName("outputModeLabel")
-    capture_status_label.setObjectName("captureStatusLabel")
-    pipeline_status_label.setObjectName("pipelineStatusLabel")
-    routing_status_label.setObjectName("routingStatusLabel")
-    for control in (
-        output_mode_label,
-        capture_status_label,
-        pipeline_status_label,
-        routing_status_label,
-        active_owner_label,
-        armed_owner_label,
-    ):
-        control.setWordWrap(True)
-    runtime_strip.addWidget(output_mode_label, 0, 0)
-    runtime_strip.addWidget(capture_status_label, 0, 1)
-    runtime_strip.addWidget(pipeline_status_label, 0, 2)
-    runtime_strip.addWidget(routing_status_label, 1, 0, 1, 3)
-    runtime_strip.addWidget(active_owner_label, 2, 0)
-    runtime_strip.addWidget(armed_owner_label, 2, 1, 1, 2)
-    config_layout.addLayout(runtime_strip)
-
     playback_info_group = QtWidgets.QGroupBox("Playback Status")
     playback_info_group.setObjectName("playbackStatusGroup")
     playback_info_layout = QtWidgets.QGridLayout(playback_info_group)
@@ -641,17 +616,6 @@ def build_queue_panel(qt_modules):
     playback_info_layout.addWidget(QtWidgets.QLabel("Baked playback"), 4, 0)
     playback_info_layout.addWidget(baked_playback_combo, 4, 1)
     config_layout.addWidget(playback_info_group)
-
-    config_actions = QtWidgets.QHBoxLayout()
-    for button in (
-        start_capture_button,
-        stop_capture_button,
-        switch_pipeline_button,
-        stop_output_button,
-    ):
-        config_actions.addWidget(button)
-    config_actions.addStretch(1)
-    config_layout.addLayout(config_actions)
 
     controls_scroll = QtWidgets.QScrollArea()
     controls_scroll.setWidgetResizable(True)
@@ -2644,6 +2608,73 @@ def build_queue_panel(qt_modules):
     raw_visualizer_group.setVisible(False)
     queue_left_layout.addWidget(raw_visualizer_group, 3)
 
+    queue_runtime_group = QtWidgets.QGroupBox("Queue Runtime")
+    queue_runtime_group.setObjectName("queueRuntimeGroup")
+    queue_runtime_layout = QtWidgets.QVBoxLayout(queue_runtime_group)
+    queue_runtime_actions = QtWidgets.QHBoxLayout()
+    for button in (
+        start_capture_button,
+        stop_capture_button,
+        switch_pipeline_button,
+        stop_output_button,
+    ):
+        queue_runtime_actions.addWidget(button)
+    queue_runtime_actions.addStretch(1)
+    queue_runtime_layout.addLayout(queue_runtime_actions)
+    runtime_strip = QtWidgets.QGridLayout()
+    output_mode_label = QtWidgets.QLabel("Output Mode: idle")
+    capture_status_label = QtWidgets.QLabel("Capture: Off")
+    pipeline_status_label = QtWidgets.QLabel("Pipeline: Idle")
+    ready_duration_label = QtWidgets.QLabel("Ready duration: unknown")
+    routing_status_label = QtWidgets.QLabel("Routing: Simulation only.")
+    active_owner_label = QtWidgets.QLabel("Lighting owner: none · Audio owner: none")
+    armed_owner_label = QtWidgets.QLabel("Armed owner: none")
+    output_mode_label.setObjectName("outputModeLabel")
+    capture_status_label.setObjectName("captureStatusLabel")
+    pipeline_status_label.setObjectName("pipelineStatusLabel")
+    ready_duration_label.setObjectName("readyDurationLabel")
+    routing_status_label.setObjectName("routingStatusLabel")
+    for control in (
+        output_mode_label,
+        capture_status_label,
+        pipeline_status_label,
+        ready_duration_label,
+        routing_status_label,
+        active_owner_label,
+        armed_owner_label,
+    ):
+        control.setWordWrap(True)
+    runtime_strip.addWidget(output_mode_label, 0, 0)
+    runtime_strip.addWidget(capture_status_label, 0, 1)
+    runtime_strip.addWidget(pipeline_status_label, 0, 2)
+    runtime_strip.addWidget(ready_duration_label, 1, 0, 1, 3)
+    runtime_strip.addWidget(routing_status_label, 2, 0, 1, 3)
+    runtime_strip.addWidget(active_owner_label, 3, 0)
+    runtime_strip.addWidget(armed_owner_label, 3, 1, 1, 2)
+    queue_runtime_layout.addLayout(runtime_strip)
+    queue_left_layout.addWidget(queue_runtime_group, 1)
+
+    ready_group = QtWidgets.QGroupBox("Compiled Capture Replay Queue")
+    ready_group.setObjectName("compiledCaptureReplayQueueGroup")
+    ready_layout = QtWidgets.QVBoxLayout(ready_group)
+    ready_list = QtWidgets.QListWidget()
+    ready_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+    ready_list.setObjectName("capturedReadyList")
+    ready_layout.addWidget(ready_list)
+    ready_actions = QtWidgets.QHBoxLayout()
+    ready_preview_button = QtWidgets.QPushButton("Lighting Preview (Silent)")
+    ready_play_button = QtWidgets.QPushButton("Play Now")
+    ready_prioritize_button = QtWidgets.QPushButton("Send To Top")
+    ready_discard_button = QtWidgets.QPushButton("Discard")
+    ready_preview_button.setObjectName("readyPreviewButton")
+    ready_play_button.setObjectName("readyPlayButton")
+    ready_prioritize_button.setObjectName("readyPrioritizeButton")
+    ready_discard_button.setObjectName("readyDiscardButton")
+    for button in (ready_preview_button, ready_play_button, ready_prioritize_button, ready_discard_button):
+        ready_actions.addWidget(button)
+    ready_layout.addLayout(ready_actions)
+    queue_left_layout.addWidget(ready_group, 2)
+
     local_group = QtWidgets.QGroupBox("Live Queue")
     local_group.setObjectName("liveQueueGroup")
     local_layout = QtWidgets.QVBoxLayout(local_group)
@@ -2903,25 +2934,6 @@ def build_queue_panel(qt_modules):
     saved_layout.addWidget(recent_saved_list)
     shows_left_layout.addWidget(saved_group, 1)
 
-    ready_group = QtWidgets.QGroupBox("Compiled Capture Replay Queue")
-    ready_layout = QtWidgets.QVBoxLayout(ready_group)
-    ready_list = QtWidgets.QListWidget()
-    ready_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
-    ready_list.setObjectName("capturedReadyList")
-    ready_layout.addWidget(ready_list)
-    ready_actions = QtWidgets.QHBoxLayout()
-    ready_preview_button = QtWidgets.QPushButton("Lighting Preview (Silent)")
-    ready_play_button = QtWidgets.QPushButton("Play Now")
-    ready_prioritize_button = QtWidgets.QPushButton("Send To Top")
-    ready_discard_button = QtWidgets.QPushButton("Discard")
-    ready_preview_button.setObjectName("readyPreviewButton")
-    ready_play_button.setObjectName("readyPlayButton")
-    ready_prioritize_button.setObjectName("readyPrioritizeButton")
-    ready_discard_button.setObjectName("readyDiscardButton")
-    for button in (ready_preview_button, ready_play_button, ready_prioritize_button, ready_discard_button):
-        ready_actions.addWidget(button)
-    ready_layout.addLayout(ready_actions)
-    shows_left_layout.addWidget(ready_group, 1)
     shows_splitter.addWidget(shows_left_panel)
 
     show_editor_group = QtWidgets.QGroupBox("Track Editor")
@@ -3191,6 +3203,7 @@ def build_queue_panel(qt_modules):
         output_mode_label=output_mode_label,
         capture_status_label=capture_status_label,
         pipeline_status_label=pipeline_status_label,
+        ready_duration_label=ready_duration_label,
         routing_status_label=routing_status_label,
         active_owner_label=active_owner_label,
         armed_owner_label=armed_owner_label,
@@ -3292,6 +3305,8 @@ def build_queue_panel(qt_modules):
             spotify_learned_live_mode_button
         ),
         live_queue_group=local_group,
+        queue_runtime_group=queue_runtime_group,
+        compiled_capture_replay_group=ready_group,
         live_reactive_group=reactive_live_group,
         live_raw_visualizer_group=raw_visualizer_group,
         raw_visualizer_status_label=raw_visualizer_status_label,

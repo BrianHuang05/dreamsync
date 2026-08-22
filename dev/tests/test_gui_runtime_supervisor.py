@@ -210,6 +210,13 @@ class FakePipelineCoordinator:
             "error": None,
         })
 
+    def mark_played(self, item_id: str) -> None:
+        self.items[item_id] = self.items[item_id].__class__(**{
+            **self.items[item_id].__dict__,
+            "state": "played",
+            "error": None,
+        })
+
     def discard(self, item_id: str) -> None:
         self.items.pop(item_id, None)
         self.timelines.pop(item_id, None)
@@ -314,6 +321,57 @@ def test_runtime_supervisor_does_not_arm_pipeline_playback_when_capture_becomes_
     assert session_service.calls[-1][0] == "queue_pipeline_playback"
     assert session_service.calls[-1][2]["baked_playback_mode"] == "off"
     assert pipeline.items[item.item_id].state == "playing"
+
+
+def test_runtime_supervisor_continuously_consumes_ready_captures(tmp_path: Path):
+    session_service = FakeSessionService()
+    pipeline = FakePipelineCoordinator()
+    supervisor = RuntimeSupervisor(
+        session_service=session_service,
+        pipeline_factory=lambda: pipeline,
+    )
+    supervisor.start_capture_pipeline(capture_dir=tmp_path / "captures")
+    first = _make_ready_item("first.mp3")
+    second = _make_ready_item("second.mp3")
+    for item in (first, second):
+        pipeline.items[item.item_id] = item
+        pipeline.timelines[item.item_id] = object()
+        pipeline.order.append(item.item_id)
+
+    assert supervisor.start_queue_pipeline_playback() is True
+    first_handle = session_service.handles[-1]
+    assert supervisor.snapshot().queue_playback_state == "playing"
+    assert pipeline.items[first.item_id].state == "playing"
+
+    first_handle._running = False
+    supervisor.poll()
+
+    assert pipeline.items[first.item_id].state == "played"
+    assert pipeline.items[second.item_id].state == "playing"
+    assert len(session_service.handles) == 2
+
+    second_handle = session_service.handles[-1]
+    second_handle._running = False
+    waiting = supervisor.poll()
+
+    assert pipeline.items[second.item_id].state == "played"
+    assert waiting.queue_playback_state == "waiting"
+
+    third = _make_ready_item("third.mp3")
+    pipeline.items[third.item_id] = third
+    pipeline.timelines[third.item_id] = object()
+    pipeline.order.append(third.item_id)
+
+    resumed = supervisor.poll()
+
+    assert resumed.queue_playback_state == "playing"
+    assert pipeline.items[third.item_id].state == "playing"
+    assert len(session_service.handles) == 3
+
+    supervisor.stop_output_only()
+
+    assert supervisor.snapshot().queue_playback_state == "stopped"
+    assert pipeline.items[third.item_id].state == "ready"
 
 
 def test_runtime_supervisor_preview_does_not_replace_active_output(tmp_path: Path):
