@@ -428,7 +428,7 @@ def build_queue_panel(qt_modules):
     stop_show_button = QtWidgets.QPushButton("Stop")
     start_capture_button = QtWidgets.QPushButton("Start Capture")
     stop_capture_button = QtWidgets.QPushButton("Stop Capture")
-    switch_pipeline_button = QtWidgets.QPushButton("Play Next Captured Show")
+    switch_pipeline_button = QtWidgets.QPushButton("Start Queue Playback")
     start_reactive_button = QtWidgets.QPushButton("Start Reactive")
     stop_reactive_button = QtWidgets.QPushButton("Stop Reactive")
     start_raw_visualizer_button = QtWidgets.QPushButton(

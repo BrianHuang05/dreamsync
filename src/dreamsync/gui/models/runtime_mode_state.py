@@ -74,6 +74,7 @@ class RuntimeModeState:
     background_learning_items: tuple[str, ...] = field(default_factory=tuple)
     ready_queue_count: int = 0
     ready_items: tuple[CapturedShowItem, ...] = field(default_factory=tuple)
+    queue_playback_state: str = "stopped"
     lighting_output_lease: LightingOutputLease = field(default_factory=LightingOutputLease)
     audio_output_lease: AudioOutputLease = field(default_factory=AudioOutputLease)
     output_lease: OutputLease = field(default_factory=OutputLease)

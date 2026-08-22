@@ -279,6 +279,13 @@ class PipelineCoordinator:
             if item is not None:
                 self._items[item_id] = replace(item, state="ready", error=None)
 
+    def mark_played(self, item_id: str) -> None:
+        """Retain a completed capture without offering it for replay again."""
+        with self._lock:
+            item = self._items.get(item_id)
+            if item is not None:
+                self._items[item_id] = replace(item, state="played", error=None)
+
     def discard(self, item_id: str) -> None:
         with self._lock:
             self._items.pop(item_id, None)
@@ -424,6 +431,9 @@ class RuntimeSupervisor:
         self._output_handle: SessionHandle | None = None
         self._preview_handle: SessionHandle | None = None
         self._pipeline_current_item_id: str | None = None
+        self._queue_playback_enabled = False
+        self._queue_playback_config_path: Path | None = None
+        self._queue_playback_simulation_only: bool | None = None
         self._armed_output_mode = ""
         self._local_source_path = ""
         self._saved_show_path = ""
@@ -1206,6 +1216,28 @@ class RuntimeSupervisor:
             simulation_only=simulation_only,
         )
 
+    def start_queue_pipeline_playback(
+        self,
+        *,
+        config_path: Path | None = None,
+        simulation_only: bool | None = None,
+    ) -> bool:
+        """Continuously consume Ready captures until Queue playback is stopped."""
+        self._saved_show_path = ""
+        self._reactive_effect_mode = ""
+        self._stop_output_handle()
+        self._queue_playback_enabled = True
+        self._queue_playback_config_path = config_path
+        self._queue_playback_simulation_only = simulation_only
+        started = self._start_next_pipeline_item(
+            config_path=config_path,
+            simulation_only=self._simulation_only(simulation_only),
+        )
+        if not started:
+            self._status_message = "Queue playback is waiting for a ready captured show."
+            self._record_event(self._status_message)
+        return started
+
     def preview_captured_show(
         self,
         item_id: str,
@@ -1249,7 +1281,9 @@ class RuntimeSupervisor:
         if self._learned_live_handle is not None:
             self.stop_spotify_learned_live()
         self._armed_output_mode = ""
-        self._pipeline_current_item_id = None
+        self._queue_playback_enabled = False
+        self._queue_playback_config_path = None
+        self._queue_playback_simulation_only = None
         self._stop_output_handle()
         self._status_message = "Output stop requested."
         self._record_event(self._status_message)
@@ -1420,6 +1454,16 @@ class RuntimeSupervisor:
     def poll(self) -> RuntimeModeState:
         self._reap_finished_preview()
         self._reap_finished_output()
+        if self._queue_playback_enabled and self._output_handle is None:
+            started = self._start_next_pipeline_item(
+                config_path=self._queue_playback_config_path,
+                simulation_only=self._simulation_only(
+                    self._queue_playback_simulation_only
+                ),
+            )
+            if started:
+                self._status_message = "Queue playback resumed with a ready captured show."
+                self._record_event(self._status_message)
         return self.snapshot()
 
     def snapshot(self) -> RuntimeModeState:
@@ -1511,6 +1555,13 @@ class RuntimeSupervisor:
             ),
             ready_queue_count=ready_queue_count,
             ready_items=ready_items,
+            queue_playback_state=(
+                "playing"
+                if self._queue_playback_enabled and self._output_handle is not None
+                else "waiting"
+                if self._queue_playback_enabled
+                else "stopped"
+            ),
             lighting_output_lease=lighting_lease,
             audio_output_lease=audio_lease,
             output_lease=lighting_lease,
@@ -1595,6 +1646,10 @@ class RuntimeSupervisor:
             self._status_message = f"Output failed: {handle.error}"
             self._warnings.append(self._status_message)
             self._record_event(self._status_message)
+            if self._pipeline_current_item_id and self._pipeline is not None:
+                self._pipeline.mark_ready(self._pipeline_current_item_id)
+                self._pipeline_current_item_id = None
+            self._queue_playback_enabled = False
             self._clear_output_handle()
             return
         if handle.running:
@@ -1603,6 +1658,8 @@ class RuntimeSupervisor:
             item_id = self._pipeline_current_item_id
             if handle.mode == "queue_pipeline_playback" and self._capture_settings.purge_after_playback:
                 self._pipeline.discard(item_id)
+            elif handle.mode == "queue_pipeline_playback" and self._queue_playback_enabled:
+                self._pipeline.mark_played(item_id)
             else:
                 self._pipeline.mark_ready(item_id)
             self._pipeline_current_item_id = None
@@ -1610,6 +1667,16 @@ class RuntimeSupervisor:
             self._status_message = f"{handle.mode.replace('_', ' ')} finished."
             self._record_event(self._status_message)
         self._clear_output_handle()
+        if handle.mode == "queue_pipeline_playback" and self._queue_playback_enabled:
+            started = self._start_next_pipeline_item(
+                config_path=self._queue_playback_config_path,
+                simulation_only=self._simulation_only(
+                    self._queue_playback_simulation_only
+                ),
+            )
+            if not started:
+                self._status_message = "Queue playback is waiting for the next ready captured show."
+                self._record_event(self._status_message)
 
     def _reap_finished_preview(self) -> None:
         handle = self._preview_handle
@@ -1618,7 +1685,11 @@ class RuntimeSupervisor:
         if handle.error is not None or not handle.running:
             self._preview_handle = None
 
-    def _stop_output_handle(self) -> None:
+    def _stop_output_handle(self, *, cancel_queue_playback: bool = True) -> None:
+        if cancel_queue_playback:
+            self._queue_playback_enabled = False
+            self._queue_playback_config_path = None
+            self._queue_playback_simulation_only = None
         if self._output_handle is not None:
             self._output_handle.stop()
             self._output_handle = None

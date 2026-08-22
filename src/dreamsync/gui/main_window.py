@@ -8638,11 +8638,15 @@ def create_main_window(
         )
         queue_panel.stop_capture_button.setEnabled(capture_running)
         queue_panel.switch_pipeline_button.setEnabled(
-            runtime_state.ready_queue_count > 0
+            runtime_state.queue_playback_state == "stopped"
             and not output_active
             and not audio_owned
         )
-        queue_panel.stop_output_button.setEnabled(output_active or audio_owned)
+        queue_panel.stop_output_button.setEnabled(
+            output_active
+            or audio_owned
+            or runtime_state.queue_playback_state != "stopped"
+        )
         queue_panel.ready_preview_button.setEnabled(selected_item_ready)
         queue_panel.ready_play_button.setEnabled(
             selected_item_ready and not output_active and not audio_owned
@@ -8657,7 +8661,9 @@ def create_main_window(
         queue_panel.output_mode_label.setText(f"Output Mode: {output_mode or 'idle'}")
         queue_panel.capture_status_label.setText(f"Capture: {capture_state.title()}")
         queue_panel.pipeline_status_label.setText(
-            f"Pipeline: {pipeline_state.title()} / Ready {runtime_state.ready_queue_count}"
+            "Pipeline: "
+            f"{pipeline_state.title()} / Ready {runtime_state.ready_queue_count} "
+            f"/ Queue playback {runtime_state.queue_playback_state}"
         )
         ready_durations = [
             item.duration
@@ -11030,11 +11036,15 @@ def create_main_window(
         _render_runtime_state(runtime_supervisor.snapshot())
 
     def _switch_to_pipeline_playback() -> None:  # pragma: no cover - Qt only
-        started = runtime_supervisor.start_next_queue_pipeline_item(config_path=config_path)
+        started = runtime_supervisor.start_queue_pipeline_playback(config_path=config_path)
         if started:
-            queue_controller.set_status("Queue playback started for the next captured show.")
+            queue_controller.set_status(
+                "Queue playback started and will continue through ready captures."
+            )
         else:
-            queue_controller.set_status("No captured show is ready for Queue playback.")
+            queue_controller.set_status(
+                "Queue playback is armed and waiting for a ready captured show."
+            )
         _render_queue_state(queue_controller.state)
         _render_runtime_state(runtime_supervisor.snapshot())
         queue_timer.start()
@@ -11227,9 +11237,11 @@ def create_main_window(
             _render_queue_state(queue_controller.state)
             return
         runtime_supervisor.prioritize_captured_show(item_id)
-        started = runtime_supervisor.start_next_queue_pipeline_item(config_path=config_path)
+        started = runtime_supervisor.start_queue_pipeline_playback(config_path=config_path)
         if started:
-            queue_controller.set_status("Selected captured show is now playing through Queue.")
+            queue_controller.set_status(
+                "Selected captured show is now playing; Queue playback will continue."
+            )
         else:
             queue_controller.set_status("Selected captured show is not ready for Queue playback.")
         _render_queue_state(queue_controller.state)
