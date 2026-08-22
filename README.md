@@ -279,7 +279,22 @@ For a cold-boot, one-command startup, use the launcher instead. It creates the r
   -- python -m dreamsync gui --config devices.yaml
 ```
 
-Pass `--physical-sink` when the saved/default physical sink is not the desired speakers or headphones. The browser opens ready for you to cue audio; its new audio stream is routed automatically, so no `pavucontrol` selection is required after a cold boot.
+For the Spotify Desktop app (recommended when the browser profile does not
+persist Spotify login), launch it directly into the capture route instead:
+
+```bash
+./dev/scripts/start_linux_dreamsync.sh \
+  --audio-source spotify-desktop \
+  -- python -m dreamsync gui --config devices.yaml
+```
+
+Sign in to Spotify Desktop once using its normal persistent application
+profile. Keep the DreamSync Spotify API token separately; it supplies queue
+metadata and capture boundaries. Start Spotify Desktop from this launcher (or
+move its stream to DreamSync Capture in pavucontrol) so the app's audio is
+capture-only until Queue playback begins.
+
+Pass `--physical-sink` when the saved/default physical sink is not the desired speakers or headphones. The launched browser or Spotify Desktop stream is routed automatically, so no `pavucontrol` selection is required after a cold boot.
 
 > **Note:** No VB-Cable loopback ("Listen to this device") is needed. The streaming pipeline captures audio from VB-Cable, processes it (analyze + compile), and plays it back through `--playback-device`. DreamSync itself handles the routing between capture and playback — the only delay is the pipeline processing time between songs.
 >

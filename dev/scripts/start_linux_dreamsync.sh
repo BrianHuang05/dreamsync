@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# Start the complete DreamSync desktop-session route, browser, and application.
+# Start the complete DreamSync desktop-session route, audio source, and application.
 #
 # Usage:
 #   ./dev/scripts/start_linux_dreamsync.sh [options] -- <DreamSync command...>
 #
 # Example:
+#   ./dev/scripts/start_linux_dreamsync.sh \
+#     --audio-source spotify-desktop \
+#     -- python -m dreamsync gui --config devices.yaml
+#
+# Or launch Spotify Web in Firefox:
 #   ./dev/scripts/start_linux_dreamsync.sh \
 #     --browser-url https://open.spotify.com/ \
 #     -- python -m dreamsync gui --config devices.yaml
@@ -15,6 +20,8 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
 browser="firefox"
 browser_url=""
+audio_source="browser"
+spotify_command="spotify"
 physical_sink=""
 route_mode="spotify-queue"
 
@@ -31,6 +38,18 @@ while [[ $# -gt 0 ]]; do
             ;;
         --browser-url)
             browser_url="${2:?--browser-url requires a URL}"
+            shift 2
+            ;;
+        --audio-source)
+            audio_source="${2:?--audio-source requires browser or spotify-desktop}"
+            if [[ "$audio_source" != "browser" && "$audio_source" != "spotify-desktop" ]]; then
+                echo "--audio-source must be browser or spotify-desktop" >&2
+                exit 2
+            fi
+            shift 2
+            ;;
+        --spotify-command)
+            spotify_command="${2:?--spotify-command requires a command}"
             shift 2
             ;;
         --physical-sink)
@@ -83,23 +102,23 @@ if [[ -n "$physical_sink" ]]; then
 fi
 "$script_dir/setup_linux_pipewire_capture.sh" "${setup_args[@]}"
 route_active=true
-browser_pid=""
+audio_source_pid=""
 cleanup() {
-    if [[ -n "${browser_pid:-}" ]] && kill -0 "$browser_pid" 2>/dev/null; then
-        # The browser runs in its own session, so this only closes the process
-        # tree started by this launcher (not an unrelated desktop browser).
-        kill -- "-$browser_pid" 2>/dev/null || kill "$browser_pid" 2>/dev/null || true
-        wait "$browser_pid" 2>/dev/null || true
+    if [[ -n "${audio_source_pid:-}" ]] && kill -0 "$audio_source_pid" 2>/dev/null; then
+        # The audio source runs in its own session, so this only closes the
+        # process tree started by this launcher (not an unrelated desktop app).
+        kill -- "-$audio_source_pid" 2>/dev/null || kill "$audio_source_pid" 2>/dev/null || true
+        wait "$audio_source_pid" 2>/dev/null || true
     fi
-    browser_pid=""
+    audio_source_pid=""
     if [[ "${route_active:-false}" == true ]]; then
         "$script_dir/setup_linux_pipewire_capture.sh" --teardown || true
     fi
 }
 trap cleanup EXIT INT TERM
 
-# New browser streams inherit this sink. This replaces the pavucontrol Playback
-# selection for the normal cold-boot case.
+# New audio-source streams inherit this sink. This replaces the pavucontrol
+# Playback selection for the normal cold-boot case.
 if [[ "$route_mode" == "live-learning" ]]; then
     browser_sink="dreamsync_live_capture"
 else
@@ -108,19 +127,29 @@ fi
 desktop_default="$(pactl get-default-sink)"
 pactl set-default-sink "$browser_sink"
 
-if ! command -v "$browser" >/dev/null; then
-    echo "Browser command not found: $browser" >&2
-    exit 1
-fi
-
-if [[ -n "$browser_url" ]]; then
-    setsid "$browser" --new-window "$browser_url" >/dev/null 2>&1 &
+if [[ "$audio_source" == "spotify-desktop" ]]; then
+    if ! command -v "$spotify_command" >/dev/null; then
+        echo "Spotify Desktop command not found: $spotify_command" >&2
+        echo "Install Spotify Desktop or pass --spotify-command /path/to/spotify." >&2
+        exit 1
+    fi
+    setsid "$spotify_command" >/dev/null 2>&1 &
+    audio_source_pid=$!
+    echo "Spotify Desktop audio will route to DreamSync Capture."
 else
-    setsid "$browser" --new-window >/dev/null 2>&1 &
+    if ! command -v "$browser" >/dev/null; then
+        echo "Browser command not found: $browser" >&2
+        exit 1
+    fi
+    if [[ -n "$browser_url" ]]; then
+        setsid "$browser" --new-window "$browser_url" >/dev/null 2>&1 &
+    else
+        setsid "$browser" --new-window >/dev/null 2>&1 &
+    fi
+    audio_source_pid=$!
+    echo "Firefox/new browser audio will route to DreamSync Capture."
 fi
-browser_pid=$!
 
-echo "Firefox/new browser audio will route to DreamSync Capture."
 echo "Starting DreamSync: $*"
 # Restore the desktop default immediately; only the browser stream launched
 # above inherits the temporary DreamSync target.
