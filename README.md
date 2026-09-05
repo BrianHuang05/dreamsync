@@ -322,10 +322,12 @@ manual Loopback check:
   --playback-device pick
 ```
 
-It discovers the exact PipeWire ALSA Loopback playback and paired capture
-endpoints, temporarily routes only the Spotify stream to that playback
-endpoint, and restores the desktop default immediately. If multiple Loopback
-endpoints exist, set the exact endpoint names after inspecting `pactl`:
+It discovers the exact PipeWire ALSA Loopback playback endpoint and prefers
+that sink's associated monitor as the Queue capture source. This avoids the
+silent same-device input exposed by some `snd-aloop` PipeWire profiles. It
+temporarily routes only the Spotify stream to that playback endpoint and
+restores the desktop default immediately. If multiple Loopback endpoints
+exist, set the exact endpoint names after inspecting `pactl`:
 
 ```bash
 export DREAMSYNC_ALOOP_PLAYBACK_SINK=alsa_output.REPLACE_WITH_LOOPBACK_SINK

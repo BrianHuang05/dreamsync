@@ -58,13 +58,16 @@ def test_alsa_loopback_discovery_uses_exact_pipewire_names(monkeypatch):
     def endpoints(kind: str, **_kwargs):
         return {
             "sinks": ("alsa_output.platform-snd_aloop.0.analog-stereo",),
-            "sources": ("alsa_input.platform-snd_aloop.1.analog-stereo",),
+            "sources": (
+                "alsa_output.platform-snd_aloop.0.analog-stereo.monitor",
+                "alsa_input.platform-snd_aloop.0.analog-stereo",
+            ),
         }[kind]
 
     monkeypatch.setattr("dreamsync.audio.route._list_pulse_endpoint_names", endpoints)
     route = discover_alsa_loopback_endpoints()
     assert route.playback_sink == "alsa_output.platform-snd_aloop.0.analog-stereo"
-    assert route.capture_source == "alsa_input.platform-snd_aloop.1.analog-stereo"
+    assert route.capture_source == "alsa_output.platform-snd_aloop.0.analog-stereo.monitor"
 
 
 def test_alsa_loopback_discovery_requires_explicit_choice_when_ambiguous(monkeypatch):

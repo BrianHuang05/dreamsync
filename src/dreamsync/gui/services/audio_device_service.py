@@ -78,6 +78,9 @@ class AudioDeviceService:
                 source.name for source in sources
                 if is_alsa_loopback_endpoint(source.name)
             )
+            loopback = tuple(name for name in loopback if name.endswith(".monitor")) + tuple(
+                name for name in loopback if not name.endswith(".monitor")
+            )
             monitors = tuple(source.name for source in sources if source.name.endswith(".monitor"))
             return loopback or monitors or tuple(source.name for source in sources)
         return tuple(str(row["name"]) for row in list_input_devices())
@@ -89,6 +92,9 @@ class AudioDeviceService:
         """Extract exact loopback choices from an already-discovered input list."""
         named = tuple(option.name for option in options if option.id is not None)
         loopback = tuple(name for name in named if is_alsa_loopback_endpoint(name))
+        loopback = tuple(name for name in loopback if name.endswith(".monitor")) + tuple(
+            name for name in loopback if not name.endswith(".monitor")
+        )
         monitors = tuple(name for name in named if name.endswith(".monitor"))
         return loopback or monitors or named
 

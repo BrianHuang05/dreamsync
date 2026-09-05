@@ -172,7 +172,14 @@ if [[ "$mode" == "live-learning" ]]; then
 else
     require_alsa_loopback
     browser_sink="$(resolve_loopback_endpoint sinks "${DREAMSYNC_ALOOP_PLAYBACK_SINK:-}")"
-    capture_source="$(resolve_loopback_endpoint sources "${DREAMSYNC_ALOOP_CAPTURE_SOURCE:-}")"
+    if [[ -z "${DREAMSYNC_ALOOP_CAPTURE_SOURCE:-}" ]] && endpoint_exists sources "$browser_sink.monitor"; then
+        # PipeWire commonly exposes snd-aloop device 0 as both a sink and an
+        # unrelated input. The monitor belonging to the ALSA-backed sink is
+        # the source proven to contain the playback PCM on that topology.
+        capture_source="$browser_sink.monitor"
+    else
+        capture_source="$(resolve_loopback_endpoint sources "${DREAMSYNC_ALOOP_CAPTURE_SOURCE:-}")"
+    fi
     printf 'dreamsync_browser_sink=%q\n' "$browser_sink" >> "$state_file"
     printf 'dreamsync_capture_source=%q\n' "$capture_source" >> "$state_file"
 fi

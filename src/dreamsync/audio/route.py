@@ -103,9 +103,16 @@ def discover_alsa_loopback_endpoints(
             f"Select the exact {kind} explicitly."
         )
 
+    selected_sink = choose("playback sink", playback_sink, sink_matches)
+    associated_monitor = f"{selected_sink}.monitor"
+    selected_source = (
+        associated_monitor
+        if capture_source is None and associated_monitor in source_matches
+        else choose("capture source", capture_source, source_matches)
+    )
     return AlsaLoopbackEndpoints(
-        playback_sink=choose("playback sink", playback_sink, sink_matches),
-        capture_source=choose("capture source", capture_source, source_matches),
+        playback_sink=selected_sink,
+        capture_source=selected_source,
     )
 
 
