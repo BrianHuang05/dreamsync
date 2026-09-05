@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from dreamsync import cli
+from dreamsync.capture.ffmpeg_device import default_capture_pattern
 from dreamsync.cli import build_parser
 
 
@@ -90,7 +91,7 @@ class TestCaptureMp3Args(unittest.TestCase):
         args = parser.parse_args(["capture", "--duration", "30", "--mp3"])
         self.assertEqual(args.output_dir, "captured_songs")
         self.assertEqual(args.naming, "timestamp")
-        self.assertEqual(args.device_pattern, "CABLE Output")
+        self.assertEqual(args.device_pattern, default_capture_pattern())
 
 
 # ======================================================================

@@ -176,7 +176,11 @@ class RunSessionTests(unittest.TestCase):
             run_session(
                 config_path=Path("test.yaml"), capture=True, pipeline=True,
                 playback_device=7,
-                audio_route=resolve_audio_route("spotify-queue"),
+                audio_route=resolve_audio_route(
+                    "spotify-queue",
+                    loopback_playback_sink="alsa_output.platform-snd_aloop.0.analog-stereo",
+                    capture_source="alsa_output.platform-snd_aloop.0.analog-stereo.monitor",
+                ),
             )
 
         mock_live.assert_not_called()

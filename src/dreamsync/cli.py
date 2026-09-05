@@ -1950,7 +1950,7 @@ def main(argv: list[str] | None = None) -> int:
                 capture_source=args.capture_source,
                 physical_sink=args.physical_sink,
                 discover_loopback=(
-                    args.audio_route == "spotify-queue" and sys.platform != "win32"
+                    args.audio_route == "spotify-queue" and _sys.platform != "win32"
                 ),
             )
             if args.pipeline and route.mode.value != "spotify-queue":
