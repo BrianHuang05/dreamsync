@@ -10,6 +10,7 @@ from dreamsync.audio.system_input import (
     list_output_devices,
     pulse_source_device_id,
 )
+from dreamsync.audio.route import is_alsa_loopback_endpoint
 from dreamsync.capture.ffmpeg_device import CaptureDiscoveryError, list_pulse_sources
 from dreamsync.gui.models.runtime_routing_state import AudioDeviceOption
 
@@ -73,8 +74,12 @@ class AudioDeviceService:
                 sources = list_pulse_sources()
             except CaptureDiscoveryError:
                 return ()
+            loopback = tuple(
+                source.name for source in sources
+                if is_alsa_loopback_endpoint(source.name)
+            )
             monitors = tuple(source.name for source in sources if source.name.endswith(".monitor"))
-            return monitors or tuple(source.name for source in sources)
+            return loopback or monitors or tuple(source.name for source in sources)
         return tuple(str(row["name"]) for row in list_input_devices())
 
     @staticmethod
@@ -83,8 +88,9 @@ class AudioDeviceService:
     ) -> tuple[str, ...]:
         """Extract exact loopback choices from an already-discovered input list."""
         named = tuple(option.name for option in options if option.id is not None)
+        loopback = tuple(name for name in named if is_alsa_loopback_endpoint(name))
         monitors = tuple(name for name in named if name.endswith(".monitor"))
-        return monitors or named
+        return loopback or monitors or named
 
     @staticmethod
     def find_label(options: tuple[AudioDeviceOption, ...], device_id: int | None) -> str:

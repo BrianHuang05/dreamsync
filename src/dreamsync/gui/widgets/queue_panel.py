@@ -811,13 +811,14 @@ def build_queue_panel(qt_modules):
     capture_buffer_spin.setRange(0, 9999)
     capture_buffer_spin.setObjectName("captureBufferSpin")
     capture_layout.addWidget(capture_buffer_spin, 3, 1)
-    capture_layout.addWidget(QtWidgets.QLabel("System-loopback capture source"), 4, 0)
+    capture_layout.addWidget(QtWidgets.QLabel("Queue capture input (ALSA Loopback)"), 4, 0)
     capture_source_combo = QtWidgets.QComboBox()
     capture_source_combo.setObjectName("captureSourceCombo")
     capture_source_combo.setEditable(False)
     capture_source_combo.addItem("Discovering capture sources…", None)
     capture_source_combo.setToolTip(
-        "Exact system-loopback sources discovered from PipeWire/PulseAudio or the operating system."
+        "Exact ALSA Loopback capture source discovered from PipeWire/PulseAudio. "
+        "This is capture input, not the Queue replay output."
     )
     capture_layout.addWidget(capture_source_combo, 4, 1)
     capture_layout.addWidget(QtWidgets.QLabel("Sample rate"), 5, 0)

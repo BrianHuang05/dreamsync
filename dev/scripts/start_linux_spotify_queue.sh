@@ -15,8 +15,10 @@ repo_root="$(cd "$script_dir/../.." && pwd)"
 config_path="$repo_root/dev/devices.yaml"
 physical_sink=""
 playback_device=""
+audio_source="spotify-desktop"
 browser="firefox"
-browser_url="https://open.spotify.com/"
+browser_url=""
+spotify_command="spotify"
 
 usage() {
     sed -n '2,11p' "$0"
@@ -28,8 +30,9 @@ while [[ $# -gt 0 ]]; do
         --config) config_path="${2:?--config requires a path}"; shift 2 ;;
         --physical-sink) physical_sink="${2:?--physical-sink requires a sink}"; shift 2 ;;
         --playback-device) playback_device="${2:?--playback-device requires an ID or pick}"; shift 2 ;;
-        --browser) browser="${2:?--browser requires a command}"; shift 2 ;;
-        --browser-url) browser_url="${2:?--browser-url requires a URL}"; shift 2 ;;
+        --browser) browser="${2:?--browser requires a command}"; audio_source="browser"; shift 2 ;;
+        --browser-url) browser_url="${2:?--browser-url requires a URL}"; audio_source="browser"; shift 2 ;;
+        --spotify-command) spotify_command="${2:?--spotify-command requires a command}"; shift 2 ;;
         -h|--help) usage ;;
         *) echo "Unknown option: $1" >&2; usage ;;
     esac
@@ -42,9 +45,13 @@ fi
 
 launcher_args=(
     --route-mode spotify-queue
+    --audio-source "$audio_source"
     --browser "$browser"
-    --browser-url "$browser_url"
+    --spotify-command "$spotify_command"
 )
+if [[ -n "$browser_url" ]]; then
+    launcher_args+=(--browser-url "$browser_url")
+fi
 if [[ -n "$physical_sink" ]]; then
     launcher_args+=(--physical-sink "$physical_sink")
 fi

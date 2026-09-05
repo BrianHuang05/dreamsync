@@ -770,7 +770,7 @@ def build_parser() -> argparse.ArgumentParser:
     session.add_argument(
         "--capture-source",
         default=None,
-        help="Advanced capture-source override (for example dreamsync_queue_capture.monitor).",
+        help="Advanced exact capture-source override (for example an ALSA Loopback PipeWire source).",
     )
     session.add_argument(
         "--physical-sink",
@@ -1949,6 +1949,9 @@ def main(argv: list[str] | None = None) -> int:
                 args.audio_route,
                 capture_source=args.capture_source,
                 physical_sink=args.physical_sink,
+                discover_loopback=(
+                    args.audio_route == "spotify-queue" and sys.platform != "win32"
+                ),
             )
             if args.pipeline and route.mode.value != "spotify-queue":
                 raise ValueError("--pipeline requires --audio-route spotify-queue.")

@@ -7,7 +7,9 @@
 #
 # Run this as the logged-in desktop user, never through sudo. If the optional
 # physical sink name is omitted, the helper remembers the last physical sink
-# used and falls back to the current default sink on its first run.
+# used and falls back to the current default sink on its first run. Queue mode
+# requires an already-loaded ALSA Loopback (snd-aloop); this script never loads
+# modules or changes system startup configuration.
 
 set -euo pipefail
 
@@ -37,6 +39,60 @@ fi
 
 sink_exists() {
     pactl list short sinks | awk -v sink="$1" '$2 == sink { found = 1 } END { exit !found }'
+}
+
+endpoint_exists() {
+    local kind="$1"
+    local endpoint="$2"
+    pactl list short "$kind" | awk -v endpoint="$endpoint" '$2 == endpoint { found = 1 } END { exit !found }'
+}
+
+loopback_candidates() {
+    local kind="$1"
+    pactl list short "$kind" | awk '
+        { name = tolower($2) }
+        name ~ /(snd[_-]?aloop|alsa[_-]?loopback|loopback)/ { print $2 }
+    '
+}
+
+require_alsa_loopback() {
+    local loaded=false
+    if command -v lsmod >/dev/null && lsmod | awk '$1 == "snd_aloop" { found = 1 } END { exit !found }'; then
+        loaded=true
+    elif command -v aplay >/dev/null && aplay -l 2>/dev/null | grep -qi 'loopback'; then
+        loaded=true
+    fi
+    if [[ "$loaded" != true ]]; then
+        echo "ALSA Loopback (snd-aloop) is unavailable; Spotify Queue cannot use a null sink." >&2
+        echo "Check: aplay -l; arecord -l; lsmod | grep snd_aloop" >&2
+        echo "If it is absent, ask an administrator to run: sudo modprobe snd-aloop" >&2
+        echo "DreamSync does not load kernel modules automatically." >&2
+        exit 1
+    fi
+}
+
+resolve_loopback_endpoint() {
+    local kind="$1"
+    local requested="$2"
+    local -a candidates=()
+    mapfile -t candidates < <(loopback_candidates "$kind")
+    if [[ -n "$requested" ]]; then
+        if endpoint_exists "$kind" "$requested"; then
+            printf '%s\n' "$requested"
+            return
+        fi
+        echo "Configured ALSA Loopback $kind not found: $requested" >&2
+    elif [[ ${#candidates[@]} -eq 1 ]]; then
+        printf '%s\n' "${candidates[0]}"
+        return
+    elif [[ ${#candidates[@]} -eq 0 ]]; then
+        echo "No ALSA Loopback $kind endpoint is exposed by PipeWire/PulseAudio." >&2
+    else
+        echo "Multiple ALSA Loopback $kind endpoints found; select one explicitly." >&2
+    fi
+    echo "Available Loopback $kind endpoints: ${candidates[*]:-(none)}" >&2
+    echo "Inspect exact names with: pactl list short sinks; pactl list short sources; wpctl status" >&2
+    exit 1
 }
 
 if [[ "$teardown" == true ]]; then
@@ -100,8 +156,8 @@ mkdir -p "$state_dir"
 printf 'dreamsync_previous_default=%q\n' "$restore_default" > "$state_file"
 printf 'dreamsync_physical_sink=%q\n' "$physical_sink" >> "$state_file"
 
-# Remove only routes created by a prior run of this helper.  Loopbacks are
-# removed before their source sink so PipeWire can tear down cleanly.
+# Remove only routes created by a prior Live Learning run. ALSA Loopback is a
+# shared kernel device and must never be unloaded by Queue teardown.
 while IFS=$'\t' read -r module_id module_name module_args; do
     if [[ "$module_name" =~ ^module-(null|combine)-sink$ && "$module_args" == *"sink_name=dreamsync_"*"_capture"* ]]; then
         pactl unload-module "$module_id" || true
@@ -114,18 +170,17 @@ if [[ "$mode" == "live-learning" ]]; then
         sink_name="$browser_sink" sinks="$physical_sink" rate=48000 channels=2 \
         sink_properties=device.description=DreamSync_Live_Capture >/dev/null
 else
-    browser_sink="dreamsync_queue_capture"
-    # A null sink has a monitor source but no physical-sink slave: browser
-    # audio is capture-only until DreamSync replays the completed track.
-    pactl load-module module-null-sink \
-        sink_name="$browser_sink" rate=48000 channels=2 \
-        sink_properties=device.description=DreamSync_Queue_Capture >/dev/null
+    require_alsa_loopback
+    browser_sink="$(resolve_loopback_endpoint sinks "${DREAMSYNC_ALOOP_PLAYBACK_SINK:-}")"
+    capture_source="$(resolve_loopback_endpoint sources "${DREAMSYNC_ALOOP_CAPTURE_SOURCE:-}")"
+    printf 'dreamsync_browser_sink=%q\n' "$browser_sink" >> "$state_file"
+    printf 'dreamsync_capture_source=%q\n' "$capture_source" >> "$state_file"
 fi
 
 echo "DreamSync PipeWire route is ready."
 echo "  Mode:     $mode"
 echo "  Browser:  $browser_sink"
-echo "  Capture:  $browser_sink.monitor"
+echo "  Capture:  ${capture_source:-$browser_sink.monitor}"
 echo "  Playback: $physical_sink"
 echo
 echo "Verify with: pactl list short sinks; pactl list short sources"

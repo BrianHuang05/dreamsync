@@ -2073,8 +2073,6 @@ def create_main_window(
         for source in sources:
             combo.addItem(source, source)
         preferred = selected_source if selected_source in sources else ""
-        if not preferred and "dreamsync_queue_capture.monitor" in sources:
-            preferred = "dreamsync_queue_capture.monitor"
         if not preferred and sources:
             preferred = sources[0]
         if preferred:
@@ -2082,10 +2080,12 @@ def create_main_window(
             combo.setEnabled(True)
             combo.setToolTip(f"Selected exact capture source: {preferred}")
         else:
-            combo.addItem("No system-loopback capture sources found", None)
+            combo.addItem("No ALSA Loopback Queue capture source found", None)
             combo.setEnabled(False)
             combo.setToolTip(
-                "No capture source was discovered. Start the Linux spotify-queue route, then refresh devices."
+                "No ALSA Loopback capture source was discovered. Ensure snd-aloop is already "
+                "loaded and exposed by PipeWire/PulseAudio, start the Linux spotify-queue "
+                "route, then refresh devices."
             )
         del blocker
 

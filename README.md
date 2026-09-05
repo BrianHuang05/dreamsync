@@ -255,23 +255,48 @@ The audio path is: App -> CABLE Input -> CABLE Output -> FFmpeg capture -> Dream
 
 ### Audio routing setup (Linux PipeWire)
 
-DreamSync captures a PipeWire PulseAudio monitor source, by default `dreamsync_capture.monitor`. Route the desired application to the virtual `dreamsync_capture` sink while PipeWire forwards that sink to your physical speakers/headphones. PipeWire—not DreamSync—keeps the audio audible.
+Linux has two distinct routes. **Live Learning** keeps the existing
+physical-backed PipeWire capture route, so source audio is immediately audible.
+**Spotify Queue** instead requires an ALSA Loopback (`snd-aloop`) playback and
+capture pair: Spotify plays into the Loopback playback endpoint, DreamSync
+records its paired capture endpoint, and only the later compiled Queue replay
+reaches the selected physical output. Queue mode does not use a PipeWire null
+sink and Spotify must not be directly audible while capture is active.
+
+Before using Spotify Queue, manually verify that ALSA Loopback is already
+available in the desktop session:
+
+```bash
+aplay -l
+arecord -l
+lsmod | grep snd_aloop
+pactl list short sinks
+pactl list short sources
+wpctl status
+```
+
+If `snd-aloop` is absent, DreamSync stops with an actionable diagnostic. It
+never runs `modprobe`, installs packages, or configures startup loading. Ask
+your system administrator before making any of those system-level changes.
 
 For each login/session, run the helper as the logged-in desktop user (never with `sudo`):
 
 ```bash
-./dev/scripts/setup_linux_pipewire_capture.sh
+./dev/scripts/setup_linux_pipewire_capture.sh live-learning
 ```
 
 On its first run it uses the current default physical sink, then remembers that physical sink for later runs even though the virtual capture sink becomes the Pulse default. If the saved sink is not your speakers/headphones, pass the exact sink name from `pactl list short sinks`:
 
 ```bash
-./dev/scripts/setup_linux_pipewire_capture.sh alsa_output.REPLACE_WITH_PHYSICAL_SINK
+./dev/scripts/setup_linux_pipewire_capture.sh live-learning alsa_output.REPLACE_WITH_PHYSICAL_SINK
 ```
 
-Then route the desired application to **DreamSync Capture** in `pavucontrol` and run capture with `--capture-source dreamsync_capture.monitor`.
+Then route the desired application to **DreamSync Live Capture** in
+`pavucontrol` and run capture with `--capture-source dreamsync_live_capture.monitor`.
 
-For a cold-boot, one-command startup, use the launcher instead. It creates the route, makes DreamSync Capture the Pulse default for new application streams, opens Firefox, then starts the DreamSync command after `--`:
+For a cold-boot Live Learning startup, use the launcher instead. It creates the
+route, makes DreamSync Live Capture the Pulse default for new application
+streams, opens Firefox, then starts the DreamSync command after `--`:
 
 ```bash
 ./dev/scripts/start_linux_dreamsync.sh \
@@ -288,15 +313,33 @@ persist Spotify login), launch it directly into the capture route instead:
   -- python -m dreamsync gui --config dev/devices.yaml
 ```
 
+For the delayed Spotify Queue workflow, use the dedicated launcher after the
+manual Loopback check:
+
+```bash
+./dev/scripts/start_linux_spotify_queue.sh \
+  --physical-sink alsa_output.REPLACE_WITH_PHYSICAL_SINK \
+  --playback-device pick
+```
+
+It discovers the exact PipeWire ALSA Loopback playback and paired capture
+endpoints, temporarily routes only the Spotify stream to that playback
+endpoint, and restores the desktop default immediately. If multiple Loopback
+endpoints exist, set the exact endpoint names after inspecting `pactl`:
+
+```bash
+export DREAMSYNC_ALOOP_PLAYBACK_SINK=alsa_output.REPLACE_WITH_LOOPBACK_SINK
+export DREAMSYNC_ALOOP_CAPTURE_SOURCE=alsa_input.REPLACE_WITH_LOOPBACK_SOURCE
+```
+
 Sign in to Spotify Desktop once using its normal persistent application
 profile. Keep the DreamSync Spotify API token separately; it supplies queue
-metadata and capture boundaries. Start Spotify Desktop from this launcher (or
-move its stream to DreamSync Capture in pavucontrol) so the app's audio is
-capture-only until Queue playback begins.
+metadata and capture boundaries. Select the discovered ALSA Loopback capture
+input in the GUI; Queue replay must use a physical output device instead.
 
 The launcher opens pavucontrol automatically when it is installed, so you can
-confirm the source app is routed to DreamSync Queue Capture and the recorder is
-using `dreamsync_queue_capture.monitor`.
+confirm the source app is routed to the discovered ALSA Loopback playback sink
+and the recorder is using its paired ALSA Loopback capture source.
 
 Use **Save Configuration** after selecting the capture source and playback
 device. On Linux, these GUI choices persist in

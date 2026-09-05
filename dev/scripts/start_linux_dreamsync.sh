@@ -122,7 +122,26 @@ trap cleanup EXIT INT TERM
 if [[ "$route_mode" == "live-learning" ]]; then
     browser_sink="dreamsync_live_capture"
 else
-    browser_sink="dreamsync_queue_capture"
+    state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/dreamsync"
+    state_file="$state_dir/pipewire-route-state"
+    if [[ ! -r "$state_file" ]]; then
+        echo "DreamSync Queue route did not provide an ALSA Loopback endpoint." >&2
+        exit 1
+    fi
+    # Written by setup_linux_pipewire_capture.sh using %q.
+    # shellcheck disable=SC1090
+    source "$state_file"
+    browser_sink="${dreamsync_browser_sink:-}"
+    if [[ -z "$browser_sink" ]]; then
+        echo "DreamSync Queue route has no ALSA Loopback playback sink." >&2
+        exit 1
+    fi
+    export DREAMSYNC_ALOOP_PLAYBACK_SINK="$browser_sink"
+    export DREAMSYNC_ALOOP_CAPTURE_SOURCE="${dreamsync_capture_source:-}"
+    if [[ -z "$DREAMSYNC_ALOOP_CAPTURE_SOURCE" ]]; then
+        echo "DreamSync Queue route has no ALSA Loopback capture source." >&2
+        exit 1
+    fi
 fi
 desktop_default="$(pactl get-default-sink)"
 pactl set-default-sink "$browser_sink"
