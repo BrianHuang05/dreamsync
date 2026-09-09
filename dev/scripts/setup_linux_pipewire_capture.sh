@@ -105,12 +105,7 @@ if [[ "$teardown" == true ]]; then
             pactl unload-module "$module_id" || true
         fi
     done < <(pactl list modules short)
-    if [[ -n "${dreamsync_previous_default:-}" ]] && sink_exists "$dreamsync_previous_default"; then
-        pactl set-default-sink "$dreamsync_previous_default"
-        echo "DreamSync route removed; restored default sink: $dreamsync_previous_default"
-    else
-        echo "DreamSync route removed."
-    fi
+    echo "DreamSync route removed; desktop default sink was left unchanged."
     rm -f "$state_file"
     exit 0
 fi

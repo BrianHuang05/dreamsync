@@ -117,20 +117,28 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# New audio-source streams inherit this sink. This replaces the pavucontrol
-# Playback selection for the normal cold-boot case.
+# The route helper records the exact physical playback sink it validated.
+# Source this state without changing the desktop's global default sink.
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/dreamsync"
+state_file="$state_dir/pipewire-route-state"
+if [[ ! -r "$state_file" ]]; then
+    echo "DreamSync route state was not created: $state_file" >&2
+    exit 1
+fi
+# Written by setup_linux_pipewire_capture.sh using %q.
+# shellcheck disable=SC1090
+source "$state_file"
+physical_sink="${dreamsync_physical_sink:-}"
+if [[ -z "$physical_sink" ]]; then
+    echo "DreamSync route has no physical playback sink." >&2
+    exit 1
+fi
+
+# Route only the launched audio-source process to the capture sink. DreamSync
+# itself receives a separate PULSE_SINK below for delayed physical playback.
 if [[ "$route_mode" == "live-learning" ]]; then
     browser_sink="dreamsync_live_capture"
 else
-    state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/dreamsync"
-    state_file="$state_dir/pipewire-route-state"
-    if [[ ! -r "$state_file" ]]; then
-        echo "DreamSync Queue route did not provide an ALSA Loopback endpoint." >&2
-        exit 1
-    fi
-    # Written by setup_linux_pipewire_capture.sh using %q.
-    # shellcheck disable=SC1090
-    source "$state_file"
     browser_sink="${dreamsync_browser_sink:-}"
     if [[ -z "$browser_sink" ]]; then
         echo "DreamSync Queue route has no ALSA Loopback playback sink." >&2
@@ -142,9 +150,17 @@ else
         echo "DreamSync Queue route has no ALSA Loopback capture source." >&2
         exit 1
     fi
+    expected_capture_source="$browser_sink.monitor"
+    if [[ "$DREAMSYNC_ALOOP_CAPTURE_SOURCE" != "$expected_capture_source" ]]; then
+        echo "DreamSync Queue capture must use the playback sink monitor: $expected_capture_source" >&2
+        echo "Resolved capture source was: $DREAMSYNC_ALOOP_CAPTURE_SOURCE" >&2
+        exit 1
+    fi
+    if [[ "$physical_sink" == "$browser_sink" || "$physical_sink" == "$DREAMSYNC_ALOOP_CAPTURE_SOURCE" ]]; then
+        echo "DreamSync Queue playback must use a physical sink distinct from Loopback capture." >&2
+        exit 1
+    fi
 fi
-desktop_default="$(pactl get-default-sink)"
-pactl set-default-sink "$browser_sink"
 
 if [[ "$audio_source" == "spotify-desktop" ]]; then
     if ! command -v "$spotify_command" >/dev/null; then
@@ -152,7 +168,7 @@ if [[ "$audio_source" == "spotify-desktop" ]]; then
         echo "Install Spotify Desktop or pass --spotify-command /path/to/spotify." >&2
         exit 1
     fi
-    setsid "$spotify_command" >/dev/null 2>&1 &
+    PULSE_SINK="$browser_sink" setsid "$spotify_command" >/dev/null 2>&1 &
     audio_source_pid=$!
     echo "Spotify Desktop audio will route to DreamSync Capture."
 else
@@ -161,9 +177,9 @@ else
         exit 1
     fi
     if [[ -n "$browser_url" ]]; then
-        setsid "$browser" --new-window "$browser_url" >/dev/null 2>&1 &
+        PULSE_SINK="$browser_sink" setsid "$browser" --new-window "$browser_url" >/dev/null 2>&1 &
     else
-        setsid "$browser" --new-window >/dev/null 2>&1 &
+        PULSE_SINK="$browser_sink" setsid "$browser" --new-window >/dev/null 2>&1 &
     fi
     audio_source_pid=$!
     echo "Firefox/new browser audio will route to DreamSync Capture."
@@ -177,8 +193,7 @@ else
 fi
 
 echo "Starting DreamSync: $*"
-# Restore the desktop default immediately; only the audio-source stream
-# launched above inherits the temporary DreamSync target.
-pactl set-default-sink "$desktop_default" 2>/dev/null || true
 cd "$repo_root"
-"$@"
+# Keep delayed Queue replay on the validated physical sink. FFmpeg capture is
+# unaffected because it receives DREAMSYNC_ALOOP_CAPTURE_SOURCE explicitly.
+PULSE_SINK="$physical_sink" "$@"
