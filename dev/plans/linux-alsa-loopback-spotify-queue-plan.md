@@ -2,8 +2,141 @@
 
 ## Status
 
-Proposed implementation and validation plan. No production changes have been
-made by this plan.
+Implementation exists and manual acceptance testing is in progress. The
+physical USB playback monitor and the ALSA Loopback endpoints have passed
+stereo tone tests. End-to-end Spotify capture, compilation, and delayed replay
+remain to be validated.
+
+## Validated Host Topology (2026-09-09)
+
+The Linux host is a Surface Pro 6 running PipeWire. Reliable remote shell
+access has been established independently of RDP:
+
+- OpenSSH and `tailscaled` are enabled at boot.
+- SSH through the Surface's Tailscale address succeeds with a dedicated key.
+- Cold-boot SSH succeeds before graphical login.
+- Suspend/hibernate is disabled, Wi-Fi autoconnect is enabled, and Tailscale
+  key expiry is disabled for this trusted unattended machine.
+
+Validated playback sink:
+
+```text
+alsa_output.usb-Generic_AB13X_USB_Audio_20210726905926-00.analog-stereo
+```
+
+Validated USB playback-monitor source:
+
+```text
+alsa_output.usb-Generic_AB13X_USB_Audio_20210726905926-00.analog-stereo.monitor
+```
+
+Both USB monitor channels passed a 48 kHz stereo tone test.
+
+Validated ALSA Loopback endpoints after loading `snd_aloop`:
+
+```text
+Playback sink:
+alsa_output.platform-snd_aloop.0.dreamsync-playback
+
+Preferred capture source:
+alsa_output.platform-snd_aloop.0.dreamsync-playback.monitor
+
+Additional device input exposed by PipeWire:
+alsa_input.platform-snd_aloop.0.dreamsync-capture
+```
+
+DreamSync should prefer the playback sink's `.monitor` source. This is the
+source proven to carry the PCM written to the selected Loopback playback sink.
+
+PortAudio currently exposes physical PipeWire playback through its generic
+`pulse` output rather than listing the USB sink by name. It was device ID `6`
+during the last inspection, but numeric PortAudio IDs are boot-dependent and
+must be rediscovered before being persisted.
+
+### Critical Remote-Safety Finding
+
+Changing the global PipeWire/Pulse default sink during an RDP session caused
+the Surface to become unreachable through both RDP and SSH until physical
+recovery. Do not run `pactl set-default-sink` during remote testing.
+
+The unattended launcher must ultimately route streams individually:
+
+```text
+Spotify process  --PULSE_SINK--> ALSA Loopback playback sink
+FFmpeg capture   --explicit source--> Loopback playback monitor
+DreamSync player --PULSE_SINK--> USB physical sink
+```
+
+The existing launcher still temporarily changes the desktop default sink to
+launch the source application. Harden that launcher to use per-process routing
+before performing another unattended or RDP-based acceptance run.
+
+## Resume Testing Instructions
+
+Use SSH, not RDP, for the next test session. Keep the graphical RDP session
+disconnected while changing or inspecting audio routes.
+
+1. Reconfirm the recovery channel from Windows:
+
+   ```powershell
+   tailscale ping <surface-tailscale-name>
+   ssh surface-linux
+   ```
+
+2. On Linux, confirm that PipeWire and ALSA Loopback survived the most recent
+   boot:
+
+   ```bash
+   systemctl --user is-active pipewire pipewire-pulse wireplumber
+   lsmod | grep snd_aloop
+   pactl list short sinks
+   pactl list short sources
+   ```
+
+   Stop if `snd_aloop`, the `dreamsync-playback` sink, or its `.monitor`
+   source is missing. Do not substitute a microphone or physical USB input.
+
+3. Re-list DreamSync/PortAudio devices and record the current ID of the
+   generic `pulse` output:
+
+   ```bash
+   .venv/bin/python -m dreamsync devices --json
+   ```
+
+4. Before an end-to-end remote run, inspect and harden
+   `dev/scripts/start_linux_dreamsync.sh`: remove the temporary global-default
+   switch used to launch Spotify. Launch only the Spotify/browser subprocess
+   with `PULSE_SINK` set to the Loopback playback sink, and launch only the
+   DreamSync subprocess with `PULSE_SINK` set to the USB sink. Preserve the
+   explicit Loopback `.monitor` capture source.
+
+5. Add or update automated launcher tests proving that Queue startup never
+   calls `pactl set-default-sink` and supplies distinct per-process capture and
+   playback targets. Run the focused Linux routing/launcher tests before any
+   manual audio run.
+
+6. Run the Queue workflow over SSH. While Spotify is actively playing, inspect
+   routing without changing it:
+
+   ```bash
+   pactl list short sink-inputs
+   pactl list short source-outputs
+   wpctl status
+   ```
+
+   Expected routing:
+
+   - Spotify sink input -> `dreamsync-playback` Loopback sink.
+   - FFmpeg source output <- `dreamsync-playback.monitor`.
+   - DreamSync delayed replay sink input -> USB physical sink.
+
+7. Capture at least two complete Spotify tracks. Verify that boundaries create
+   MP3 and JSON sidecar files, that the MP3s are non-silent, and that delayed
+   replay reaches only the USB sink. Spotify must not be directly audible on
+   the USB sink during capture.
+
+8. Stop the session cleanly and verify that the desktop default sink was never
+   changed by comparing `pactl get-default-sink` before and after the run.
 
 ## Problem
 
