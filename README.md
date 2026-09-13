@@ -304,6 +304,12 @@ streams, opens Firefox, then starts the DreamSync command after `--`:
   -- python -m dreamsync gui --config dev/devices.yaml
 ```
 
+The launcher uses Firefox's persistent `DreamSync` profile and starts a
+separate Firefox instance so its audio stream receives the route requested by
+the launcher. Create that profile once with Firefox's profile manager and sign
+in to Spotify there. Override the profile name only when needed with
+`--browser-profile NAME`.
+
 For the Spotify Desktop app (recommended when the browser profile does not
 persist Spotify login), launch it directly into the capture route instead:
 

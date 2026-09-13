@@ -19,6 +19,7 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
 browser="firefox"
+browser_profile="DreamSync"
 browser_url=""
 audio_source="browser"
 spotify_command="spotify"
@@ -34,6 +35,10 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --browser)
             browser="${2:?--browser requires a command}"
+            shift 2
+            ;;
+        --browser-profile)
+            browser_profile="${2:?--browser-profile requires a Firefox profile name}"
             shift 2
             ;;
         --browser-url)
@@ -231,9 +236,9 @@ else
         exit 1
     fi
     if [[ -n "$browser_url" ]]; then
-        PULSE_SINK="$browser_sink" setsid "$browser" --new-window "$browser_url" >/dev/null 2>&1 &
+        PULSE_SINK="$browser_sink" setsid "$browser" --new-instance -P "$browser_profile" --new-window "$browser_url" >/dev/null 2>&1 &
     else
-        PULSE_SINK="$browser_sink" setsid "$browser" --new-window >/dev/null 2>&1 &
+        PULSE_SINK="$browser_sink" setsid "$browser" --new-instance -P "$browser_profile" --new-window >/dev/null 2>&1 &
     fi
     audio_source_pid=$!
     start_audio_source_route_watcher "$(basename "$browser")"
