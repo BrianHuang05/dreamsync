@@ -8688,7 +8688,16 @@ def create_main_window(
         capture_state = runtime_state.capture_state
         pipeline_state = runtime_state.pipeline_state
         queue_panel.output_mode_label.setText(f"Output Mode: {output_mode or 'idle'}")
-        queue_panel.capture_status_label.setText(f"Capture: {capture_state.title()}")
+        signal_state = runtime_state.capture_signal_state
+        signal_label = {
+            "waiting": "Waiting for PCM",
+            "signal": "Signal detected",
+            "silent": "Silent",
+        }.get(signal_state, "")
+        queue_panel.capture_status_label.setText(
+            f"Capture: {capture_state.title()}"
+            + (f" · Audio: {signal_label}" if signal_label else "")
+        )
         queue_panel.pipeline_status_label.setText(
             "Pipeline: "
             f"{pipeline_state.title()} / Ready {runtime_state.ready_queue_count} "

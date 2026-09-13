@@ -156,6 +156,7 @@ class FakePipelineCoordinator:
         self.order: list[str] = []
         self.timing_source = None
         self.track_changes: list[dict] = []
+        self.signal_state = "waiting"
 
     def start(self, **kwargs) -> None:
         self.running = True
@@ -182,6 +183,9 @@ class FakePipelineCoordinator:
 
     def ready_queue_count(self) -> int:
         return sum(1 for item in self.items.values() if item.state in {"ready", "playing"})
+
+    def capture_signal_state(self) -> str:
+        return self.signal_state
 
     def next_ready_item(self) -> CapturedShowItem | None:
         for item_id in self.order:
@@ -253,6 +257,7 @@ def test_runtime_supervisor_switches_output_without_stopping_capture_pipeline(tm
 
     assert reactive.stop_called is True
     assert snapshot.capture_state == "running"
+    assert snapshot.capture_signal_state == "waiting"
     assert snapshot.active_output_mode == "saved_show"
     assert snapshot.saved_show_path.endswith("song.show.json")
     assert snapshot.recent_saved_shows[-1].endswith("song.show.json")

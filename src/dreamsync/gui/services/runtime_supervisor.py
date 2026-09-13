@@ -251,6 +251,13 @@ class PipelineCoordinator:
             "worker": worker_stats,
         }
 
+    def capture_signal_state(self) -> str:
+        """Return the raw PCM signal state of the active capture, if any."""
+        with self._lock:
+            capture = self._capture if self._running else None
+        status = getattr(capture, "signal_status", None)
+        return str(getattr(status, "state", "off"))
+
     def next_ready_item(self) -> CapturedShowItem | None:
         with self._lock:
             for item_id in self._order:
@@ -1522,6 +1529,10 @@ class RuntimeSupervisor:
             armed_output_mode=self._armed_output_mode,
             simulation_target=simulation_target,
             capture_state="running" if self._pipeline is not None and self._pipeline.running else "off",
+            capture_signal_state=(
+                self._pipeline.capture_signal_state()
+                if self._pipeline is not None and self._pipeline.running else "off"
+            ),
             pipeline_state=pipeline_state,
             spotify_state="enabled" if self._live_loopback_enabled else "off",
             learned_live_strategy=(

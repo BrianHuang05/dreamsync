@@ -59,6 +59,7 @@ class RuntimeModeState:
     armed_output_mode: str = ""
     simulation_target: str = ""
     capture_state: str = "off"
+    capture_signal_state: str = "off"
     pipeline_state: str = "idle"
     spotify_state: str = "off"
     learned_live_strategy: str = "waiting"

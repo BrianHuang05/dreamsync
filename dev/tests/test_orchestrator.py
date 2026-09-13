@@ -19,6 +19,7 @@ from dreamsync.capture.orchestrator import (
     DRIFT_CHECK_INTERVAL_CHUNKS,
     BufferEntry,
     CaptureOrchestrator,
+    SIGNAL_HOLD_SECONDS,
     DynamicSplitProcessor,
     OrchestratorConfig,
     PcmAccumulator,
@@ -61,6 +62,29 @@ def _make_orch_with_cb(tmp_path, on_segment_saved=None, **cfg_overrides):
     defaults.update(cfg_overrides)
     cfg = OrchestratorConfig(**defaults)
     return CaptureOrchestrator(config=cfg, on_segment_saved=on_segment_saved)
+
+
+class TestCaptureSignalStatus:
+    def test_signal_probe_distinguishes_meaningful_audio_from_idle_noise(self, tmp_path):
+        orch = _make_orch(tmp_path)
+        orch._running = True
+
+        orch._record_signal(b"\x01\x00" * 16)
+        assert orch.signal_status.state == "silent"
+
+        orch._record_signal(b"\x08\x00" * 16)
+        assert orch.signal_status.state == "signal"
+        assert orch.signal_status.peak == 8
+        assert orch.signal_status.samples_received == 32
+
+    def test_signal_probe_expires_to_silent(self, tmp_path, monkeypatch):
+        orch = _make_orch(tmp_path)
+        orch._running = True
+        orch._record_signal(b"\xff\x7f")
+        with orch._signal_lock:
+            orch._last_non_silent_monotonic -= SIGNAL_HOLD_SECONDS + 0.1
+
+        assert orch.signal_status.state == "silent"
 
 
 # ======================================================================

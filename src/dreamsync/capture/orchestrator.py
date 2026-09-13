@@ -88,6 +88,22 @@ class OrchestratorConfig:
 
 
 DRIFT_CHECK_INTERVAL_CHUNKS = 100  # ~10 seconds at 100 ms chunks
+SIGNAL_SAMPLE_PEAK_THRESHOLD = 8  # -72 dBFS; excludes the -91 dBFS idle noise seen on PipeWire.
+SIGNAL_HOLD_SECONDS = 2.0
+
+
+@dataclass(frozen=True)
+class CaptureSignalStatus:
+    """Recent signal observed on the raw PCM capture stream.
+
+    This is deliberately a capture-path diagnostic, rather than an analysis
+    result: it tells the GUI whether FFmpeg is receiving meaningful samples
+    before any MP3 is saved or any beat detector runs.
+    """
+
+    state: str = "off"  # off | waiting | signal | silent
+    peak: int = 0
+    samples_received: int = 0
 
 
 @dataclass
@@ -484,6 +500,10 @@ class CaptureOrchestrator:
         self._finalize_lock = threading.Lock()
         self._suppressed_track_ids: set[str] = set()
         self._suppression_lock = threading.Lock()
+        self._signal_lock = threading.Lock()
+        self._last_signal_peak = 0
+        self._last_non_silent_monotonic: float | None = None
+        self._samples_received = 0
 
     # ------------------------------------------------------------------
     # Properties
@@ -512,7 +532,27 @@ class CaptureOrchestrator:
             "buffer_current_files": self._rotating_buffer.current_count,
             "buffer_max_files": self._rotating_buffer.max_files,
             "buffer_evictions": self._rotating_buffer.total_evictions,
+            "capture_signal": self.signal_status.state,
+            "capture_signal_peak": self.signal_status.peak,
         }
+
+    @property
+    def signal_status(self) -> CaptureSignalStatus:
+        """Return whether recent PCM contains meaningful, non-silent audio."""
+        with self._signal_lock:
+            if not self._running:
+                return CaptureSignalStatus()
+            if self._samples_received == 0:
+                return CaptureSignalStatus(state="waiting")
+            recent_signal = (
+                self._last_non_silent_monotonic is not None
+                and time.monotonic() - self._last_non_silent_monotonic <= SIGNAL_HOLD_SECONDS
+            )
+            return CaptureSignalStatus(
+                state="signal" if recent_signal else "silent",
+                peak=self._last_signal_peak,
+                samples_received=self._samples_received,
+            )
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -533,6 +573,10 @@ class CaptureOrchestrator:
 
         self._capture.start(device_name)
         self._start_time = time.monotonic()
+        with self._signal_lock:
+            self._last_signal_peak = 0
+            self._last_non_silent_monotonic = None
+            self._samples_received = 0
 
         # Create DynamicSplitProcessor with live boundary queue
         self._split = DynamicSplitProcessor(
@@ -880,6 +924,17 @@ class CaptureOrchestrator:
     # Thread loops
     # ------------------------------------------------------------------
 
+    def _record_signal(self, chunk: bytes) -> None:
+        """Update the lightweight PCM signal probe for one s16le chunk."""
+        samples = memoryview(chunk).cast("h")
+        peak = max((abs(sample) for sample in samples), default=0)
+        now = time.monotonic()
+        with self._signal_lock:
+            self._samples_received += len(samples)
+            self._last_signal_peak = peak
+            if peak >= SIGNAL_SAMPLE_PEAK_THRESHOLD:
+                self._last_non_silent_monotonic = now
+
     def _producer_loop(self) -> None:
         """Read PCM chunks from FFmpeg stdout and feed them into the buffer.
 
@@ -897,6 +952,7 @@ class CaptureOrchestrator:
                         data={"max_chunks": self._config.buffer_max_chunks},
                         frame_position=self._buffer.frames_processed,
                     )
+                self._record_signal(chunk)
                 self._buffer.put(chunk)
                 self._recovery.reset_capture_failure_count()
         except Exception as exc:
