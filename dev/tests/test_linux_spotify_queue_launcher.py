@@ -26,6 +26,8 @@ def test_linux_launcher_supports_spotify_desktop_and_closes_its_audio_source():
     assert 'PULSE_SINK="$browser_sink" setsid "$spotify_command"' in script
     assert 'audio_source_pid=""' in script
     assert 'PULSE_SINK="$browser_sink" setsid "$browser" --new-window' in script
+    assert 'start_audio_source_route_watcher "$(basename "$browser")"' in script
+    assert 'pactl move-sink-input "$input_id" "$browser_sink"' in script
     assert 'setsid pavucontrol' in script
     assert 'pavucontrol is not installed' in script
     assert 'kill -- "-$audio_source_pid"' in script
@@ -47,7 +49,8 @@ def test_linux_launcher_uses_only_process_scoped_sink_routing():
     assert "pactl set-default-sink" not in route_helper
     assert 'PULSE_SINK="$browser_sink" setsid "$spotify_command"' in launcher
     assert 'PULSE_SINK="$browser_sink" setsid "$browser" --new-window' in launcher
-    assert 'PULSE_SINK="$physical_sink" "$@"' in launcher
+    assert 'PULSE_SINK="$physical_sink" PULSE_SOURCE="$capture_source" "$@"' in launcher
+    assert 'PULSE_SOURCE="$capture_source"' in launcher
 
 
 def test_queue_launcher_keeps_capture_and_playback_targets_distinct():
@@ -62,5 +65,6 @@ def test_queue_launcher_keeps_capture_and_playback_targets_distinct():
     assert '[[ "$physical_sink" == "$browser_sink" ||' in script
     assert '"$physical_sink" == "$DREAMSYNC_ALOOP_CAPTURE_SOURCE" ]]' in script
     assert 'PULSE_SINK="$browser_sink"' in script
-    assert 'PULSE_SINK="$physical_sink" "$@"' in script
+    assert 'PULSE_SINK="$physical_sink" PULSE_SOURCE="$capture_source" "$@"' in script
+    assert 'PULSE_SOURCE="$capture_source"' in script
     assert 'PULSE_SINK="$DREAMSYNC_ALOOP_CAPTURE_SOURCE"' not in script

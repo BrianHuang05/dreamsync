@@ -103,7 +103,58 @@ fi
 "$script_dir/setup_linux_pipewire_capture.sh" "${setup_args[@]}"
 route_active=true
 audio_source_pid=""
+audio_source_watcher_pid=""
+launcher_pid="$$"
+
+sink_input_ids_for_process() {
+    local process_binary="$1"
+    pactl list sink-inputs | awk -v process_binary="$process_binary" '
+        /^Sink Input #[0-9]+/ {
+            input_id = $3
+            sub(/^#/, "", input_id)
+        }
+        /application\.process\.binary =/ {
+            binary = $0
+            sub(/.*= "/, "", binary)
+            sub(/".*/, "", binary)
+            if (binary == process_binary) {
+                print input_id
+            }
+        }
+    '
+}
+
+route_audio_source_streams() {
+    local process_binary="$1"
+    local input_id=""
+    local current_sink=""
+    while IFS= read -r input_id; do
+        [[ -n "$input_id" ]] || continue
+        current_sink="$(pactl list short sink-inputs | awk -v id="$input_id" '$1 == id { print $2; exit }')"
+        if [[ -n "$current_sink" && "$current_sink" != "$browser_sink" ]]; then
+            pactl move-sink-input "$input_id" "$browser_sink"
+            echo "Routed ${process_binary} sink input ${input_id} to DreamSync Capture."
+        fi
+    done < <(sink_input_ids_for_process "$process_binary")
+}
+
+start_audio_source_route_watcher() {
+    local process_binary="$1"
+    (
+        while kill -0 "$launcher_pid" 2>/dev/null; do
+            route_audio_source_streams "$process_binary" || true
+            sleep 1
+        done
+    ) &
+    audio_source_watcher_pid=$!
+}
+
 cleanup() {
+    if [[ -n "${audio_source_watcher_pid:-}" ]] && kill -0 "$audio_source_watcher_pid" 2>/dev/null; then
+        kill "$audio_source_watcher_pid" 2>/dev/null || true
+        wait "$audio_source_watcher_pid" 2>/dev/null || true
+    fi
+    audio_source_watcher_pid=""
     if [[ -n "${audio_source_pid:-}" ]] && kill -0 "$audio_source_pid" 2>/dev/null; then
         # The audio source runs in its own session, so this only closes the
         # process tree started by this launcher (not an unrelated desktop app).
@@ -138,6 +189,7 @@ fi
 # itself receives a separate PULSE_SINK below for delayed physical playback.
 if [[ "$route_mode" == "live-learning" ]]; then
     browser_sink="dreamsync_live_capture"
+    capture_source="${browser_sink}.monitor"
 else
     browser_sink="${dreamsync_browser_sink:-}"
     if [[ -z "$browser_sink" ]]; then
@@ -160,6 +212,7 @@ else
         echo "DreamSync Queue playback must use a physical sink distinct from Loopback capture." >&2
         exit 1
     fi
+    capture_source="$DREAMSYNC_ALOOP_CAPTURE_SOURCE"
 fi
 
 if [[ "$audio_source" == "spotify-desktop" ]]; then
@@ -170,6 +223,7 @@ if [[ "$audio_source" == "spotify-desktop" ]]; then
     fi
     PULSE_SINK="$browser_sink" setsid "$spotify_command" >/dev/null 2>&1 &
     audio_source_pid=$!
+    start_audio_source_route_watcher "$(basename "$spotify_command")"
     echo "Spotify Desktop audio will route to DreamSync Capture."
 else
     if ! command -v "$browser" >/dev/null; then
@@ -182,6 +236,7 @@ else
         PULSE_SINK="$browser_sink" setsid "$browser" --new-window >/dev/null 2>&1 &
     fi
     audio_source_pid=$!
+    start_audio_source_route_watcher "$(basename "$browser")"
     echo "Firefox/new browser audio will route to DreamSync Capture."
 fi
 
@@ -194,6 +249,7 @@ fi
 
 echo "Starting DreamSync: $*"
 cd "$repo_root"
-# Keep delayed Queue replay on the validated physical sink. FFmpeg capture is
-# unaffected because it receives DREAMSYNC_ALOOP_CAPTURE_SOURCE explicitly.
-PULSE_SINK="$physical_sink" "$@"
+# Keep delayed Queue replay on the validated physical sink. The explicit Pulse
+# source makes DreamSync's reactive reader follow the same monitor as FFmpeg
+# instead of silently falling back to the desktop microphone.
+PULSE_SINK="$physical_sink" PULSE_SOURCE="$capture_source" "$@"
