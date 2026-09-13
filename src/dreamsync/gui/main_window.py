@@ -8733,8 +8733,15 @@ def create_main_window(
         learning_running = (
             runtime_state.active_output_mode == "spotify_learned_live"
         )
+        live_signal_label = {
+            "waiting": "Capture audio: waiting for PCM",
+            "signal": "Capture audio: signal detected",
+            "silent": "Capture audio: silent",
+        }.get(runtime_state.capture_signal_state, "")
         queue_panel.spotify_learned_live_status_label.setText(
-            "Learning: running" if learning_running else "Learning: stopped"
+            "Learning: running"
+            + (f" · {live_signal_label}" if learning_running and live_signal_label else "")
+            if learning_running else "Learning: stopped"
         )
         queue_panel.spotify_learned_live_start_button.setEnabled(
             not learning_running
