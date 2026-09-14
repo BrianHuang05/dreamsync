@@ -46,7 +46,7 @@ from dreamsync.gui.services import (
     SongPaletteStore,
     StorageService,
 )
-from dreamsync.gui.settings import GuiSettings, GuiSettingsStore
+from dreamsync.gui.settings import GuiSettings, GuiSettingsStore, resolve_gui_audio_settings
 from dreamsync.gui.widgets.linux_launcher_form import build_linux_launcher_form
 from dreamsync.linux_launcher_settings import save_bridge
 from dreamsync.profile import BUILTIN_PROFILES_DIR, VALID_MOODS, VALID_RENDER_MODES, resolve_profile_path
@@ -460,6 +460,7 @@ def create_main_window(
     settings_store: GuiSettingsStore | None = None,
     discovery_service: DeviceDiscoveryService | None = None,
 ) -> object:
+    settings = resolve_gui_audio_settings(settings)
     QtWidgets = qt_modules.QtWidgets
     QtCore = qt_modules.QtCore
     QtGui = qt_modules.QtGui
@@ -1112,6 +1113,7 @@ def create_main_window(
         QtWidgets.QScrollArea, "configControlsScroll"
     )
     config_scroll.widget().layout().insertWidget(0, launcher_group)
+    launcher_group.setVisible(sys.platform.startswith("linux"))
 
     diagnostics_panel = build_runtime_diagnostics_panel(qt_modules)
     tabs.addTab(diagnostics_panel.widget, "Diagnostics")
@@ -2080,6 +2082,16 @@ def create_main_window(
         combo = queue_panel.capture_source_combo
         blocker = QtCore.QSignalBlocker(combo)
         combo.clear()
+        if sys.platform.startswith("linux"):
+            source = runtime_supervisor.snapshot().capture_settings.device_pattern
+            combo.addItem(source or "Launch through start_linux_dreamsync.sh", source or None)
+            combo.setEnabled(False)
+            queue_panel.capture_route_status_label.setText(
+                f"Resolved capture monitor: {source}" if source else
+                "Capture route unavailable. Launch through start_linux_dreamsync.sh."
+            )
+            del blocker
+            return
         for source in sources:
             combo.addItem(source, source)
         preferred = selected_source if selected_source in sources else ""
@@ -8804,11 +8816,6 @@ def create_main_window(
             runtime_state.routing_state.available_input_devices,
             runtime_state.routing_state.selected_live_input_device_id,
         )
-        _populate_device_combo(
-            queue_panel.pipeline_playback_device_combo,
-            runtime_state.routing_state.available_output_devices,
-            runtime_state.capture_settings.pipeline_playback_device_id,
-        )
         _apply_capture_settings_to_form(runtime_state.capture_settings)
         _apply_reactive_settings_to_form(runtime_state.reactive_settings)
         runtime_control = runtime_supervisor.runtime_control_snapshot()
@@ -11474,7 +11481,7 @@ def create_main_window(
         queue_panel.baked_status_label.setText(f"Baked: {mode}")
 
     def _on_output_device_changed() -> None:  # pragma: no cover - Qt only
-        runtime_supervisor.set_selected_output_audio_device(queue_panel.output_device_combo.currentData())
+        _sync_runtime_settings_from_form()
         _render_runtime_state(runtime_supervisor.snapshot())
 
     def _on_input_device_changed() -> None:  # pragma: no cover - Qt only
@@ -12115,7 +12122,6 @@ def create_main_window(
     queue_panel.capture_frame_size_spin.valueChanged.connect(lambda _value: _on_runtime_settings_changed())
     queue_panel.capture_hop_size_spin.valueChanged.connect(lambda _value: _on_runtime_settings_changed())
     queue_panel.capture_blocksize_spin.valueChanged.connect(lambda _value: _on_runtime_settings_changed())
-    queue_panel.pipeline_playback_device_combo.currentIndexChanged.connect(lambda _index: _on_runtime_settings_changed())
     queue_panel.purge_after_playback_check.toggled.connect(lambda _checked: _on_runtime_settings_changed())
     queue_panel.debug_pipeline_check.toggled.connect(lambda _checked: _on_runtime_settings_changed())
     queue_panel.reactive_render_mode_combo.currentIndexChanged.connect(lambda _index: _on_runtime_settings_changed())

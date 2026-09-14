@@ -23,12 +23,12 @@ def _pulse_source_name(device: int | str | None) -> str | None:
     return None
 
 
-def _pulse_alsa_device_id(sd) -> int:
+def _pulse_alsa_device_id(sd, *, kind: str = "input") -> int:
     """Find PortAudio's PulseAudio ALSA endpoint used to open Pulse sources."""
     devices = sd.query_devices()
     hostapis = sd.query_hostapis()
     for index, info in enumerate(devices):
-        if int(info.get("max_input_channels", 0)) <= 0:
+        if int(info.get(f"max_{kind}_channels", 0)) <= 0:
             continue
         hostapi_index = int(info.get("hostapi", -1))
         hostapi = (
@@ -40,9 +40,14 @@ def _pulse_alsa_device_id(sd) -> int:
         if hostapi.lower() == "alsa" and name in {"pulse", "pulse alsa"}:
             return index
     raise RuntimeError(
-        "This PipeWire/Pulse source needs PortAudio's Pulse ALSA input endpoint, "
+        f"This PipeWire/Pulse route needs PortAudio's Pulse ALSA {kind} endpoint, "
         "but it is not available. Install the PulseAudio ALSA plugin and restart the app."
     )
+
+
+def pulse_output_device_id(sd) -> int:
+    """Open playback through Pulse so PULSE_SINK selects the physical output."""
+    return _pulse_alsa_device_id(sd, kind="output")
 
 
 @contextmanager

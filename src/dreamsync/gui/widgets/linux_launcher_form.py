@@ -1,13 +1,21 @@
 """Config controls for the next Linux launcher start."""
 from dataclasses import asdict
+import os
 
 from dreamsync.linux_launcher_settings import LinuxLauncherSettings
 from dreamsync.gui.services.audio_device_service import AudioDeviceService
 
 
 def build_linux_launcher_form(QtWidgets, settings, *, discover_sinks=None):
-    group = QtWidgets.QGroupBox('Linux launcher — applies at next launcher start')
+    group = QtWidgets.QGroupBox('Audio routing — applies at next launcher start')
     layout = QtWidgets.QFormLayout(group)
+    explanation = QtWidgets.QLabel('Select the source application and playback output here. Capture input is resolved automatically from the audio route. Save and restart through the launcher to apply changes.')
+    explanation.setWordWrap(True)
+    layout.addRow(explanation)
+    active_output = QtWidgets.QLabel(os.environ.get('PULSE_SINK') or 'Unavailable — restart through the launcher')
+    active_output.setObjectName('linux_launcher_active_output')
+    active_output.setWordWrap(True)
+    layout.addRow('Active playback output', active_output)
     controls = {}
     labels = {
         'route_mode': 'Audio route', 'audio_source': 'Audio source',

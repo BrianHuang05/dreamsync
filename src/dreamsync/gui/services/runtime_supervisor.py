@@ -490,6 +490,7 @@ class RuntimeSupervisor:
 
     def set_selected_output_audio_device(self, device_id: int | None) -> None:
         self._routing_state = replace(self._routing_state, selected_output_audio_device_id=device_id)
+        self._capture_settings = replace(self._capture_settings, pipeline_playback_device_id=device_id)
 
     def set_selected_live_input_device(self, device_id: int | str | None) -> None:
         self._routing_state = replace(self._routing_state, selected_live_input_device_id=device_id)
@@ -510,6 +511,7 @@ class RuntimeSupervisor:
 
     def set_capture_settings(self, settings: CaptureSettings) -> None:
         self._capture_settings = settings
+        self._routing_state = replace(self._routing_state, selected_output_audio_device_id=settings.pipeline_playback_device_id)
 
     def set_reactive_settings(self, settings: ReactiveSettings) -> None:
         self._reactive_settings = settings

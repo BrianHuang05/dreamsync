@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import sys
 import time
 
 import numpy as np
@@ -96,10 +98,16 @@ class AudioPlayer:
         if self._stream is None:
             import sounddevice as sd
 
+            device = self._device
+            if device is None and sys.platform.startswith("linux") and os.environ.get("PULSE_SINK"):
+                from dreamsync.audio.system_input import pulse_output_device_id
+
+                device = pulse_output_device_id(sd)
+
             self._stream = sd.OutputStream(
                 samplerate=self._sr,
                 blocksize=self._blocksize,
-                device=self._device,
+                device=device,
                 channels=1,
                 dtype="float32",
                 callback=self._audio_callback,

@@ -294,12 +294,19 @@ On its first run it uses the current default physical sink, then remembers that 
 Then route the desired application to **DreamSync Live Capture** in
 `pavucontrol` and run capture with `--capture-source dreamsync_live_capture.monitor`.
 
-For daily desktop startup, save **Config → Linux launcher** once, then run
+For daily desktop startup, save **Config → Audio routing** once, then run
 the command below. Choose the audio route and source, physical PipeWire sink,
 Firefox executable/profile, and initial URL (for Spotify Web, enter
 `https://open.spotify.com/`). These settings apply at the next launcher start.
 The launcher creates the route, routes the source application's audio, and
-starts DreamSync with the physical playback sink and capture monitor:
+starts DreamSync with the physical playback sink and capture monitor. This is
+the single Linux audio configuration: captured-show and local/show playback
+use the configured physical sink through PortAudio's Pulse ALSA output
+endpoint. The Audio Loopback Capture section displays the resolved capture
+monitor as read-only status; no second capture or playback device selection
+is required. Reactive audio input is a separate listening-mode setting under
+Reactive Technical Settings. Linux playback requires the PulseAudio ALSA
+plugin; an unavailable Pulse output endpoint produces an explicit error:
 
 ```bash
 ./dev/scripts/start_linux_dreamsync.sh

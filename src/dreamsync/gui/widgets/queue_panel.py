@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import sys
 
 from dreamsync.gui.widgets.reactive_chord_history_view import (
     build_reactive_chord_history_view,
@@ -98,6 +99,7 @@ class QueuePanelWidgets:
     capture_naming_combo: object
     capture_buffer_spin: object
     capture_source_combo: object
+    capture_route_status_label: object
     capture_sample_rate_spin: object
     capture_channels_spin: object
     capture_frame_size_spin: object
@@ -737,14 +739,17 @@ def build_queue_panel(qt_modules):
     hardware_fallback_check.setChecked(True)
     hardware_fallback_check.setObjectName("hardwareFallbackCheck")
     runtime_layout.addWidget(hardware_fallback_check, 1, 0, 1, 2)
-    runtime_layout.addWidget(QtWidgets.QLabel("Output audio"), 2, 0)
     output_device_combo = QtWidgets.QComboBox()
     output_device_combo.setObjectName("outputAudioDeviceCombo")
-    runtime_layout.addWidget(output_device_combo, 2, 1)
-    runtime_layout.addWidget(QtWidgets.QLabel("Reactive audio input"), 3, 0)
+    audio_playback_group = QtWidgets.QGroupBox("Audio Playback")
+    audio_playback_group.setObjectName("audioPlaybackSettingsGroup")
+    audio_playback_layout = QtWidgets.QFormLayout(audio_playback_group)
+    audio_playback_layout.addRow("Playback audio", output_device_combo)
+    output_device_combo.setToolTip("Output for local playlists, saved shows, and captured-show Queue playback.")
+    controls_column.addWidget(audio_playback_group)
+    audio_playback_group.setVisible(not sys.platform.startswith("linux"))
     input_device_combo = QtWidgets.QComboBox()
     input_device_combo.setObjectName("liveInputDeviceCombo")
-    runtime_layout.addWidget(input_device_combo, 3, 1)
     live_loopback_check = QtWidgets.QCheckBox("Enable Spotify queue loopback")
     live_loopback_check.setObjectName("liveLoopbackCheck")
     live_loopback_check.setToolTip(
@@ -812,7 +817,8 @@ def build_queue_panel(qt_modules):
     capture_buffer_spin.setRange(0, 9999)
     capture_buffer_spin.setObjectName("captureBufferSpin")
     capture_layout.addWidget(capture_buffer_spin, 3, 1)
-    capture_layout.addWidget(QtWidgets.QLabel("Queue capture input (ALSA Loopback)"), 4, 0)
+    capture_input_label = QtWidgets.QLabel("Loopback capture input")
+    capture_layout.addWidget(capture_input_label, 4, 0)
     capture_source_combo = QtWidgets.QComboBox()
     capture_source_combo.setObjectName("captureSourceCombo")
     capture_source_combo.setEditable(False)
@@ -822,6 +828,15 @@ def build_queue_panel(qt_modules):
         "This is capture input, not the Queue replay output."
     )
     capture_layout.addWidget(capture_source_combo, 4, 1)
+    capture_route_status_label = QtWidgets.QLabel()
+    capture_route_status_label.setObjectName("resolvedCaptureRouteLabel")
+    capture_route_status_label.setWordWrap(True)
+    if sys.platform.startswith("linux"):
+        capture_source_combo.hide()
+        capture_input_label.hide()
+        capture_layout.addWidget(capture_route_status_label, 4, 0, 1, 2)
+    else:
+        capture_route_status_label.hide()
     capture_layout.addWidget(QtWidgets.QLabel("Sample rate"), 5, 0)
     capture_sample_rate_spin = QtWidgets.QSpinBox()
     capture_sample_rate_spin.setRange(8000, 192000)
@@ -850,10 +865,8 @@ def build_queue_panel(qt_modules):
         spin.setObjectName(name)
         capture_sizes_row.addWidget(spin)
     capture_layout.addLayout(capture_sizes_row, 7, 1)
-    capture_layout.addWidget(QtWidgets.QLabel("Queue playback output"), 8, 0)
-    pipeline_playback_device_combo = QtWidgets.QComboBox()
-    pipeline_playback_device_combo.setObjectName("pipelinePlaybackDeviceCombo")
-    capture_layout.addWidget(pipeline_playback_device_combo, 8, 1)
+    # Compatibility handle: all playback paths share one selector.
+    pipeline_playback_device_combo = output_device_combo
     purge_after_playback_check = QtWidgets.QCheckBox("Purge items after Queue playback")
     purge_after_playback_check.setObjectName("purgeAfterPlaybackCheck")
     capture_layout.addWidget(purge_after_playback_check, 9, 0, 1, 2)
@@ -865,6 +878,8 @@ def build_queue_panel(qt_modules):
     reactive_group = QtWidgets.QGroupBox("Reactive Technical Settings")
     reactive_group.setObjectName("reactiveSettingsGroup")
     reactive_layout = QtWidgets.QGridLayout(reactive_group)
+    reactive_layout.addWidget(QtWidgets.QLabel("Reactive audio input"), 35, 0)
+    reactive_layout.addWidget(input_device_combo, 35, 1)
     reactive_layout.addWidget(QtWidgets.QLabel("Render mode"), 0, 0)
     reactive_render_mode_combo = QtWidgets.QComboBox()
     for label, data in (("Scroll", "scroll"), ("Pulse", "pulse"), ("Solid", "solid"), ("Breathe", "breathe")):
@@ -3249,6 +3264,7 @@ def build_queue_panel(qt_modules):
         capture_naming_combo=capture_naming_combo,
         capture_buffer_spin=capture_buffer_spin,
         capture_source_combo=capture_source_combo,
+        capture_route_status_label=capture_route_status_label,
         capture_sample_rate_spin=capture_sample_rate_spin,
         capture_channels_spin=capture_channels_spin,
         capture_frame_size_spin=capture_frame_size_spin,

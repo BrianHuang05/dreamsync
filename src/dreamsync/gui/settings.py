@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+import sys
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,30 @@ def default_settings_path() -> Path:
     if appdata:
         return Path(appdata) / "DreamSync" / "gui-settings.json"
     return Path.home() / ".dreamsync" / "gui-settings.json"
+
+
+def resolve_gui_audio_settings(settings: GuiSettings) -> GuiSettings:
+    """Resolve one playback choice and the active launcher-owned Linux capture route."""
+    playback = settings.selected_output_audio_device_id
+    capture = settings.capture_settings
+    if sys.platform.startswith("linux"):
+        playback = None
+        # The active launcher, rather than next-start preferences or a stale
+        # saved device pattern, owns the capture endpoint for this session.
+        sink = os.environ.get("DREAMSYNC_ALOOP_PLAYBACK_SINK", "")
+        source = os.environ.get("DREAMSYNC_ALOOP_CAPTURE_SOURCE", "")
+        if not sink or source != f"{sink}.monitor":
+            source = os.environ.get("PULSE_SOURCE", "")
+            if source != "dreamsync_live_capture.monitor":
+                source = ""
+        capture = replace(capture, device_pattern=source)
+    elif playback is None:
+        playback = capture.pipeline_playback_device_id
+    return replace(
+        settings,
+        selected_output_audio_device_id=playback,
+        capture_settings=replace(capture, pipeline_playback_device_id=playback),
+    )
 
 
 @dataclass(frozen=True)
@@ -93,11 +118,14 @@ class GuiSettingsStore:
 
     def load(self) -> GuiSettings:
         if not self._path.exists():
-            return GuiSettings()
+            return resolve_gui_audio_settings(GuiSettings())
         raw = json.loads(self._path.read_text(encoding="utf-8"))
         capture_raw = raw.get("capture_settings", {}) or {}
         learned_raw = raw.get("learned_live_settings", {}) or {}
         reactive_raw = raw.get("reactive_settings", {}) or {}
+        playback = raw.get("playback_audio_device_id", raw.get("selected_output_audio_device_id"))
+        if "playback_audio_device_id" not in raw and playback is None:
+            playback = capture_raw.get("pipeline_playback_device_id")
         rotation_profiles = tuple(
             str(value) for value in reactive_raw.get("rotation_profiles", ())
         )
@@ -114,7 +142,7 @@ class GuiSettingsStore:
             # list was cleared.  Starting Reactive should still be possible;
             # use the active profile until the user configures a new rotation.
             profile_strategy = "active_profile"
-        return GuiSettings(
+        return resolve_gui_audio_settings(GuiSettings(
             linux_launcher=from_data(raw.get("linux_launcher", {}) or {}),
             last_config_path=str(raw.get("last_config_path", "")),
             last_profile_path=str(raw.get("last_profile_path", "")),
@@ -128,8 +156,8 @@ class GuiSettingsStore:
             output_target_mode=str(raw.get("output_target_mode", "simulation")),
             dark_mode=bool(raw.get("dark_mode", False)),
             selected_output_audio_device_id=(
-                int(raw["selected_output_audio_device_id"])
-                if raw.get("selected_output_audio_device_id") is not None
+                int(playback)
+                if playback is not None
                 else None
             ),
             selected_live_input_device_id=_parse_input_device_id(
@@ -275,8 +303,8 @@ class GuiSettingsStore:
                 hop_size=int(capture_raw.get("hop_size", 512)),
                 blocksize=int(capture_raw.get("blocksize", 1024)),
                 pipeline_playback_device_id=(
-                    int(capture_raw["pipeline_playback_device_id"])
-                    if capture_raw.get("pipeline_playback_device_id") is not None
+                    int(playback)
+                    if playback is not None
                     else None
                 ),
                 purge_after_playback=bool(capture_raw.get("purge_after_playback", False)),
@@ -456,11 +484,18 @@ class GuiSettingsStore:
                     reactive_raw.get("chain_max_dwell_seconds", 180.0)
                 ),
             ),
-        )
+        ))
 
     def save(self, settings: GuiSettings) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        settings = resolve_gui_audio_settings(settings)
         payload: dict[str, Any] = asdict(settings)
+        payload.pop("selected_output_audio_device_id")
+        payload["capture_settings"].pop("pipeline_playback_device_id")
+        if sys.platform.startswith("linux"):
+            payload["capture_settings"].pop("device_pattern")
+        else:
+            payload["playback_audio_device_id"] = settings.selected_output_audio_device_id
         self._path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 

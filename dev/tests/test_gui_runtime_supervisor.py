@@ -507,7 +507,10 @@ def test_runtime_supervisor_uses_routing_and_runtime_settings_for_launches(tmp_p
 
     assert local_call[2]["simulation_only"] is False
     assert local_call[2]["fallback_to_simulation"] is False
-    assert local_call[2]["audio_device"] == 8
+    assert local_call[2]["audio_device"] == 4
+    assert saved_call[2]["audio_device"] == 4
+    assert supervisor.snapshot().routing_state.selected_output_audio_device_id == 4
+    assert supervisor.snapshot().capture_settings.pipeline_playback_device_id == 4
     assert saved_call[2]["baked_playback_mode"] == "require"
     assert reactive_call[2]["audio_device"] == 5
     assert reactive_call[2]["render_mode"] == "pulse"
