@@ -31,6 +31,9 @@ def test_linux_launcher_supports_spotify_desktop_and_closes_its_audio_source():
     assert 'start_audio_source_route_watcher "$(basename "$browser")"' in script
     assert 'pactl move-sink-input "$input_id" "$browser_sink"' in script
     assert 'setsid pavucontrol' in script
+    assert 'pavucontrol_pid=""' in script
+    assert 'pavucontrol_pid=$!' in script
+    assert 'kill -- "-$pavucontrol_pid"' in script
     assert 'pavucontrol is not installed' in script
     assert 'kill -- "-$audio_source_pid"' in script
     assert 'DREAMSYNC_ALOOP_PLAYBACK_SINK' in script

@@ -109,6 +109,7 @@ fi
 route_active=true
 audio_source_pid=""
 audio_source_watcher_pid=""
+pavucontrol_pid=""
 launcher_pid="$$"
 
 sink_input_ids_for_process() {
@@ -155,6 +156,13 @@ start_audio_source_route_watcher() {
 }
 
 cleanup() {
+    if [[ -n "${pavucontrol_pid:-}" ]] && kill -0 "$pavucontrol_pid" 2>/dev/null; then
+        # pavucontrol also runs in its own session, so this only closes the
+        # diagnostic window opened by this launcher.
+        kill -- "-$pavucontrol_pid" 2>/dev/null || kill "$pavucontrol_pid" 2>/dev/null || true
+        wait "$pavucontrol_pid" 2>/dev/null || true
+    fi
+    pavucontrol_pid=""
     if [[ -n "${audio_source_watcher_pid:-}" ]] && kill -0 "$audio_source_watcher_pid" 2>/dev/null; then
         kill "$audio_source_watcher_pid" 2>/dev/null || true
         wait "$audio_source_watcher_pid" 2>/dev/null || true
@@ -247,6 +255,7 @@ fi
 
 if command -v pavucontrol >/dev/null; then
     setsid pavucontrol >/dev/null 2>&1 &
+    pavucontrol_pid=$!
     echo "Opening pavucontrol to verify Playback and Recording routes."
 else
     echo "pavucontrol is not installed; install it to inspect audio routing." >&2
