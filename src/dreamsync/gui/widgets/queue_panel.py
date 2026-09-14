@@ -616,6 +616,7 @@ def build_queue_panel(qt_modules):
     config_layout.addWidget(playback_info_group)
 
     controls_scroll = QtWidgets.QScrollArea()
+    controls_scroll.setObjectName("configControlsScroll")
     controls_scroll.setWidgetResizable(True)
     config_layout.addWidget(controls_scroll, 1)
     controls_container = QtWidgets.QWidget()

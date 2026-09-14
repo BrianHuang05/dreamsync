@@ -294,13 +294,15 @@ On its first run it uses the current default physical sink, then remembers that 
 Then route the desired application to **DreamSync Live Capture** in
 `pavucontrol` and run capture with `--capture-source dreamsync_live_capture.monitor`.
 
-For a cold-boot Live Learning startup, use the launcher instead. It creates the
-route, makes DreamSync Live Capture the Pulse default for new application
-streams, opens Firefox, then starts the DreamSync command after `--`:
+For daily desktop startup, save **Config → Linux launcher** once, then run
+the command below. Choose the audio route and source, physical PipeWire sink,
+Firefox executable/profile, and initial URL (for Spotify Web, enter
+`https://open.spotify.com/`). These settings apply at the next launcher start.
+The launcher creates the route, routes the source application's audio, and
+starts DreamSync with the physical playback sink and capture monitor:
 
 ```bash
 ./dev/scripts/start_linux_dreamsync.sh \
-  --browser-url https://open.spotify.com/ \
   -- python -m dreamsync gui --config dev/devices.yaml
 ```
 
@@ -309,6 +311,31 @@ separate Firefox instance so its audio stream receives the route requested by
 the launcher. Create that profile once with Firefox's profile manager and sign
 in to Spotify there. Override the profile name only when needed with
 `--browser-profile NAME`.
+
+On Linux, **Save Configuration** writes the launcher bridge atomically to
+`$XDG_CONFIG_HOME/dreamsync/linux-launcher.json`, or
+`~/.config/dreamsync/linux-launcher.json` when XDG_CONFIG_HOME is unset. The
+same preferences are stored in `~/.dreamsync/gui-settings.json`. Startup uses
+explicit launcher flags over saved settings over defaults (Queue, browser,
+Firefox, `DreamSync`, and an empty URL/physical sink). An empty URL opens no
+specific website; save the Spotify URL to open it automatically. A blank
+physical sink uses the route helper's default/remembered selection. A saved
+explicit sink must exist in the active PipeWire session or startup fails.
+Executable fields accept executable names or paths, including paths with
+spaces, but not shell command snippets. URL values are omitted from startup
+logs because they can contain private tokens.
+
+The **Live startup screen** setting chooses the initial GUI panel independently
+of the launcher's audio route. For Live Learning, select `live-learning` in
+the launcher form (or pass `--route-mode live-learning` as a diagnostic
+override). For Queue, select `spotify-queue` and the Queue startup screen.
+CLI overrides such as `--browser-url https://open.spotify.com/` apply to one
+launch and do not modify saved preferences. To clear the saved URL or physical
+sink for one launch, pass `--browser-url ''` or `--physical-sink ''`.
+
+Sign in to Spotify Web once in the `DreamSync` Firefox profile and manually
+select **Firefox audio output** in Spotify Connect. DreamSync does not change
+that authenticated website selection automatically.
 
 For the Spotify Desktop app (recommended when the browser profile does not
 persist Spotify login), launch it directly into the capture route instead:
@@ -319,25 +346,28 @@ persist Spotify login), launch it directly into the capture route instead:
   -- python -m dreamsync gui --config dev/devices.yaml
 ```
 
-For the delayed Spotify Queue workflow, use the dedicated launcher after the
-manual Loopback check:
+For the delayed Spotify Queue CLI workflow, the dedicated wrapper selects the
+Queue audio route and uses the same saved browser/Spotify source settings:
 
 ```bash
-./dev/scripts/start_linux_spotify_queue.sh \
-  --physical-sink alsa_output.REPLACE_WITH_PHYSICAL_SINK \
-  --playback-device pick
+./dev/scripts/start_linux_spotify_queue.sh
 ```
+
+Use `--playback-device pick` when the CLI playback device needs selecting, or
+`--physical-sink NAME` to override the saved physical sink. `--browser-url URL`
+selects browser mode for that run; `--spotify-command EXECUTABLE` selects
+Spotify Desktop. Neither changes the saved source choice.
 
 It discovers the exact PipeWire ALSA Loopback playback endpoint and prefers
 that sink's associated monitor as the Queue capture source. This avoids the
 silent same-device input exposed by some `snd-aloop` PipeWire profiles. It
-temporarily routes only the Spotify stream to that playback endpoint and
-restores the desktop default immediately. If multiple Loopback endpoints
+routes only the source application's stream to that playback endpoint and
+leaves the desktop default unchanged. If multiple Loopback endpoints
 exist, set the exact endpoint names after inspecting `pactl`:
 
 ```bash
 export DREAMSYNC_ALOOP_PLAYBACK_SINK=alsa_output.REPLACE_WITH_LOOPBACK_SINK
-export DREAMSYNC_ALOOP_CAPTURE_SOURCE=alsa_input.REPLACE_WITH_LOOPBACK_SOURCE
+export DREAMSYNC_ALOOP_CAPTURE_SOURCE=alsa_output.REPLACE_WITH_LOOPBACK_SINK.monitor
 ```
 
 Sign in to Spotify Desktop once using its normal persistent application
@@ -348,6 +378,7 @@ input in the GUI; Queue replay must use a physical output device instead.
 The launcher opens pavucontrol automatically when it is installed, so you can
 confirm the source app is routed to the discovered ALSA Loopback playback sink
 and the recorder is using its paired ALSA Loopback capture source.
+The launcher closes the pavucontrol process it started when DreamSync exits.
 
 Use **Save Configuration** after selecting the capture source and playback
 device. On Linux, these GUI choices persist in

@@ -12,6 +12,7 @@ from dreamsync.gui.models.capture_settings import CaptureSettings, LearnedLiveSe
 from dreamsync.capture.ffmpeg_device import default_capture_pattern
 from dreamsync.gui.models.reactive_settings import ReactiveSettings
 from dreamsync.raw_visualizer import DEFAULT_RAW_VISUALIZER_GRADIENT
+from dreamsync.linux_launcher_settings import LinuxLauncherSettings, from_data
 
 
 def default_settings_path() -> Path:
@@ -24,6 +25,7 @@ def default_settings_path() -> Path:
 
 @dataclass(frozen=True)
 class GuiSettings:
+    linux_launcher: LinuxLauncherSettings = field(default_factory=LinuxLauncherSettings)
     last_config_path: str = ""
     last_profile_path: str = ""
     last_tab: str = "Devices"
@@ -113,6 +115,7 @@ class GuiSettingsStore:
             # use the active profile until the user configures a new rotation.
             profile_strategy = "active_profile"
         return GuiSettings(
+            linux_launcher=from_data(raw.get("linux_launcher", {}) or {}),
             last_config_path=str(raw.get("last_config_path", "")),
             last_profile_path=str(raw.get("last_profile_path", "")),
             last_tab=(

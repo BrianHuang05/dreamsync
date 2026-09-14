@@ -25,6 +25,7 @@ audio_source="browser"
 spotify_command="spotify"
 physical_sink=""
 route_mode="spotify-queue"
+settings_overrides=()
 
 usage() {
     sed -n '2,13p' "$0"
@@ -35,18 +36,22 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --browser)
             browser="${2:?--browser requires a command}"
+            settings_overrides+=(--browser-command "$browser")
             shift 2
             ;;
         --browser-profile)
             browser_profile="${2:?--browser-profile requires a Firefox profile name}"
+            settings_overrides+=(--browser-profile "$browser_profile")
             shift 2
             ;;
         --browser-url)
-            browser_url="${2:?--browser-url requires a URL}"
+            browser_url="${2?--browser-url requires a URL (or empty string)}"
+            settings_overrides+=(--browser-url "$browser_url")
             shift 2
             ;;
         --audio-source)
             audio_source="${2:?--audio-source requires browser or spotify-desktop}"
+            settings_overrides+=(--audio-source "$audio_source")
             if [[ "$audio_source" != "browser" && "$audio_source" != "spotify-desktop" ]]; then
                 echo "--audio-source must be browser or spotify-desktop" >&2
                 exit 2
@@ -55,14 +60,17 @@ while [[ $# -gt 0 ]]; do
             ;;
         --spotify-command)
             spotify_command="${2:?--spotify-command requires a command}"
+            settings_overrides+=(--spotify-command "$spotify_command")
             shift 2
             ;;
         --physical-sink)
-            physical_sink="${2:?--physical-sink requires a sink name}"
+            physical_sink="${2?--physical-sink requires a sink name (or empty string)}"
+            settings_overrides+=(--physical-sink "$physical_sink")
             shift 2
             ;;
         --route-mode)
             route_mode="${2:?--route-mode requires live-learning or spotify-queue}"
+            settings_overrides+=(--route-mode "$route_mode")
             if [[ "$route_mode" != "live-learning" && "$route_mode" != "spotify-queue" ]]; then
                 echo "--route-mode must be live-learning or spotify-queue" >&2
                 exit 2
@@ -86,6 +94,33 @@ done
 if [[ $# -eq 0 ]]; then
     echo "A DreamSync command is required after --." >&2
     usage
+fi
+
+# Parse structured JSON with stdlib Python before touching the audio route.
+# Command substitution preserves the parser's failure status under set -e.
+settings_python="$repo_root/.venv/bin/python"
+if [[ ! -x "$settings_python" ]]; then
+    settings_python="$(command -v python3)" || {
+        echo "python3 or the project virtual environment is required to read launcher settings." >&2
+        exit 1
+    }
+fi
+resolved_settings="$("$settings_python" "$repo_root/src/dreamsync/linux_launcher_settings.py" "${settings_overrides[@]}")"
+mapfile -t settings_values <<< "$resolved_settings"
+route_mode="${settings_values[0]}"
+audio_source="${settings_values[1]}"
+physical_sink="${settings_values[2]}"
+browser="${settings_values[3]}"
+browser_profile="${settings_values[4]}"
+browser_url="${settings_values[5]}"
+spotify_command="${settings_values[6]}"
+source_command="$browser"
+if [[ "$audio_source" == "spotify-desktop" ]]; then
+    source_command="$spotify_command"
+fi
+if ! command -v "$source_command" >/dev/null; then
+    echo "Audio-source executable not found: $source_command" >&2
+    exit 1
 fi
 
 # Desktop autostart does not activate the project's virtual environment, and
@@ -226,6 +261,12 @@ else
         exit 1
     fi
     capture_source="$DREAMSYNC_ALOOP_CAPTURE_SOURCE"
+fi
+
+printf 'Launcher: source=%s route=%s physical=%s capture=%s\n' "$audio_source" "$route_mode" "$physical_sink" "$capture_source"
+if [[ "$audio_source" == "browser" ]]; then
+    # URLs may contain credentials, private query strings, or access tokens.
+    printf 'Browser: %s; profile: %s; initial URL: %s\n' "$browser" "$browser_profile" "${browser_url:+configured (hidden)}"
 fi
 
 if [[ "$audio_source" == "spotify-desktop" ]]; then

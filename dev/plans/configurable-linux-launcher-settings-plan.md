@@ -2,6 +2,17 @@
 
 ## Goal
 
+### Implementation status — 2026-09-14
+
+Implemented on `codex/linux-launcher-settings`: settings model and migration,
+Config form, atomic JSON bridge on Linux Save Configuration, CLI-over-saved
+precedence, Queue wrapper integration, and startup documentation. Defaults
+preserve the empty URL; save `https://open.spotify.com/` in the form once.
+Focused tests cover the real Bash scripts with mocked external processes,
+full GUI save behavior, argument quoting, routing environment, and failures.
+Real PipeWire/audio, Queue playback, and cold-start gates below remain pending
+on the user's Linux machine. No remote host or autostart entry was modified.
+
 Make the Linux startup launcher read user-configurable, persisted settings for
 the audio source and routing it must establish *before* the GUI starts. Keep
 the command line as an explicit diagnostic override. Update the user’s

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import sys
 import threading
 import time
 from dataclasses import replace
@@ -46,6 +47,8 @@ from dreamsync.gui.services import (
     StorageService,
 )
 from dreamsync.gui.settings import GuiSettings, GuiSettingsStore
+from dreamsync.gui.widgets.linux_launcher_form import build_linux_launcher_form
+from dreamsync.linux_launcher_settings import save_bridge
 from dreamsync.profile import BUILTIN_PROFILES_DIR, VALID_MOODS, VALID_RENDER_MODES, resolve_profile_path
 from dreamsync.profile_overrides import (
     SongPaletteAssignment,
@@ -1102,6 +1105,13 @@ def create_main_window(
     tabs.addTab(queue_panel.shows_widget, "Shows")
     tabs.addTab(queue_panel.widget, "Live")
     tabs.addTab(queue_panel.config_widget, "Config")
+    launcher_group, launcher_snapshot = build_linux_launcher_form(
+        QtWidgets, settings.linux_launcher
+    )
+    config_scroll = queue_panel.config_widget.findChild(
+        QtWidgets.QScrollArea, "configControlsScroll"
+    )
+    config_scroll.widget().layout().insertWidget(0, launcher_group)
 
     diagnostics_panel = build_runtime_diagnostics_panel(qt_modules)
     tabs.addTab(diagnostics_panel.widget, "Diagnostics")
@@ -12533,6 +12543,7 @@ def create_main_window(
             window.saveGeometry().toBase64()
         ).decode("ascii")
         return GuiSettings(
+            linux_launcher=launcher_snapshot(),
             last_config_path=(
                 str(queue_panel.device_room_config_path_edit.text()).strip()
                 or str(config_path or settings.last_config_path)
@@ -12647,7 +12658,7 @@ def create_main_window(
             )
             QtWidgets.QMessageBox.warning(
                 window,
-                "Invalid Raw Visualizer Configuration",
+                "Invalid Configuration",
                 str(exc),
             )
             return False
@@ -12680,6 +12691,8 @@ def create_main_window(
         try:
             if settings_store is not None:
                 settings_store.save(snapshot)
+                if sys.platform.startswith("linux"):
+                    save_bridge(snapshot.linux_launcher)
                 persisted_settings_state["value"] = snapshot
         except Exception as exc:
             queue_panel.configuration_save_status_label.setText(
