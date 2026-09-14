@@ -302,8 +302,7 @@ The launcher creates the route, routes the source application's audio, and
 starts DreamSync with the physical playback sink and capture monitor:
 
 ```bash
-./dev/scripts/start_linux_dreamsync.sh \
-  -- python -m dreamsync gui --config dev/devices.yaml
+./dev/scripts/start_linux_dreamsync.sh
 ```
 
 The launcher uses Firefox's persistent `DreamSync` profile and starts a
@@ -311,6 +310,14 @@ separate Firefox instance so its audio stream receives the route requested by
 the launcher. Create that profile once with Firefox's profile manager and sign
 in to Spotify there. Override the profile name only when needed with
 `--browser-profile NAME`.
+
+With no command after `--`, the launcher starts the GUI using the project's
+virtual environment and `dev/devices.yaml` resolved relative to the repository.
+Use `-- python -m dreamsync ...` only to override that default command.
+The physical output field is a dropdown of discovered hardware outputs;
+**Refresh audio outputs** updates it after connecting a device. The automatic
+option keeps the default/remembered behavior. An unavailable saved output
+stays selected until you explicitly choose a replacement.
 
 On Linux, **Save Configuration** writes the launcher bridge atomically to
 `$XDG_CONFIG_HOME/dreamsync/linux-launcher.json`, or

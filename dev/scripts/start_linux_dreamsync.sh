@@ -2,7 +2,8 @@
 # Start the complete DreamSync desktop-session route, audio source, and application.
 #
 # Usage:
-#   ./dev/scripts/start_linux_dreamsync.sh [options] -- <DreamSync command...>
+#   ./dev/scripts/start_linux_dreamsync.sh [options]
+#   Optional custom command: [options] -- <DreamSync command...>
 #
 # Example:
 #   ./dev/scripts/start_linux_dreamsync.sh \
@@ -92,8 +93,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ $# -eq 0 ]]; then
-    echo "A DreamSync command is required after --." >&2
-    usage
+    set -- python -m dreamsync gui --config "$repo_root/dev/devices.yaml"
 fi
 
 # Parse structured JSON with stdlib Python before touching the audio route.

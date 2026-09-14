@@ -71,6 +71,69 @@ def test_form_preserves_disabled_values_and_rejects_invalid_url(monkeypatch):
     assert app is not None
 
 
+def test_sink_dropdown_refresh_and_missing_saved_output(monkeypatch):
+    monkeypatch.setenv('QT_QPA_PLATFORM', 'offscreen')
+    QtWidgets = pytest.importorskip('PySide6.QtWidgets')
+    from dreamsync.gui.widgets.linux_launcher_form import build_linux_launcher_form
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    options = [('alsa_output.usb', 'USB speakers'), ('bluez_output.headphones', 'Headphones')]
+    group, snapshot = build_linux_launcher_form(
+        QtWidgets, LinuxLauncherSettings(physical_sink='alsa_output.usb'),
+        discover_sinks=lambda: tuple(options))
+    combo = group.findChild(QtWidgets.QComboBox, 'linux_launcher_physical_sink')
+    refresh = group.findChild(QtWidgets.QPushButton, 'linux_launcher_refresh_sinks')
+    assert not combo.isEditable()
+    assert snapshot().physical_sink == 'alsa_output.usb'
+    options.clear()
+    refresh.click()
+    assert 'Unavailable' in combo.currentText()
+    assert snapshot().physical_sink == 'alsa_output.usb'
+    options.append(('bluez_output.headphones', 'Headphones'))
+    refresh.click()
+    combo.setCurrentIndex(combo.findData('bluez_output.headphones'))
+    assert snapshot().physical_sink == 'bluez_output.headphones'
+    combo.setCurrentIndex(0)
+    assert snapshot().physical_sink == ''
+    group.close()
+    assert app is not None
+
+
+def test_physical_sink_discovery_excludes_virtual_outputs(monkeypatch):
+    from types import SimpleNamespace
+    from dreamsync.gui.services import audio_device_service as service
+    monkeypatch.setattr(service, 'sys', SimpleNamespace(platform='linux'))
+    rows = [
+        {'name': 'alsa_output.usb', 'description': 'USB speakers'},
+        {'name': 'bluez_output.headphones', 'description': 'Headphones'},
+        {'name': 'alsa_output.platform-snd_aloop.0', 'description': 'Loopback'},
+        {'name': 'alsa_output.custom', 'properties': {'alsa.card_name': 'Loopback'}},
+        {'name': 'dreamsync_capture'}, {'name': 'xrdp-sink'},
+        {'name': 'alsa_output.virtual', 'properties': {'device.class': 'abstract'}},
+    ]
+    def run(args, **kwargs):
+        assert args == ['pactl', '--format=json', 'list', 'sinks']
+        assert kwargs['timeout'] == 3
+        return SimpleNamespace(returncode=0, stdout=json.dumps(rows))
+    monkeypatch.setattr(service.subprocess, 'run', run)
+    assert dict(service.AudioDeviceService().list_physical_sink_options()) == {
+        'alsa_output.usb': 'USB speakers', 'bluez_output.headphones': 'Headphones'}
+
+
+def test_sink_discovery_failure_keeps_saved_selection(monkeypatch):
+    monkeypatch.setenv('QT_QPA_PLATFORM', 'offscreen')
+    QtWidgets = pytest.importorskip('PySide6.QtWidgets')
+    from dreamsync.gui.widgets.linux_launcher_form import build_linux_launcher_form
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    def fail():
+        raise RuntimeError('PipeWire unavailable')
+    group, snapshot = build_linux_launcher_form(
+        QtWidgets, LinuxLauncherSettings(physical_sink='alsa_output.usb'), discover_sinks=fail)
+    assert snapshot().physical_sink == 'alsa_output.usb'
+    assert 'PipeWire unavailable' in group.findChild(QtWidgets.QLabel, 'linux_launcher_sink_status').text()
+    group.close()
+    assert app is not None
+
+
 def test_main_window_save_writes_bridge_only_after_valid_configuration(tmp_path, monkeypatch):
     from pathlib import Path
     from types import SimpleNamespace

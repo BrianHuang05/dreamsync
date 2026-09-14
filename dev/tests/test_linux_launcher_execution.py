@@ -34,7 +34,7 @@ def harness(tmp_path):
         path.write_text('#!/usr/bin/env bash\n' + text, encoding='utf-8', newline='\n')
         path.chmod(0o755)
 
-    executable(binaries / 'python', 'if [[ "$1" == "-m" ]]; then exec "$TEST_APP_COMMAND"; fi\nexec ' + shlex.quote(Path(sys.executable).as_posix()) + ' "$@"\n')
+    executable(binaries / 'python', 'if [[ "$1" == "-m" ]]; then printf "%s\\0" "$@" > "$TEST_APP_ARGS"; exec "$TEST_APP_COMMAND"; fi\nexec ' + shlex.quote(Path(sys.executable).as_posix()) + ' "$@"\n')
     executable(scripts / 'setup_linux_pipewire_capture.sh', """
 if [[ "$1" == "--teardown" ]]; then exit 0; fi
 if [[ "${2:-}" == "missing_sink" ]]; then
@@ -63,18 +63,19 @@ printf '%s\\n%s\\n' "$PULSE_SINK" "$PULSE_SOURCE" > "$TEST_APP_ENV"
            'TEST_SOURCE_ARGS': (tmp_path / 'args').as_posix(),
            'TEST_SOURCE_SINK': (tmp_path / 'source-sink').as_posix(),
            'TEST_APP_ENV': (tmp_path / 'app-env').as_posix(),
+           'TEST_APP_ARGS': (tmp_path / 'app-args').as_posix(),
            'TEST_APP_COMMAND': command.as_posix()}
     settings = LinuxLauncherSettings(browser_command=source.as_posix(), spotify_command=source.as_posix(),
         browser_profile='Profile with spaces', browser_url='https://example.com/?q=$(touch%20oops)&x=1')
     save_bridge(settings, Path(env['XDG_CONFIG_HOME']) / 'dreamsync/linux-launcher.json')
 
-    def run(*args, wrapper=False):
+    def run(*args, wrapper=False, default_command=False):
         bin_path = binaries.as_posix()
         if os.name == 'nt':
             bin_path = '/' + bin_path[0].lower() + bin_path[2:]
         script = scripts / ('start_linux_spotify_queue.sh' if wrapper else 'start_linux_dreamsync.sh')
         invocation = 'export PATH=' + shlex.quote(bin_path) + ':"$PATH"; exec ' + shlex.quote(script.as_posix())
-        command_args = args if wrapper else (*args, '--', command.as_posix())
+        command_args = args if wrapper or default_command else (*args, '--', command.as_posix())
         invocation += ' ' + ' '.join(shlex.quote(a) for a in command_args)
         return subprocess.run([bash, '-c', invocation], env=env, capture_output=True, text=True, timeout=15)
 
@@ -132,3 +133,14 @@ def test_queue_wrapper_preserves_saved_audio_source(harness, source):
     assert f'source={source} route=spotify-queue' in result.stdout
     arguments = Path(env['TEST_SOURCE_ARGS']).read_bytes()
     assert (b'--new-instance' in arguments) == (source == 'browser')
+
+
+def test_no_argument_launcher_starts_gui_with_repo_config(harness):
+    run, env, _ = harness
+    result = run(default_command=True)
+    assert result.returncode == 0, result.stderr
+    arguments = Path(env['TEST_APP_ARGS']).read_bytes().split(b'\0')[:-1]
+    assert arguments[:4] == [b'-m', b'dreamsync', b'gui', b'--config']
+    # Git Bash uses /c/...; either platform's path must point into this fixture.
+    assert arguments[4].endswith(b'/repository with spaces/dev/devices.yaml')
+    assert Path(env['TEST_APP_ENV']).read_text().splitlines() == ['alsa_output.test', 'loopback.monitor']
