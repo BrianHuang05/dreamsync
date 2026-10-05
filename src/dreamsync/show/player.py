@@ -99,7 +99,11 @@ class AudioPlayer:
             import sounddevice as sd
 
             device = self._device
-            if device is None and sys.platform.startswith("linux") and os.environ.get("PULSE_SINK"):
+            if sys.platform.startswith("linux") and os.environ.get("PULSE_SINK"):
+                # A process-scoped Pulse route owns the playback destination.
+                # Numeric PortAudio overrides would bypass it by opening ALSA
+                # hardware (or Loopback) directly. Rediscover the Pulse adapter
+                # for each new player; its index is separate from sink IDs.
                 from dreamsync.audio.system_input import pulse_output_device_id
 
                 device = pulse_output_device_id(sd)

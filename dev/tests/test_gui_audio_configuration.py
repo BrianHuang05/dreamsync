@@ -64,22 +64,58 @@ def test_linux_without_launcher_has_no_stale_capture_fallback(monkeypatch):
     assert "Capture device pattern is required." in resolved.capture_settings.validate()
 
 
-def test_linux_player_opens_pulse_output_instead_of_default_hardware(monkeypatch):
+@pytest.mark.parametrize("selected_device", [None, 7])
+@pytest.mark.parametrize("pulse_index", [0, 1])
+def test_linux_player_opens_pulse_output_instead_of_hardware(monkeypatch, selected_device, pulse_index):
+    from dreamsync.show import player
+    monkeypatch.setattr(player, "sys", SimpleNamespace(platform="linux"))
+    monkeypatch.setenv("PULSE_SINK", "alsa_output.usb_speakers")
+    sd = MagicMock()
+    sd.query_hostapis.return_value = [{"name": "ALSA"}]
+    devices = [{"name": "default", "hostapi": 0, "max_output_channels": 2}]
+    devices.insert(pulse_index, {"name": "pulse", "hostapi": 0, "max_output_channels": 2})
+    sd.query_devices.return_value = devices
+    audio = SimpleNamespace(signal=np.zeros(100, dtype=np.float32))
+    with patch.object(player, "decode_mp3", return_value=audio), patch.dict("sys.modules", sounddevice=sd):
+        playback = player.AudioPlayer(Path("test.mp3"), device=selected_device)
+        playback.play()
+        assert sd.OutputStream.call_args.kwargs["device"] == pulse_index
+        from dreamsync.local_session import _format_audio_output_label
+        with patch("dreamsync.local_session.sys", SimpleNamespace(platform="linux")):
+            assert _format_audio_output_label(selected_device) == "alsa_output.usb_speakers"
+        playback.stop()
+
+
+@pytest.mark.parametrize("platform, pulse_sink", [("linux", ""), ("win32", "alsa_output.usb_speakers")])
+def test_player_preserves_explicit_device_without_linux_pulse_route(monkeypatch, platform, pulse_sink):
+    from dreamsync.show import player
+    monkeypatch.setattr(player, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setenv("PULSE_SINK", pulse_sink)
+    sd = MagicMock()
+    audio = SimpleNamespace(signal=np.zeros(100, dtype=np.float32))
+    with patch.object(player, "decode_mp3", return_value=audio), patch.dict("sys.modules", sounddevice=sd):
+        playback = player.AudioPlayer(Path("test.mp3"), device=7)
+        playback.play()
+        assert sd.OutputStream.call_args.kwargs["device"] == 7
+        sd.query_devices.assert_not_called()
+        playback.stop()
+
+
+def test_launcher_playback_cannot_fall_back_to_explicit_hardware_without_pulse(monkeypatch):
     from dreamsync.show import player
     monkeypatch.setattr(player, "sys", SimpleNamespace(platform="linux"))
     monkeypatch.setenv("PULSE_SINK", "alsa_output.usb_speakers")
     sd = MagicMock()
     sd.query_hostapis.return_value = [{"name": "ALSA"}]
     sd.query_devices.return_value = [
-        {"name": "default", "hostapi": 0, "max_output_channels": 2},
-        {"name": "pulse", "hostapi": 0, "max_output_channels": 2},
+        {"name": "hardware", "hostapi": 0, "max_output_channels": 2},
     ]
     audio = SimpleNamespace(signal=np.zeros(100, dtype=np.float32))
     with patch.object(player, "decode_mp3", return_value=audio), patch.dict("sys.modules", sounddevice=sd):
-        playback = player.AudioPlayer(Path("test.mp3"))
-        playback.play()
-        assert sd.OutputStream.call_args.kwargs["device"] == 1
-        playback.stop()
+        playback = player.AudioPlayer(Path("test.mp3"), device=0)
+        with pytest.raises(RuntimeError, match="Pulse ALSA output endpoint"):
+            playback.play()
+        sd.OutputStream.assert_not_called()
 
 
 def test_pulse_output_requires_output_capability():

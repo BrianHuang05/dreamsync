@@ -6,14 +6,13 @@
 #
 # Optional overrides:
 #   ./dev/scripts/start_linux_spotify_queue.sh --config /path/to/devices.yaml \
-#       --physical-sink alsa_output.usb-Speakers --playback-device 4
+#       --physical-sink alsa_output.usb-Speakers
 
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
 config_path="$repo_root/dev/devices.yaml"
-playback_device=""
 launcher_args=(--route-mode spotify-queue)
 
 usage() {
@@ -26,7 +25,10 @@ while [[ $# -gt 0 ]]; do
         --config) config_path="${2:?--config requires a path}"; shift 2 ;;
         --physical-sink|--browser-profile|--audio-source)
             launcher_args+=("$1" "${2?option requires a value}"); shift 2 ;;
-        --playback-device) playback_device="${2:?--playback-device requires an ID or pick}"; shift 2 ;;
+        --playback-device)
+            echo "The Linux launcher selects playback by sink name; use --physical-sink NAME instead of --playback-device." >&2
+            exit 2
+            ;;
         --browser|--browser-url)
             launcher_args+=(--audio-source browser "$1" "${2?option requires a value}"); shift 2 ;;
         --spotify-command)
@@ -49,9 +51,6 @@ session_args=(
     --pipeline
     --audio-route spotify-queue
 )
-if [[ -n "$playback_device" ]]; then
-    session_args+=(--playback-device "$playback_device")
-fi
 
 exec "$script_dir/start_linux_dreamsync.sh" "${launcher_args[@]}" -- \
     python -m dreamsync "${session_args[@]}"

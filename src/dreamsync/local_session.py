@@ -32,7 +32,7 @@ _ANALYSIS_CACHE_VERSION = 5
 
 
 def _format_audio_output_label(audio_device: int | None) -> str:
-    if audio_device is None and sys.platform.startswith("linux") and os.environ.get("PULSE_SINK"):
+    if sys.platform.startswith("linux") and os.environ.get("PULSE_SINK"):
         return os.environ["PULSE_SINK"]
     return "system default" if audio_device is None else f"device #{audio_device}"
 

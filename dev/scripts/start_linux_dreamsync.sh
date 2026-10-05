@@ -149,7 +149,7 @@ launcher_pid="$$"
 
 sink_input_ids_for_process() {
     local process_binary="$1"
-    pactl list sink-inputs | awk -v process_binary="$process_binary" '
+    LC_ALL=C pactl list sink-inputs | awk -v process_binary="$process_binary" '
         /^Sink Input #[0-9]+/ {
             input_id = $3
             sub(/^#/, "", input_id)
@@ -169,12 +169,21 @@ route_audio_source_streams() {
     local process_binary="$1"
     local input_id=""
     local current_sink=""
+    local target_sink_id=""
+    # Sink inputs carry numeric sink indices, while our configuration stores
+    # endpoint names. Resolve the name on every pass: both application streams
+    # and PipeWire sinks can be recreated with different runtime indices.
+    target_sink_id="$(pactl list short sinks | awk -v sink="$browser_sink" '$2 == sink { print $1; exit }')"
+    [[ -n "$target_sink_id" ]] || return 0
     while IFS= read -r input_id; do
         [[ -n "$input_id" ]] || continue
         current_sink="$(pactl list short sink-inputs | awk -v id="$input_id" '$1 == id { print $2; exit }')"
-        if [[ -n "$current_sink" && "$current_sink" != "$browser_sink" ]]; then
-            pactl move-sink-input "$input_id" "$browser_sink"
-            echo "Routed ${process_binary} sink input ${input_id} to DreamSync Capture."
+        if [[ -n "$current_sink" && "$current_sink" != "$target_sink_id" ]]; then
+            # A stream can disappear between discovery and the move. Continue
+            # with the remaining streams and retry discovery on the next pass.
+            if pactl move-sink-input "$input_id" "$browser_sink"; then
+                echo "Routed ${process_binary} sink input ${input_id} to DreamSync Capture."
+            fi
         fi
     done < <(sink_input_ids_for_process "$process_binary")
 }

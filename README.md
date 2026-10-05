@@ -312,6 +312,24 @@ plugin; an unavailable Pulse output endpoint produces an explicit error:
 ./dev/scripts/start_linux_dreamsync.sh
 ```
 
+Browser and Spotify playback streams are **sink inputs**, with runtime numeric
+IDs that can change when the application recreates a stream. The configured
+physical output is a **sink**, stored by its endpoint name, for example
+`alsa_output.usb-Generic_AB13X_USB_Audio_20210726905926-00.analog-stereo`.
+That hardware endpoint name normally remains the same for the same device and
+profile; browser stream recreation does not require choosing the physical
+output again. Numeric Pulse sink indices and PortAudio device indices are
+different identifiers and are not persisted as Linux playback destinations.
+
+The launcher rediscovers source stream IDs and resolves the capture sink name
+to its current numeric index on each routing pass. It moves only streams on a
+different sink, using the endpoint name as the destination. This avoids moving
+correctly routed streams every second and tolerates streams disappearing
+during discovery. DreamSync resolves PortAudio's `pulse` output when opening
+each player and honors `PULSE_SINK` ahead of numeric playback-device overrides.
+This keeps simultaneous capture on Loopback and delayed replay on the named
+physical output. See the [audio routing fix and validation notes](dev/plans/linux-audio-routing-fixes.md).
+
 The launcher uses Firefox's persistent `DreamSync` profile and starts a
 separate Firefox instance so its audio stream receives the route requested by
 the launcher. Create that profile once with Firefox's profile manager and sign
@@ -367,8 +385,10 @@ Queue audio route and uses the same saved browser/Spotify source settings:
 ./dev/scripts/start_linux_spotify_queue.sh
 ```
 
-Use `--playback-device pick` when the CLI playback device needs selecting, or
-`--physical-sink NAME` to override the saved physical sink. `--browser-url URL`
+Use `--physical-sink NAME` to override the saved physical sink. The Queue
+launcher rejects `--playback-device`; select the physical sink by name instead.
+Direct CLI playback without a Linux `PULSE_SINK` route still supports numeric
+PortAudio IDs and `--playback-device pick`. `--browser-url URL`
 selects browser mode for that run; `--spotify-command EXECUTABLE` selects
 Spotify Desktop. Neither changes the saved source choice.
 
@@ -386,22 +406,22 @@ export DREAMSYNC_ALOOP_CAPTURE_SOURCE=alsa_output.REPLACE_WITH_LOOPBACK_SINK.mon
 
 Sign in to Spotify Desktop once using its normal persistent application
 profile. Keep the DreamSync Spotify API token separately; it supplies queue
-metadata and capture boundaries. Select the discovered ALSA Loopback capture
-input in the GUI; Queue replay must use a physical output device instead.
+metadata and capture boundaries. The GUI displays the launcher's resolved
+ALSA Loopback monitor; Queue replay uses the configured physical sink.
 
 The launcher opens pavucontrol automatically when it is installed, so you can
 confirm the source app is routed to the discovered ALSA Loopback playback sink
 and the recorder is using its paired ALSA Loopback capture source.
 The launcher closes the pavucontrol process it started when DreamSync exits.
 
-Use **Save Configuration** after selecting the capture source and playback
-device. On Linux, these GUI choices persist in
+Use **Save Configuration** after selecting the launcher's route, audio source,
+and physical sink. On Linux, these preferences persist in
 `~/.dreamsync/gui-settings.json`; `dev/devices.yaml` remains the separate
 hardware/device-layout configuration passed on the command line.
 
 Pass `--physical-sink` when the saved/default physical sink is not the desired speakers or headphones. The launched browser or Spotify Desktop stream is routed automatically, so no `pavucontrol` selection is required after a cold boot.
 
-> **Note:** No VB-Cable loopback ("Listen to this device") is needed. The streaming pipeline captures audio from VB-Cable, processes it (analyze + compile), and plays it back through `--playback-device`. DreamSync itself handles the routing between capture and playback — the only delay is the pipeline processing time between songs.
+> **Windows note:** No VB-Cable loopback ("Listen to this device") is needed. The streaming pipeline captures audio from VB-Cable, processes it (analyze + compile), and plays it back through `--playback-device`. DreamSync itself handles the routing between capture and playback — the only delay is the pipeline processing time between songs.
 >
 > If you're using `govee-live` without `--pipeline` (real-time beat detection only, no show playback), you'll need to hear the music through other means — either enable "Listen to this device" on CABLE Output in the Recording tab, or use a hardware splitter.
 
