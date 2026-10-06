@@ -32,6 +32,7 @@ from dreamsync.output.govee_lan import (
     _ptreal_checksum,
     build_ptreal_brightness_packet,
     build_ptreal_power_packet,
+    build_ptreal_segment_packets,
 )
 
 
@@ -542,6 +543,83 @@ class MultiAdapterBleFollowerTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Stop/start lifecycle tests
 # ---------------------------------------------------------------------------
+
+
+class LatestBleFrameTests(unittest.IsolatedAsyncioTestCase):
+    async def run_updates(self, during_wait, *, wait=True, protocol=BleProtocol.BULB):
+        adapter = GoveeBleAdapter(GoveeBleConfig(address="test", protocol=protocol))
+        adapter._started = True
+        client = SimpleNamespace(
+            connect=AsyncMock(), disconnect=AsyncMock(), is_connected=True,
+        )
+        writes = []
+        sleeps = []
+
+        async def sleep(delay):
+            sleeps.append(delay)
+            if len(sleeps) == 2:  # initialization complete
+                adapter.send_color(255, 0, 0, 20)
+                if wait:
+                    adapter._state.last_send_at = time.monotonic()
+                else:
+                    during_wait(adapter)
+            elif len(sleeps) == 3:
+                during_wait(adapter)
+
+        async def write(_client, packet):
+            writes.append(packet)
+            if packet[:2] == bytes([0x33, 0x05]):
+                adapter._started = False
+
+        adapter._ble_write = write
+        with patch("dreamsync.output.govee_ble._require_bleak", return_value=SimpleNamespace(
+            BleakClient=lambda *args, **kwargs: client,
+        )), patch("dreamsync.output.govee_ble.asyncio.sleep", side_effect=sleep):
+            await adapter._async_loop()
+        client.disconnect.assert_awaited_once()
+        return writes[2:]  # exclude initialization power and brightness
+
+    async def test_latest_color_and_brightness_after_wait(self):
+        def update(adapter):
+            adapter.send_color(0, 255, 0, 40)
+            adapter.send_color(0, 0, 255, 60)
+        self.assertEqual(await self.run_updates(update), [
+            build_ptreal_brightness_packet(60), build_ble_bulb_color_packet(0, 0, 255),
+        ])
+
+    async def test_latest_segment_payload_replaces_solid_color(self):
+        def update(adapter):
+            adapter.send_segment_colors([(1, 2, 3), (4, 5, 6), (7, 8, 9)], 70)
+        self.assertEqual(await self.run_updates(update), [
+            build_ptreal_brightness_packet(70), build_ble_bulb_color_packet(4, 5, 6),
+        ])
+
+    async def test_shutdown_during_wait_does_not_send_stale_frame(self):
+        def update(adapter):
+            adapter._started = False
+            adapter._queue.put_nowait(_SHUTDOWN)
+        self.assertEqual(await self.run_updates(update), [build_ptreal_power_packet(False)])
+
+    async def test_segment_strip_writes_only_latest_segments(self):
+        colors = [(1, 2, 3), (4, 5, 6)]
+        def update(adapter):
+            adapter.send_segment_colors(colors, 100)
+        self.assertEqual(
+            await self.run_updates(update, protocol=BleProtocol.SEGMENT),
+            build_ptreal_segment_packets(colors),
+        )
+
+    async def test_backlog_is_coalesced_without_rate_limit_wait(self):
+        def update(adapter):
+            adapter.send_color(0, 0, 255, 100)
+        self.assertEqual(await self.run_updates(update, wait=False), [
+            build_ble_bulb_color_packet(0, 0, 255),
+        ])
+
+    async def test_single_update_is_preserved(self):
+        self.assertEqual(await self.run_updates(lambda adapter: None), [
+            build_ptreal_brightness_packet(20), build_ble_bulb_color_packet(255, 0, 0),
+        ])
 
 
 class GoveeBleAdapterLifecycleTests(unittest.TestCase):

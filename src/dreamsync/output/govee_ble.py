@@ -504,6 +504,30 @@ class GoveeBleAdapter:
                             pass
                         return
 
+                    # Wait first, then select the newest pending frame. Selecting
+                    # before the wait replays stale colors when producers run
+                    # faster than BLE. Bound the drain so a busy producer cannot
+                    # starve writes; never discard the shutdown sentinel.
+                    now = time.monotonic()
+                    wait = min_interval - (now - self._state.last_send_at)
+                    if wait > 0:
+                        await asyncio.sleep(wait)
+                    for _ in range(self._queue.maxsize):
+                        try:
+                            item = self._queue.get_nowait()
+                        except queue.Empty:
+                            break
+                        if item is _SHUTDOWN:
+                            break
+                    if item is _SHUTDOWN:
+                        try:
+                            await self._ble_write(client, build_ptreal_power_packet(False))
+                        except Exception:
+                            pass
+                        return
+                    if not self._started:
+                        return
+
                     is_segment_frame = (
                         isinstance(item, tuple)
                         and len(item) == 3
@@ -513,12 +537,6 @@ class GoveeBleAdapter:
                         _tag, colors, brightness = item
                     else:
                         r, g, b, brightness = item
-
-                    # Rate limit
-                    now = time.monotonic()
-                    wait = min_interval - (now - self._state.last_send_at)
-                    if wait > 0:
-                        await asyncio.sleep(wait)
 
                     # Update brightness only when changed
                     if brightness != last_brightness:
