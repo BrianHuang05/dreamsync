@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import colorsys
+from dataclasses import replace
+import ipaddress
 import json
 import logging
 import math
@@ -22,6 +24,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from dreamsync.output.govee_ble import BleProtocol, GoveeBleAdapter, GoveeBleConfig
+from dreamsync.output.auto_detect import load_device_config
 
 
 class MeasuredAdapter(GoveeBleAdapter):
@@ -55,11 +58,50 @@ def p95(values):
     return sorted(values)[max(0, math.ceil(len(values) * 0.95) - 1)] if values else None
 
 
-def run_stage(args, rate):
-    adapters = [MeasuredAdapter(GoveeBleConfig(
-        address=address, protocol=BleProtocol(args.protocol),
-        segments=args.segments, max_fps=rate,
-    )) for address in args.address]
+def load_targets(args):
+    """Load enabled BLE entries, retaining each device's protocol and segments."""
+    if not args.config:
+        if not args.protocol:
+            raise ValueError("--protocol is required with --address")
+        return [GoveeBleConfig(address=address, protocol=BleProtocol(args.protocol),
+                               segments=args.segments)
+                for address in dict.fromkeys(a.upper() for a in args.address)]
+    targets = []
+    seen = set()
+    configs = load_device_config(args.config)
+    import yaml
+    raw_entries = yaml.safe_load(args.config.read_text(encoding="utf-8"))["devices"]
+    for cfg, raw in zip(configs, raw_entries):
+        if not bool(raw.get("enabled", True)):
+            print(f"Skipping disabled device: {cfg.name}", flush=True)
+            continue
+        kind = cfg.type
+        if kind == "auto":
+            try:
+                ipaddress.ip_address(cfg.address)
+                kind = "lan"
+            except ValueError:
+                kind = "ble"
+        if kind != "ble":
+            print(f"Skipping {kind.upper()} device: {cfg.name}", flush=True)
+            continue
+        address = cfg.address.upper()
+        if address in seen:
+            raise ValueError(f"Duplicate BLE address in config: {address}")
+        seen.add(address)
+        if not 1 <= cfg.segments <= 56:
+            raise ValueError(f"Invalid segment count for {cfg.name}: {cfg.segments}")
+        targets.append(GoveeBleConfig(
+            address=address, name=cfg.name, protocol=BleProtocol(cfg.protocol or "segment"),
+            segments=cfg.segments,
+        ))
+    if not targets:
+        raise ValueError("Config contains no enabled BLE devices")
+    return targets
+
+
+def run_stage(args, rate, targets):
+    adapters = [MeasuredAdapter(replace(target, max_fps=rate)) for target in targets]
     try:
         for adapter in adapters:
             adapter.start()
@@ -82,8 +124,8 @@ def run_stage(args, rate):
                 baseline_errors[adapter.config.address] = adapter.errors
         began = time.monotonic()
         next_frame = began
-        disconnected = {address: 0 for address in args.address}
-        previously_connected = {address: True for address in args.address}
+        disconnected = {target.address: 0 for target in targets}
+        previously_connected = {target.address: True for target in targets}
         while time.monotonic() - began < args.seconds:
             now = time.monotonic()
             rgb = tuple(round(v * 255) for v in colorsys.hsv_to_rgb(
@@ -108,6 +150,7 @@ def run_stage(args, rate):
             gaps = [(b[0] - a[0]) * 1000 for a, b in zip(samples, samples[1:])]
             durations = [ms for _, ms in samples]
             results.append({
+                "name": adapter.config.name, "protocol": adapter.config.protocol.value,
                 "address": adapter.config.address, "requested_hz": rate,
                 "observed_color_writes_hz": len(samples) / (ended - began),
                 "color_writes": len(samples),
@@ -126,37 +169,67 @@ def run_stage(args, rate):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--address", action="append", required=True,
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--config", type=Path, help="Device YAML; tests enabled BLE entries")
+    source.add_argument("--address", action="append",
                         help="BLE MAC address; repeat to test several lights concurrently")
-    parser.add_argument("--protocol", choices=["bulb", "segment"], required=True,
+    parser.add_argument("--protocol", choices=["bulb", "segment"],
                         help="All selected devices must use this protocol")
     parser.add_argument("--segments", type=int, default=15)
     parser.add_argument("--rates", nargs="+", type=positive, default=[5, 10, 15, 20])
     parser.add_argument("--seconds", type=positive, default=30)
+    parser.add_argument("--mode", choices=["individual", "together", "both"], default=None,
+                        help="Default: both with --config, together with --address")
     parser.add_argument("--output", type=Path, default=Path("ble-rate-results.json"))
     args = parser.parse_args()
     if not 1 <= args.segments <= 56:
         parser.error("--segments must be between 1 and 56")
     if any(rate > 30 for rate in args.rates):
         parser.error("test rates must be at most 30 Hz")
-    args.address = list(dict.fromkeys(args.address))
+    if args.config and args.protocol:
+        parser.error("--config uses each device's protocol; omit --protocol")
+    try:
+        targets = load_targets(args)
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
+    mode = args.mode or ("both" if args.config else "together")
+    groups = []
+    if mode in {"individual", "both"}:
+        groups.extend(("individual", [target]) for target in targets)
+    if mode in {"together", "both"}:
+        groups.append(("together", targets))
     logging.basicConfig(level=logging.WARNING)
     report = {"measurement": "host writes without response; not visible latency",
               "workload": "one solid-color packet per frame, fixed brightness",
-              "results": []}
+              "results": [], "failures": []}
     exit_code = 0
     print(__doc__, flush=True)
     try:
-        for rate in args.rates:
-            print(f"Testing {rate:g} Hz for {args.seconds:g} seconds...", flush=True)
-            rows = run_stage(args, rate)
-            report["results"].extend(rows)
-            print(json.dumps(rows, indent=2), flush=True)
-            if any(r["write_errors"] or r["observed_disconnects"] or
-                   not r["connected_at_end"] or not r["color_writes"] for r in rows):
-                print("Stopping rate sweep after transport failure.", flush=True)
-                exit_code = 1
-                break
+        for phase, group in groups:
+            for rate in args.rates:
+                print(f"Testing {phase}: {', '.join(t.name or t.address for t in group)} "
+                      f"at {rate:g} Hz for {args.seconds:g} seconds...", flush=True)
+                failed = False
+                try:
+                    rows = run_stage(args, rate, group)
+                    for row in rows:
+                        row["phase"] = phase
+                    report["results"].extend(rows)
+                    print(json.dumps(rows, indent=2), flush=True)
+                    failed = any(r["write_errors"] or r["observed_disconnects"] or
+                                 not r["connected_at_end"] or not r["color_writes"] for r in rows)
+                except Exception as exc:
+                    failed = True
+                    report["failures"].append({
+                        "phase": phase, "addresses": [t.address for t in group],
+                        "requested_hz": rate, "error": str(exc),
+                    })
+                    print(f"Stage failed: {exc}", flush=True)
+                args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+                if failed:
+                    print("Skipping higher rates for this group; continuing to next group.", flush=True)
+                    exit_code = 1
+                    break
     except (RuntimeError, KeyboardInterrupt) as exc:
         report["error"] = str(exc) or "Interrupted"
         exit_code = 1

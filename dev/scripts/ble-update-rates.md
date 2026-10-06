@@ -1,5 +1,23 @@
 # BLE update-rate test
 
+## One-command config sweep
+
+```bash
+.venv/bin/python dev/scripts/test_ble_update_rates.py \
+  --config dev/devices.yaml --rates 5 --seconds 30 --output ble-baseline.json
+```
+
+This tests every enabled BLE entry individually, then all together, preserving
+each entry's bulb/segment protocol and segment count. LAN and disabled entries
+are explicitly skipped. A failed individual device is recorded and the sweep
+continues with the next device. A failed group skips its remaining higher rates.
+The together stage requires all selected devices to connect; a setup failure is
+recorded for that group. Results are saved after each stage. No YAML is changed.
+Use `--mode individual` or `--mode together` to run only one phase.
+After the 5 Hz baseline, use `--rates 5 10 15 20` for a rate sweep.
+
+## Explicit addresses
+
 Run on the Linux lighting host with this updated checkout and its existing
 Python environment (including the `bleak` dependency). Stop DreamSync lighting
 output and close Govee Home so the test can own the BLE connections.
