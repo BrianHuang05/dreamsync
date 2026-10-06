@@ -80,6 +80,44 @@ also passed.
 
 ## Linux acceptance check
 
+Start with the one-terminal SSH diagnostic:
+
+```bash
+./dev/scripts/test_linux_audio_duplex.sh \
+  --physical-sink alsa_output.usb-Generic_AB13X_USB_Audio_20210726905926-00.analog-stereo
+```
+
+Stop the current launcher and other source/output audio first. The diagnostic
+uses existing Loopback endpoints; it does not run route setup or change desktop
+defaults. It captures its own 440 Hz source, uses the actual `AudioPlayer` to
+replay that captured PCM, checks playback alone, then checks that recorded
+440 Hz playback continues on the physical output while an 880 Hz source is
+captured through Loopback. It discovers process-owned streams and resolves
+endpoint names to current indices for each snapshot, including the recorder
+sources. Measurements of two middle one-second windows detect silence, wrong
+tones, substantial leakage, and sustained dropouts rather than merely checking
+that a recording file exists. Low levels below -60 dBFS fail.
+
+Outputs under `logs/audio-duplex/` include four measured WAVs, a repeated replay
+WAV, FFmpeg logs, full route snapshots with mute/volume information, and a JSON
+report. Startup/stream failures, wrong routes, incomplete recordings, signal
+failures, and timeouts return a nonzero exit status. Cleanup targets only this
+test's processes and its `AudioPlayer`, including on interruption. The test
+needs neither a graphical session nor Spotify credentials or lighting devices.
+The wrapper uses the project's source and virtualenv, exports the SSH user's
+runtime directory if absent, and clears DISPLAY for its process.
+
+Local validation: 10 diagnostic tests passed, covering correct tones, silence,
+wrong tones, leakage, sustained dropouts, ignoring unrelated pavucontrol peak
+meters, changing endpoint indices, complete stage orchestration, cleanup after
+wrong routing or concurrent-only silence, and missing Loopback rejection before
+starting audio. Bash syntax validation also passed. These use synthetic PCM and
+simulated server snapshots; real Ubuntu/PipeWire execution remains a host test.
+FFmpeg's [device documentation](https://www.ffmpeg.org/ffmpeg-devices.html)
+describes named Pulse input sources and the capture buffering options used here.
+
+After the standalone audio test, complete the application acceptance check:
+
 1. Finish the current capture and exit the launcher cleanly. In the active
    desktop session, inspect `pactl list short sinks` and select the exact
    physical output name in Config. Start the updated Queue launcher, or use

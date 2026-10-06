@@ -414,6 +414,37 @@ confirm the source app is routed to the discovered ALSA Loopback playback sink
 and the recorder is using its paired ALSA Loopback capture source.
 The launcher closes the pavucontrol process it started when DreamSync exits.
 
+To test simultaneous capture and playback from **one SSH terminal**, stop the
+current launcher with Ctrl+C and stop other audio playing into Loopback or the
+selected physical output. Run as the same desktop user, without sudo:
+
+```bash
+./dev/scripts/test_linux_audio_duplex.sh \
+  --physical-sink alsa_output.usb-Generic_AB13X_USB_Audio_20210726905926-00.analog-stereo
+```
+
+Use your host's exact physical sink name from `pactl list short sinks`. The
+script uses `.venv/bin/python`, sets the user runtime directory for SSH, and
+requires `pactl`, FFmpeg/FFprobe, and already-exposed ALSA Loopback endpoints.
+No display, browser, Spotify login, lighting devices, or manual timing is
+needed. If there are multiple Loopback sinks, use `--capture-sink NAME`;
+`--capture-source NAME` overrides its monitor, and `--output-dir PATH` selects
+a new results directory. `DREAMSYNC_PYTHON` can override the virtualenv Python.
+
+In roughly 20 seconds it captures a generated 440 Hz tone, replays that
+recording with DreamSync's real `AudioPlayer` to measure playback alone, then
+repeats playback while capturing a new 880 Hz tone. It checks the process-owned
+stream destinations automatically and measures both monitor recordings for
+sustained signal, the correct tone, and separation between capture and output.
+It prints PASS/FAIL, returns a nonzero status on failure, and keeps recordings,
+FFmpeg logs, route/mute/volume snapshots, and `report.json` under
+`logs/audio-duplex/`. Ctrl+C also cleans up its own processes. It does not change
+the default sink, move existing streams, restart services, or load modules.
+
+A PASS confirms simultaneous signal delivery at the Pulse monitors. Speaker
+audibility still needs in-person verification; this standalone audio test does
+not exercise Spotify track boundaries, the browser watcher, or show compilation.
+
 Use **Save Configuration** after selecting the launcher's route, audio source,
 and physical sink. On Linux, these preferences persist in
 `~/.dreamsync/gui-settings.json`; `dev/devices.yaml` remains the separate
