@@ -63,8 +63,13 @@ def run_stage(args, rate):
     try:
         for adapter in adapters:
             adapter.start()
+        # Initial discovery is shared and connection setup is serialized. Allow
+        # the whole fleet to finish setup instead of timing out a queued bulb.
+        ready_deadline = time.monotonic() + 10 + sum(
+            adapter.config.connect_timeout + 1 for adapter in adapters
+        )
         for adapter in adapters:
-            if not adapter.wait_until_connected(20):
+            if not adapter.wait_until_connected(max(0, ready_deadline - time.monotonic())):
                 raise RuntimeError(f"Could not connect to {adapter.config.address}")
 
         # Warm up brightness and sending before recording this stage.

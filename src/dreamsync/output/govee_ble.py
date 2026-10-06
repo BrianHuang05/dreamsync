@@ -24,6 +24,9 @@ Threading model
 we run the BLE event loop in a dedicated daemon thread.  The main thread
 pushes ``(r, g, b, brightness)`` tuples into a :class:`queue.Queue`; the BLE
 thread drains the queue and writes to the device at a capped rate (~5 Hz).
+Adapters share a discovery cache and serialize connection setup across their
+threads, passing discovered BLEDevice objects to Bleak to avoid implicit scans.
+Established connections continue writing independently of the setup gate.
 """
 
 from __future__ import annotations
@@ -35,7 +38,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Callable
 
 from dreamsync.director import LightingIntent
 from dreamsync.output.govee_lan import (
@@ -248,6 +251,78 @@ class _BleState:
     reconnect_attempts: int = 0
 
 
+class _BleConnectionCoordinator:
+    """Share advertisements and serialize setup across adapter event-loop threads.
+
+    BLEDevice objects contain backend discovery metadata, not connected clients.
+    Each client is still created, used, and disconnected on its owner's loop.
+    The lock must be a threading lock: asyncio locks cannot span these loops.
+    """
+
+    def __init__(self) -> None:
+        self._gate = threading.Lock()
+        self._devices: dict[str, tuple[Any, float]] = {}
+        self._last_scan_at = float("-inf")
+
+    async def connect(
+        self, bleak: Any, config: GoveeBleConfig, active: Callable[[], bool],
+    ) -> Any | None:
+        while not self._gate.acquire(blocking=False):
+            if not active():
+                return None
+            await asyncio.sleep(0.05)
+        client = None
+        address = config.address.upper()
+        try:
+            if not active():
+                return None
+            now = time.monotonic()
+            cached = self._devices.get(address)
+            if cached is None or now - cached[1] >= 30.0:
+                # A missing device must not cause every waiting adapter to scan
+                # again. Failed connections invalidate only their own record.
+                if now - self._last_scan_at >= 5.0:
+                    _logger.info("Scanning BLE devices for shared connection setup")
+                    try:
+                        devices = await bleak.BleakScanner.discover(timeout=5.0)
+                        observed_at = time.monotonic()
+                        self._devices = {
+                            device.address.upper(): (device, observed_at)
+                            for device in devices
+                        }
+                    finally:
+                        self._last_scan_at = time.monotonic()
+                cached = self._devices.get(address)
+            if not active():
+                return None
+            if cached is None or time.monotonic() - cached[1] >= 30.0:
+                raise RuntimeError(f"BLE device {config.address} not found in shared scan")
+            # Passing the discovered object prevents Bleak's implicit scan.
+            client = bleak.BleakClient(cached[0], timeout=config.connect_timeout)
+            await asyncio.wait_for(client.connect(), timeout=config.connect_timeout)
+            if not client.is_connected:
+                raise RuntimeError("BLE disconnected during connection setup")
+            # Force validation while setup is serialized, before any GATT write.
+            client.services
+            if not active():
+                await client.disconnect()
+                return None
+            return client
+        except BaseException:
+            self._devices.pop(address, None)
+            if client is not None:
+                try:
+                    await asyncio.wait_for(client.disconnect(), timeout=5.0)
+                except Exception:
+                    pass
+            raise
+        finally:
+            self._gate.release()
+
+
+_BLE_CONNECTIONS = _BleConnectionCoordinator()
+
+
 class GoveeBleAdapter:
     """Controls a single Govee BLE device as a mood follower.
 
@@ -263,6 +338,8 @@ class GoveeBleAdapter:
         self._started = False
         self._state = _BleState()
         self._lock = threading.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._task: asyncio.Task | None = None
         self._ready_event = threading.Event()
         # Track last payload to avoid redundant writes
         self._last_payload: object | None = None
@@ -289,7 +366,7 @@ class GoveeBleAdapter:
 
     def start(self) -> None:
         """Start the background BLE thread."""
-        if self._started:
+        if self._started or (self._thread is not None and self._thread.is_alive()):
             return
         self._ready_event.clear()
         self._started = True
@@ -305,6 +382,11 @@ class GoveeBleAdapter:
         if not self._started:
             return
         self._started = False
+        # Interrupt scan/connect/backoff as well as output waits. Otherwise an
+        # old worker can outlive stop() and race a subsequent start().
+        with self._lock:
+            if self._loop is not None and self._task is not None:
+                self._loop.call_soon_threadsafe(self._task.cancel)
         # Clear the queue and push the shutdown sentinel
         try:
             while not self._queue.empty():
@@ -317,7 +399,8 @@ class GoveeBleAdapter:
             pass
         if self._thread is not None:
             self._thread.join(timeout=5.0)
-            self._thread = None
+            if not self._thread.is_alive():
+                self._thread = None
         self._ready_event.clear()
 
     def wait_until_connected(self, timeout: float | None = None) -> bool:
@@ -406,11 +489,19 @@ class GoveeBleAdapter:
         """Entry point for the BLE background thread."""
         loop = asyncio.new_event_loop()
         try:
-            loop.run_until_complete(self._async_loop())
+            with self._lock:
+                self._loop = loop
+                self._task = loop.create_task(self._async_loop())
+            loop.run_until_complete(self._task)
+        except asyncio.CancelledError:
+            pass
         except Exception:
             _logger.exception("BLE thread for %s crashed", self.config.address)
         finally:
-            loop.close()
+            with self._lock:
+                self._loop = None
+                self._task = None
+                loop.close()
 
     async def _async_loop(self) -> None:
         """Main async loop: connect, process queue, reconnect on failure."""
@@ -424,37 +515,14 @@ class GoveeBleAdapter:
             if not self._started:
                 return
 
-            # Re-scan to get fresh advertisement data before connecting
-            target_addr = self.config.address
-            if self._state.reconnect_attempts > 0:
-                try:
-                    _logger.info(
-                        "Running BLE scan before reconnecting to %s ...",
-                        target_addr,
-                    )
-                    scanner = bleak.BleakScanner()
-                    discovered = await scanner.discover(timeout=5.0)
-                    found = any(
-                        d.address.upper() == target_addr.upper()
-                        for d in discovered
-                    )
-                    if not found:
-                        _logger.warning(
-                            "BLE device %s not found in scan, will retry",
-                            target_addr,
-                        )
-                        await asyncio.sleep(self.config.reconnect_delay)
-                        continue
-                except Exception as exc:
-                    _logger.debug("BLE pre-connect scan failed: %s", exc)
-
-            client = bleak.BleakClient(
-                target_addr,
-                timeout=self.config.connect_timeout,
-            )
+            client = None
             try:
                 _logger.info("Connecting to BLE device %s ...", self.config.address)
-                await client.connect()
+                client = await _BLE_CONNECTIONS.connect(
+                    bleak, self.config, lambda: self._started and not self.paused,
+                )
+                if client is None:
+                    continue
                 self._state.connected = True
                 self._state.reconnect_attempts = 0
                 _logger.info("Connected to BLE device %s", self.config.address)
@@ -572,8 +640,8 @@ class GoveeBleAdapter:
                 self._ready_event.clear()
                 self._state.connected = False
                 try:
-                    if client.is_connected:
-                        await client.disconnect()
+                    if client is not None:
+                        await asyncio.wait_for(client.disconnect(), timeout=5.0)
                 except Exception:
                     pass
 

@@ -14,6 +14,12 @@ From the repository root, substitute a BLE address from your device configuratio
 
 For bulbs use `--protocol bulb`. For strips supply their actual segment count.
 Repeat `--address` to test several devices of the same protocol concurrently.
+For the H6006 fleet, use `--protocol bulb`. Start with one bulb at `--rates 5`,
+then repeat with additional bulb addresses at the same rate before trying 10
+or 20 Hz. Keep Govee DreamView/Sync Center inactive during these comparisons.
+Discovery is shared within the process and connection setup is serialized;
+startup can take longer as the number of devices increases. This coordination
+does not extend to a separate DreamSync process or another Bluetooth app.
 The test turns the lights on, sets brightness to 30%, and continuously cycles
 colors. It may leave the lights showing the final test color; restart DreamSync
 or use the app afterward. Ctrl+C stops the sweep and saves completed stages.

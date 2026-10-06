@@ -22,6 +22,7 @@ from dreamsync.output.govee_ble import (
     GoveeBleDevice,
     MultiBleAdapter,
     _SHUTDOWN,
+    _BleConnectionCoordinator,
     _scan_ble_devices_async,
     build_ble_bulb_color_packet,
     build_ble_color_packet,
@@ -550,7 +551,7 @@ class LatestBleFrameTests(unittest.IsolatedAsyncioTestCase):
         adapter = GoveeBleAdapter(GoveeBleConfig(address="test", protocol=protocol))
         adapter._started = True
         client = SimpleNamespace(
-            connect=AsyncMock(), disconnect=AsyncMock(), is_connected=True,
+            connect=AsyncMock(), disconnect=AsyncMock(), is_connected=True, services=object(),
         )
         writes = []
         sleeps = []
@@ -574,7 +575,12 @@ class LatestBleFrameTests(unittest.IsolatedAsyncioTestCase):
         adapter._ble_write = write
         with patch("dreamsync.output.govee_ble._require_bleak", return_value=SimpleNamespace(
             BleakClient=lambda *args, **kwargs: client,
-        )), patch("dreamsync.output.govee_ble.asyncio.sleep", side_effect=sleep):
+            BleakScanner=SimpleNamespace(discover=AsyncMock(return_value=[
+                SimpleNamespace(address="test"),
+            ])),
+        )), patch("dreamsync.output.govee_ble._BLE_CONNECTIONS", _BleConnectionCoordinator()), patch(
+            "dreamsync.output.govee_ble.asyncio.sleep", side_effect=sleep,
+        ):
             await adapter._async_loop()
         client.disconnect.assert_awaited_once()
         return writes[2:]  # exclude initialization power and brightness
