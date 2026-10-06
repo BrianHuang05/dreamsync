@@ -1,5 +1,6 @@
 """Config selection and sweep behavior of the manual BLE benchmark."""
 import importlib.util
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -62,3 +63,101 @@ def test_explicit_address_mode_remains_supported(script):
     ))
     assert len(targets) == 1
     assert targets[0].address == "AA"
+
+
+@pytest.mark.parametrize("variant, subscriptions, queries", [
+    ("baseline", 0, 0), ("notify", 1, 0), ("notify-query", 1, 4),
+])
+def test_continuous_stream_queries_and_notifications(script, monkeypatch, variant, subscriptions, queries):
+    clock = [0.0]
+    monkeypatch.setattr(script, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    writes, subscribed = [], []
+
+    class Client:
+        async def start_notify(self, uuid, callback):
+            subscribed.append(uuid)
+            self.callback = callback
+
+        async def write_gatt_char(self, uuid, data, response):
+            assert response is False
+            writes.append(data)
+            if data == script.build_ble_keepalive_packet():
+                self.callback(None, bytearray([0xAA, 0x01, 0x01]))
+
+    adapter = script.MeasuredAdapter(script.GoveeBleConfig(address="AA"), variant)
+    client = Client()
+    color = bytes([0x33, 0x05, 0x0D])
+
+    async def stream():
+        for step in range(50):
+            clock[0] = step / 5
+            await adapter._ble_write(client, color)
+    asyncio.run(stream())
+    report = adapter.session_report(0, 10)
+    assert len(subscribed) == subscriptions
+    assert report["status_queries"] == queries
+    assert report["notifications_received"] == queries
+    assert writes.count(color) == 50
+    assert len(adapter.samples) == 50  # Queries must not inflate color throughput.
+    assert report["session_setup_errors"] == 0
+
+
+def test_reconnect_resubscribes_and_resets_query_deadline(script, monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(script, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    calls = []
+
+    class Client:
+        async def start_notify(self, uuid, callback):
+            calls.append(self)
+
+        async def write_gatt_char(self, *args, **kwargs):
+            pass
+
+    adapter = script.MeasuredAdapter(script.GoveeBleConfig(address="AA"), "notify-query")
+    first, second = Client(), Client()
+
+    async def reconnect():
+        await adapter._ble_write(first, b"color")
+        clock[0] = 10
+        await adapter._ble_write(second, b"color")
+        assert not adapter.queries
+        clock[0] = 12
+        await adapter._ble_write(second, b"color")
+    asyncio.run(reconnect())
+    assert calls == [first, second]
+    assert adapter.queries == [12]
+
+
+def test_subscription_failure_is_not_silently_baseline(script):
+    class Client:
+        async def start_notify(self, *args):
+            raise RuntimeError("notifications unavailable")
+
+    adapter = script.MeasuredAdapter(script.GoveeBleConfig(address="AA"), "notify")
+    with pytest.raises(RuntimeError, match="notifications unavailable"):
+        asyncio.run(adapter._ble_write(Client(), b"color"))
+    assert adapter.session_setups[0]["subscribed"] is False
+    assert "notifications unavailable" in adapter.session_setups[0]["error"]
+    assert not adapter.samples
+
+
+def test_variants_continue_after_baseline_disconnects(script, tmp_path, monkeypatch):
+    calls = []
+    output = tmp_path / "sessions.json"
+
+    def stage(args, rate, targets):
+        calls.append((args.session_variant, rate))
+        return [{"write_errors": 0, "observed_disconnects": int(args.session_variant == "baseline"),
+                 "connected_at_end": True, "color_writes": 10}]
+
+    monkeypatch.setattr(script, "run_stage", stage)
+    monkeypatch.setattr("sys.argv", ["test", "--address", "AA", "--protocol", "bulb",
+                                     "--rates", "5", "10", "--session-variants",
+                                     "baseline", "notify", "notify-query", "--output", str(output)])
+    assert script.main() == 1
+    assert calls == [("baseline", 5), ("notify", 5), ("notify", 10),
+                     ("notify-query", 5), ("notify-query", 10)]
+    assert {r["session_variant"] for r in json.loads(output.read_text())["results"]} == {
+        "baseline", "notify", "notify-query",
+    }

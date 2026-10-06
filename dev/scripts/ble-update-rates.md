@@ -1,5 +1,49 @@
 # BLE update-rate test
 
+## Compare BLE session behavior
+
+Stop other DreamSync output and keep Govee Home and DreamView/Sync Center inactive.
+This command runs three fresh sessions on the same bulb, each measured for 90
+seconds at 5 Hz (about five minutes plus discovery/reconnection time):
+
+```bash
+.venv/bin/python dev/scripts/test_ble_update_rates.py \
+  --address D0:C9:07:95:15:DB --protocol bulb \
+  --rates 5 --seconds 90 \
+  --session-variants baseline notify notify-query \
+  --output bulb-session-results.json 2>&1 | tee bulb-session-test.log
+```
+
+- `baseline`: existing adapter behavior, including idle-only status queries.
+- `notify`: subscribe to Govee state notifications before power/color writes.
+- `notify-query`: subscribe and send an `AA 01` power-state query approximately
+  every two seconds, even during continuous color streaming. The next outgoing
+  write services the deadline; at 5 Hz this can add approximately 200 ms.
+
+These are experimental test variants, not a change to normal DreamSync behavior
+or a proven fix for H6006 disconnects. All variants use the real adapter's
+connection, reconnect and frame-pacing code. Notifications are subscribed again
+after reconnects. A subscription failure is an error, not a fallback to baseline.
+Queries share the color writer and are excluded from color-write throughput.
+The test changes light colors and may leave the final color displayed.
+
+Results include `session_variant`, `status_queries`, `notifications_received`,
+the first 20 notification payloads, and `session_setups` with subscription errors.
+Notification/query counts cover the measurement window. Setup records include
+warmup; their `at` offsets are relative to measurement start, so can be negative.
+These are subscription/setup timestamps, not exact radio connection lifetimes.
+Use btmon to measure link lifetimes. Notification payloads are raw observations,
+not acknowledgments that each color appeared on the bulb.
+
+Disconnects or errors skip higher rates for that variant/device group, but the
+next variant still runs. Completed stages are saved immediately. A nonzero exit
+status is expected if any stage fails, even if a later variant succeeds.
+
+To compare every enabled BLE device individually, replace `--address ...
+--protocol bulb` with `--config dev/devices.yaml --mode individual`. Allow at
+least 4.5 minutes per device. Use only `--session-variants notify-query` to run
+the updated stream alone after the comparison.
+
 ## One-command config sweep
 
 ```bash
