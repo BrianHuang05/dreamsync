@@ -8,6 +8,56 @@ from types import SimpleNamespace
 import pytest
 
 
+@pytest.mark.parametrize("command", ["0d", "02"])
+def test_rgb_command_changes_only_color_and_checksum(script, command):
+    from dreamsync.output.govee_ble import (
+        build_ble_bulb_color_packet, build_ble_manual_mode_packet,
+    )
+    from dreamsync.output.govee_lan import build_ptreal_power_packet, build_ptreal_brightness_packet
+    writes = []
+
+    class Client:
+        async def write_gatt_char(self, uuid, data, response):
+            assert response is False
+            writes.append(data)
+
+    adapter = script.MeasuredAdapter(
+        script.GoveeBleConfig(address="AA", protocol=script.BleProtocol.BULB),
+        bulb_color_command=command,
+    )
+    controls = [build_ptreal_power_packet(True), build_ptreal_brightness_packet(30),
+                build_ble_manual_mode_packet(), script.build_ble_keepalive_packet()]
+    color = build_ble_bulb_color_packet(12, 34, 56)
+
+    async def stream():
+        # Fresh clients exercise first connection and reconnect behavior.
+        for client in [Client(), Client()]:
+            for packet in controls + [color]:
+                await adapter._ble_write(client, packet)
+
+    asyncio.run(stream())
+    for offset in [0, 5]:
+        assert writes[offset:offset + 4] == controls
+        result = writes[offset + 4]
+        assert len(result) == 20
+        assert result[:3] == bytes([0x33, 0x05, int(command, 16)])
+        assert result[3:19] == color[3:19]
+        checksum = 0
+        for byte in result:
+            checksum ^= byte
+        assert checksum == 0
+    assert len(adapter.samples) == 2
+    assert adapter.session_report(0, float("inf"))["bulb_color_command"] == command
+
+
+def test_02_rejects_segment_targets_before_hardware(script, monkeypatch, tmp_path):
+    monkeypatch.setattr("sys.argv", ["test", "--address", "AA", "--protocol", "segment",
+                                     "--bulb-color-command", "02", "--output", str(tmp_path / "out.json")])
+    with pytest.raises(SystemExit) as error:
+        script.main()
+    assert error.value.code == 2
+
+
 @pytest.fixture
 def script():
     path = Path(__file__).parents[1] / "scripts" / "test_ble_update_rates.py"

@@ -26,13 +26,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from dreamsync.output.govee_ble import (
     BleProtocol, GoveeBleAdapter, GoveeBleConfig, build_ble_keepalive_packet,
+    build_ble_color_packet,
 )
 from dreamsync.output.auto_detect import load_device_config
 
 
 class MeasuredAdapter(GoveeBleAdapter):
-    def __init__(self, config, session_variant="baseline"):
+    def __init__(self, config, session_variant="baseline", bulb_color_command="0d"):
+        if bulb_color_command not in {"0d", "02"}:
+            raise ValueError("Unknown bulb color command")
+        if bulb_color_command == "02" and config.protocol != BleProtocol.BULB:
+            raise ValueError("The 02 comparison requires bulb protocol targets")
         super().__init__(config)
+        self.bulb_color_command = bulb_color_command
         self.session_variant = session_variant
         self.samples = []
         self.errors = 0
@@ -84,6 +90,11 @@ class MeasuredAdapter(GoveeBleAdapter):
             self._next_query_at = time.monotonic() + 2.0
 
     async def _record_write(self, client, data):
+        # Diagnostic only: change RGB command and checksum, including warmup
+        # and reconnect writes. Power, brightness, session and pacing stay equal.
+        if (self.bulb_color_command == "02" and len(data) == 20
+                and data[:3] == bytes([0x33, 0x05, 0x0D])):
+            data = build_ble_color_packet(*data[3:6])
         started = time.monotonic()
         try:
             await super()._ble_write(client, data)
@@ -91,7 +102,8 @@ class MeasuredAdapter(GoveeBleAdapter):
             with self.metrics_lock:
                 self.errors += 1
             raise
-        if data[:2] == bytes([0x33, 0x05]):
+        if (data[:2] == bytes([0x33, 0x05]) and len(data) >= 3
+                and data[2] in {0x02, 0x0D, 0x15}):
             with self.metrics_lock:
                 self.samples.append((time.monotonic(), (time.monotonic() - started) * 1000))
         elif data == build_ble_keepalive_packet():
@@ -103,6 +115,7 @@ class MeasuredAdapter(GoveeBleAdapter):
             notifications = [(t, value) for t, value in self.notifications if began <= t <= ended]
             return {
                 "session_variant": self.session_variant,
+                "bulb_color_command": self.bulb_color_command,
                 "status_queries": sum(began <= t <= ended for t in self.queries),
                 "notifications_received": len(notifications),
                 "notification_samples": [
@@ -170,7 +183,8 @@ def load_targets(args):
 
 def run_stage(args, rate, targets):
     adapters = [MeasuredAdapter(replace(target, max_fps=rate),
-                                getattr(args, "session_variant", "baseline")) for target in targets]
+                                getattr(args, "session_variant", "baseline"),
+                                getattr(args, "bulb_color_command", "0d")) for target in targets]
     try:
         for adapter in adapters:
             adapter.start()
@@ -248,6 +262,8 @@ def main():
     parser.add_argument("--segments", type=int, default=15)
     parser.add_argument("--rates", nargs="+", type=positive, default=[5, 10, 15, 20])
     parser.add_argument("--seconds", type=positive, default=30)
+    parser.add_argument("--bulb-color-command", choices=["0d", "02"], default="0d",
+                        help="H6006 diagnostic RGB command; 02 requires only bulb targets")
     parser.add_argument("--session-variants", nargs="+",
                         choices=["baseline", "notify", "notify-query"], default=["baseline"],
                         help="Compare unchanged stream, notifications, and notifications + 2s status queries")
@@ -265,6 +281,8 @@ def main():
         targets = load_targets(args)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
+    if args.bulb_color_command == "02" and any(t.protocol != BleProtocol.BULB for t in targets):
+        parser.error("--bulb-color-command 02 requires only bulb protocol targets")
     mode = args.mode or ("both" if args.config else "together")
     groups = []
     if mode in {"individual", "both"}:
@@ -275,6 +293,7 @@ def main():
     report = {"measurement": "host writes without response; not visible latency",
               "seconds_per_stage": args.seconds,
               "session_variants": args.session_variants,
+              "bulb_color_command": args.bulb_color_command,
               "workload": "one solid-color packet per frame, fixed brightness",
               "results": [], "failures": []}
     exit_code = 0
@@ -286,7 +305,8 @@ def main():
         ):
             args.session_variant = variant
             for rate in args.rates:
-                print(f"Testing {phase}/{variant}: {', '.join(t.name or t.address for t in group)} "
+                print(f"Testing {phase}/{variant}/RGB-{args.bulb_color_command}: "
+                      f"{', '.join(t.name or t.address for t in group)} "
                       f"at {rate:g} Hz for {args.seconds:g} seconds...", flush=True)
                 failed = False
                 try:
@@ -294,6 +314,7 @@ def main():
                     for row in rows:
                         row["phase"] = phase
                         row["session_variant"] = variant
+                        row["bulb_color_command"] = args.bulb_color_command
                     report["results"].extend(rows)
                     print(json.dumps(rows, indent=2), flush=True)
                     failed = any(r["write_errors"] or r["observed_disconnects"] or
@@ -304,6 +325,7 @@ def main():
                     report["failures"].append({
                         "phase": phase, "addresses": [t.address for t in group],
                         "session_variant": variant,
+                        "bulb_color_command": args.bulb_color_command,
                         "requested_hz": rate, "error": str(exc),
                     })
                     print(f"Stage failed: {exc}", flush=True)

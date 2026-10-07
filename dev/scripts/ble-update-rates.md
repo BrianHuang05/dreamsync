@@ -1,5 +1,39 @@
 # BLE update-rate test
 
+## H6006 RGB command comparison (next test)
+
+The H6006 reference at
+https://github.com/flippinhutt/govee-H6006-HA/blob/main/custom_components/govee_h6006/protocols/h6006.py
+uses `33 05 02`; DreamSync currently uses `33 05 0D`. The diagnostic
+`--bulb-color-command 02` substitutes the RGB command and recalculates its
+checksum in the test adapter, including warmup and reconnects. Production code,
+power, brightness, pacing and session setup remain unchanged. This option rejects
+segment targets; select a known H6006 explicitly rather than the mixed config.
+
+With other controllers inactive, run Floor Lamp at 5 Hz in 0D/02/02/0D order
+(six minutes of measurement plus setup). Reversed order helps check whether a
+difference repeats rather than depending only on which command ran first.
+
+```bash
+trial=0
+for command in 0d 02 02 0d; do
+  trial=$((trial + 1))
+  .venv/bin/python -u dev/scripts/test_ble_update_rates.py \
+    --address D0:C9:07:95:15:DB --protocol bulb \
+    --rates 5 --seconds 90 --session-variants baseline \
+    --bulb-color-command "$command" \
+    --output "bulb-rgb-$trial-$command.json" \
+    2>&1 | tee "bulb-rgb-$trial-$command.log"
+done
+```
+
+Record whether colors change, freezes/jumps and approximate freeze times for
+each stage. Share all four JSON/log pairs. Compare disconnects, maximum gaps,
+errors and visible behavior, not just write throughput. A successful write does
+not establish that the bulb accepted the command. If both commands fail similarly,
+this comparison does not resolve the BLE session problem. Do not raise fleet
+rates or change the production command based only on automated tests.
+
 ## Compare BLE session behavior
 
 Stop other DreamSync output and keep Govee Home and DreamView/Sync Center inactive.

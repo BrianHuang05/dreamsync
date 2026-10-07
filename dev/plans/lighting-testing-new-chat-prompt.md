@@ -62,6 +62,13 @@ correlated to BLE test failures. Do not assume the Surface is the root cause.
 
 ## Current LAN investigation
 
+Update from user (2026-10-07): all LAN strips visually validated through 30 Hz.
+Fixed-5-Hz restart tests passed all devices in all six trials for both legacy and
+settled activation. Both ended green; no advantage for settled activation was
+demonstrated and the prior startup failure was not reproduced. User wants to
+move to BLE; do not repeat these LAN tests. Green at release alone is not evidence
+of an in-stream failure; its cause has not been established.
+
 `dev/scripts/test_lan_update_rates.py` measures host UDP send rate/gaps/lateness,
 skipped slots and errors, with changing markers. It uses production packet
 encoders, an absolute-deadline scheduler and persistent socket. It does NOT
@@ -140,12 +147,16 @@ tested notifications and AA01 queries every ~2s during streaming. All variants
 still had four disconnects/90s; subscription worked, query replies arrived.
 This does not reproduce or rule out every Govee session requirement.
 
-Next source-backed comparison NOT IMPLEMENTED: DreamSync bulb RGB uses
+Next source-backed comparison (now implemented in the diagnostic script): DreamSync bulb RGB uses
 `33 05 0D`, while the hardware-verified H6006 implementation below uses
 `33 05 02`. Compare with everything else held constant before more guessed
 keepalives. Reference also polls AA01/AA04/AA05. Do not blindly replace command
 bytes across all models. I use iPhone and prefer existing open-source protocols
 over mandatory capture or buying another controller.
+
+Use `--bulb-color-command 0d|02` on an explicit H6006 with baseline session setup.
+See `dev/scripts/ble-update-rates.md` for the 90-second, 5-Hz 0D/02/02/0D sequence.
+No hardware results for this command comparison yet; production is unchanged.
 
 Sources:
 - https://github.com/flippinhutt/govee-H6006-HA/blob/main/custom_components/govee_h6006/protocols/h6006.py
