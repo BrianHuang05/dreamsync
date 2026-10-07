@@ -1,3 +1,18 @@
+# Device inventory notes (2026-10-06). Versions below are observations, not
+# minimum requirements. LAN scan reports BLE and Wi-Fi hardware/software
+# separately; Govee Home's H6006 version report was not split by radio.
+# Linux host: Surface Pro 6; kernel 6.8.0-136-generic; BlueZ 5.64.
+# Bluetooth: Marvell USB 1286:204c, hci0 C4:9D:ED:A8:F7:AA.
+# Wi-Fi: wlp1s0, observed host IP 10.126.166.154/26, gateway 10.126.166.129.
+# LAN discovery/status replies were blocked by the host firewall; receiving
+# UDP 4002 from 10.126.166.128/26 on wlp1s0 restored discovery. Reply source
+# ports vary. These IPs are observations and may change with DHCP.
+# Also discovered over LAN, not yet assigned to a physical/configured light:
+# H6004 at 10.126.166.142; device ID 04:85:5C:E7:53:6E:DD:20;
+# BLE hardware 1.07.02 / software 1.01.25;
+# Wi-Fi hardware 1.07.02 / software 1.01.25. This is not an H6006 entry.
+# Additional BLE advertisement, not configured: H7021 C8:38:30:32:64:8C;
+# hardware/software versions and LAN support not established here.
 groups:
 - id: test-upper
   name: Test Upper
@@ -29,6 +44,9 @@ groups:
   enabled_by_default: true
 devices:
 - name: Couch strip (H612F)
+  # LAN confirmed; device ID 39:8A:DD:6E:05:86:6A:53.
+  # BLE address DD:6E:05:86:6A:53; hardware 3.05.00 / software 1.03.01.
+  # Wi-Fi hardware 1.04.01 / software 1.06.24 (differs from Blinds strip).
   address: 10.126.166.180
   type: lan
   segments: 12
@@ -118,6 +136,9 @@ devices:
   - strips
   - underlights
 - name: Blinds strip (H612F)
+  # LAN confirmed; device ID 23:70:DE:B6:43:46:7C:3F.
+  # BLE address DE:B6:43:46:7C:3F; hardware 3.05.00 / software 1.03.01.
+  # Wi-Fi hardware 1.04.01 / software 1.03.08.
   address: 10.126.166.155
   type: lan
   segments: 12
@@ -220,6 +241,9 @@ devices:
   - strips
   - test-upper
 - name: Overhead strip (H808A)
+  # LAN confirmed; device ID 2A:65:DA:B9:84:C6:35:57.
+  # BLE address DA:B9:84:C6:35:57; hardware 3.05.00 / software 1.00.23.
+  # Wi-Fi hardware 1.04.01 / software 1.03.08.
   address: 10.126.166.156
   type: lan
   segments: 25
@@ -414,6 +438,8 @@ devices:
   - strips
   - test-upper
 - name: Counter strip (H617A)
+  # BLE advertisement confirmed; hardware/software versions not recorded.
+  # No LAN response observed in this scan; this alone does not prove no support.
   address: C7:90:80:C6:44:74
   type: ble
   segments: 15
@@ -537,6 +563,8 @@ devices:
   - strips
   - underlights
 - name: TV backlight (H6097)
+  # BLE advertisement confirmed; hardware/software versions not recorded.
+  # No LAN response observed in this scan; this alone does not prove no support.
   address: D7:01:86:46:44:59
   type: ble
   segments: 15
@@ -661,6 +689,9 @@ devices:
   - strips
   - test-upper
 - name: Floor Lamp
+  # H6006 (BLE advertisement). User-reported H6006 fleet hardware 1.02.00 /
+  # software 1.00.59; separate BLE/Wi-Fi versions not available. Wi-Fi/cloud
+  # capability does not establish LAN API support; no H6006 LAN reply observed.
   address: D0:C9:07:95:15:DB
   type: ble
   segments: 15
@@ -678,6 +709,7 @@ devices:
   - bulbs
   - mid-level
 - name: Black Lamp
+  # H6006; fleet-reported hardware 1.02.00 / software 1.00.59 (see Floor Lamp).
   address: 98:17:3C:09:7E:ED
   type: ble
   segments: 15
@@ -695,6 +727,7 @@ devices:
   - bulbs
   - mid-level
 - name: Overhead Lamp 1
+  # H6006; fleet-reported hardware 1.02.00 / software 1.00.59 (see Floor Lamp).
   address: D0:C9:07:95:14:8B
   type: ble
   segments: 15
@@ -712,6 +745,7 @@ devices:
   - bulbs
   - test-upper
 - name: Overhead Lamp 2
+  # H6006; fleet-reported hardware 1.02.00 / software 1.00.59 (see Floor Lamp).
   address: D0:C9:07:C5:14:45
   type: ble
   segments: 15
@@ -729,6 +763,7 @@ devices:
   - bulbs
   - test-upper
 - name: Dining Room Light
+  # H6006; fleet-reported hardware 1.02.00 / software 1.00.59 (see Floor Lamp).
   address: D0:C9:07:70:AD:A3
   type: ble
   segments: 15
@@ -746,6 +781,7 @@ devices:
   - bulbs
   - test-upper
 - name: Glass Lamp
+  # H6006; fleet-reported hardware 1.02.00 / software 1.00.59 (see Floor Lamp).
   address: 98:17:3C:07:BA:47
   type: ble
   segments: 15
