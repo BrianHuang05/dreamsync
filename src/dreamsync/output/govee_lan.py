@@ -19,6 +19,7 @@ from dreamsync.groups.models import (
     GroupSelector,
 )
 from dreamsync.output.roles import DeviceRole, DeviceType, adapt_render_mode, transform_intent
+from dreamsync.output.send_metrics import HostSendMetrics
 from dreamsync.render import RenderMode, SegmentRenderer
 from dreamsync.spatial.grid import resolve_grid_cell
 from dreamsync.spatial.models import DevicePlacement, GridCell, SpatialCellState
@@ -295,6 +296,7 @@ class GoveeLanAdapter:
         self._owned_transport = _PersistentUdpTransport() if transport is None else None
         self._transport = transport if transport is not None else self._owned_transport
         self._monotonic = monotonic_fn or time.monotonic
+        self._send_metrics = HostSendMetrics(self._monotonic)
         self._min_frame_interval = 1.0 / max(1, config.fps)
         self._last_frame_at = -1e9
         self.last_send_ok: bool = True
@@ -367,9 +369,17 @@ class GoveeLanAdapter:
             _logger.warning("send_frame failed for %s: %s", self.config.device_ip, exc)
             self.last_send_ok = False
         self._last_frame_at = now
+        self._send_metrics.record(now, self._monotonic(), self.last_send_ok)
         return self.last_send_ok
 
+    def health_snapshot(self):
+        return {"status": "unknown" if self.last_send_ok else "degraded",
+                "error": "" if self.last_send_ok else "Recent LAN UDP send failed locally.",
+                "host_send_unit": "frames",
+                **self._send_metrics.snapshot()}
+
     def turn_on(self) -> None:
+        self._send_metrics.reset()
         if self.config.transport == TransportMode.PTREAL:
             payload = build_ptreal_json([build_ptreal_power_packet(True)])
         else:

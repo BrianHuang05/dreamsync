@@ -7,9 +7,9 @@ Explicit `test_ble_update_rates.py` diagnostics can exceed it for investigation.
 Bulb RGB remains 0D. This caps frame frequency, not every constituent packet;
 brightness changes and segment frames can require additional writes.
 
-Validation of the new 4 Hz rule: 395 integration tests passed, followed by 49
-focused policy/routing tests including six added identity, session-wrapper and
-handoff-recovery checks. No hardware validation of automatic switching has been
+Validation of runtime host measurements and live recovery: 394 affected
+integration tests passed, including strict threshold decisions and recovery
+ownership/safety cases. No hardware validation of automatic switching has been
 performed yet. See `lighting-remaining-tasks.md` for the current assessment.
 
 ## Identity and preference
@@ -33,8 +33,8 @@ paths cannot be selected. Output honors the configured cap and validated rate;
 BLE additionally stays below the global 3 Hz ceiling.
 
 These LAN commands use local Wi-Fi and do not require internet access. Slow
-internet or an internet outage alone does not trigger a switch. A local firewall,
-Wi-Fi/router reachability problem, or unreliable local device responses can.
+internet or an internet outage alone does not trigger a switch. Local send
+failures can reduce the measured rate; silent network loss may be invisible.
 
 ## Fallback behavior and limits
 
@@ -46,14 +46,14 @@ the next starts. Failure to stop a BLE worker retains ownership and blocks a
 second writer.
 
 A background monitor checks every five seconds. During active LAN output, the
-only LAN-to-BLE switching trigger is confirmed usable delivery below **4 Hz**
+LAN-to-BLE switching trigger is successful host frame sends below **4 Hz**
 over three contiguous observation windows, each at least five seconds long.
-Exactly 4 Hz retains LAN. A complete confirmed delivery failure counts as 0 Hz.
+Exactly 4 Hz retains LAN. Zero successful sends under active demand counts as 0 Hz.
 A brief dip or recovered window resets the streak. BLE fallback must already
 have a validated rate and remains capped at 3 Hz.
 
-Observation windows must describe active changing-frame demand of at least
-4 Hz within the configured output cap; static scenes, deliberate low rates and
+Observation windows must describe offered frame demand of at least
+4 Hz within the configured output cap; idle output, deliberate low rates and
 pauses are not link failures. Windows must have finite monotonic timestamps,
 valid frame counts and a consistent source. Duplicate/overlapping windows,
 gaps, stale data and prior-activation data cannot establish persistence.
@@ -61,30 +61,41 @@ The latest observation must end within the past five seconds. Identity and LAN
 endpoint must match the active owner. Recovery arriving before handoff cancels
 the switch without consuming the BLE fallback candidate.
 
-`LanDeliverySample` in `output/lan_rate_policy.py` accepts `device_ack` or
-`visual` frame-count evidence. Report it through
+User decision (2026-10-08): use the benchmark's host-send measurement for switching
+and disclose its limits. The owner counts offered frames and successful local
+sends in live windows. Rate-limited calls are demand, not send errors. Successful
+sends do not establish reception or visible changes.
+
+`LanDeliverySample` also accepts `device_ack` or `visual` frame-count evidence.
+Report confirmed observations through
 `SessionService.report_lan_delivery_sample(address, sample)` or the equivalent
 multi-adapter API. Session and preview wrappers forward to the same owner.
-Health snapshots expose the fresh delivery rate/source, or `unknown`.
+Health snapshots expose the fresh confirmed delivery rate/source, or `unknown`;
+host measurements use separate fields. Host samples are generated internally.
 
-Missing scan replies and local send errors still report LAN degradation, but
-they no longer independently initiate a switch or get converted to a delivered
-rate. Slow/inconsistent scan RTTs are not a throughput measurement. Query
+Missing scan replies report degradation but do not independently initiate a
+switch or get converted to delivery counts. Local send errors reduce successful
+host throughput. Slow/inconsistent scan RTTs are not a throughput measurement. Query
 exceptions report unavailable monitoring, not proof of device failure. LAN
 query ownership is serialized within one process because replies target UDP
 4002; unrelated processes must still be stopped.
 
-**Current acquisition limitation:** no production component currently produces
-confirmed LAN frame-delivery counts. The predicate and observation-routing API
-are implemented, but exact live throughput switching awaits a dependable rate
-source. UDP send success, scan response timing and renderer frame traces cannot
-fill that gap. A device can reply while its streaming output is frozen. Unknown
-delivery keeps LAN; do not enable switching by substituting host-send metrics.
+**Measurement limitation:** no production component currently produces confirmed
+LAN frame-delivery counts. The live host-send rule is operational, as requested,
+but cannot detect a device freezing while UDP sends succeed, or packets silently
+dropped by Wi-Fi/firewalls. Confirmed delivery stays unknown. The app health
+tooltip shows host rate, write p95, maximum gap and send errors over a bounded
+rolling ten-second window, labeled delivery unconfirmed. LAN counts frame sends;
+BLE counts color writes (multiple writes can belong to one frame). Control,
+brightness and keepalive writes are excluded.
 
-Fallback is held for the remainder of the activation. Each route is attempted
-once; there is no automatic return to LAN during a show. This prevents transport
-flapping while the policy is being validated. A new activation evaluates LAN
-again. BLE gets a connection-setup grace period before disconnected checks count.
+While BLE owns the light, LAN identity probes resume after a 30-second cooldown.
+Three successful probes spaced at least five seconds apart permit a LAN trial.
+BLE stops before LAN activation; if activation fails, its BLE writer is restored.
+Failed probes/trials increase retry cooldown up to 120 seconds. A returned LAN
+path is monitored by the same below-4-Hz rule and can fall back again. Identity
+replies authorize a recovery trial, not a claim of confirmed delivery.
+BLE gets a connection-setup grace period before disconnected checks count.
 If no validated fallback exists, health reports degradation and keeps the
 existing owner's reconnect/recovery behavior.
 

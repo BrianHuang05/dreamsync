@@ -19,6 +19,28 @@ class DeviceHealthEntry:
     status: str
     latency_ms: float | None = None
     error: str = ""
+    host_send_hz: float | None = None
+    host_send_ms_p95: float | None = None
+    host_send_gap_ms_max: float | None = None
+    host_send_errors: int = 0
+    host_send_unit: str = "frames"
+
+    @property
+    def host_measurement_text(self) -> str:
+        if self.host_send_hz is None:
+            return ""
+        detail = f"host {self.host_send_hz:.2f} {self.host_send_unit}/s (delivery unconfirmed)"
+        if self.host_send_ms_p95 is not None:
+            detail += f", write p95 {self.host_send_ms_p95:.2f} ms"
+        if self.host_send_gap_ms_max is not None:
+            detail += f", max gap {self.host_send_gap_ms_max:.0f} ms"
+        return detail + f", {self.host_send_errors} send errors"
+
+
+def _host_metrics(observation):
+    return {key: observation[key] for key in (
+        "host_send_hz", "host_send_ms_p95", "host_send_gap_ms_max", "host_send_errors", "host_send_unit"
+    ) if key in observation}
 
 
 @dataclass(frozen=True)
@@ -126,6 +148,7 @@ class DeviceHealthService:
                     device_type=str(observation.get("active_transport") or "auto"),
                     status=str(observation.get("status") or "unknown"),
                     error=str(observation.get("error") or ""),
+                    **_host_metrics(observation),
                 ))
                 continue  # The transport owner performs serialized identity health queries.
             device_type = str(config.type or "").lower()
@@ -140,6 +163,7 @@ class DeviceHealthService:
                         device_type="ble",
                         status=status,
                         error=str(observation.get("error") or "BLE health is available while an output session is connected."),
+                        **_host_metrics(observation),
                     )
                 )
                 continue
@@ -164,6 +188,7 @@ class DeviceHealthService:
                     status=status,
                     latency_ms=latency,
                     error=error,
+                    **_host_metrics(observation),
                 )
             )
         snapshot = DeviceHealthSnapshot(entries=tuple(entries), refreshed_at=time.time())

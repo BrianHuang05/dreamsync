@@ -1,4 +1,4 @@
-"""Gate fallback on sustained, confirmed LAN delivery rather than host sends."""
+"""Gate fallback on sustained LAN rate, preserving the measurement source."""
 from __future__ import annotations
 
 from collections import deque
@@ -10,12 +10,13 @@ LAN_FALLBACK_THRESHOLD_HZ = 4.0
 
 @dataclass(frozen=True)
 class LanDeliverySample:
-    """A complete observation window from device acknowledgments or visual tracking.
+    """A complete window with an explicit host, device or visual source.
 
     expected_frames is the changing-frame workload offered within the configured
     output cap. A static scene/intentional low rate must not masquerade as link loss.
     Timestamp values use the owning adapter's monotonic clock. Neither UDP send
-    success nor scan replies are a source of delivered-frame counts.
+    success nor scan replies confirm delivery. For host_send, delivered_frames
+    means successful local sends only; never report it as confirmed delivery.
     """
 
     device_id: str
@@ -24,11 +25,11 @@ class LanDeliverySample:
     ended_at: float
     expected_frames: int
     delivered_frames: int
-    source: str  # "device_ack" or "visual"
+    source: str  # "device_ack", "visual", or explicitly selected "host_send"
 
     def validate(self):
-        if self.source not in {"device_ack", "visual"}:
-            raise ValueError("LAN delivery requires device_ack or visual evidence")
+        if self.source not in {"device_ack", "visual", "host_send"}:
+            raise ValueError("LAN rate requires device_ack, visual or host_send evidence")
         if not all(math.isfinite(value) for value in (self.started_at, self.ended_at)):
             raise ValueError("LAN delivery timestamps must be finite")
         if self.ended_at <= self.started_at:
@@ -51,7 +52,7 @@ class LanRatePolicy:
     """Require three contiguous windows of >=5s below 4 Hz; exactly 4 Hz passes.
 
     Unknown, stale, idle and out-of-order evidence never initiates fallback.
-    A fresh zero-delivery window under active demand is treated as 0 Hz.
+    A fresh zero-success window under active demand is treated as 0 Hz.
     """
 
     def __init__(self):

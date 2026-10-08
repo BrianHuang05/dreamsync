@@ -23,7 +23,7 @@ Threading model
 ``bleak`` is an asyncio library.  DreamSync's main loop is synchronous, so
 we run the BLE event loop in a dedicated daemon thread.  The main thread
 pushes ``(r, g, b, brightness)`` tuples into a :class:`queue.Queue`; the BLE
-thread drains the queue and writes to the device at a capped rate (~5 Hz).
+thread drains the queue and writes to the device at a capped rate (3 Hz).
 Adapters share a discovery cache and serialize connection setup across their
 threads, passing discovered BLEDevice objects to Bleak to avoid implicit scans.
 Established connections continue writing independently of the setup gate.
@@ -41,6 +41,7 @@ from enum import Enum
 from typing import Any, Callable
 
 from dreamsync.director import LightingIntent
+from dreamsync.output.send_metrics import HostSendMetrics
 from dreamsync.output.govee_lan import (
     _parse_hex_color,
     build_ptreal_brightness_packet,
@@ -338,6 +339,7 @@ class GoveeBleAdapter:
         self._thread: threading.Thread | None = None
         self._started = False
         self._state = _BleState()
+        self._send_metrics = HostSendMetrics(lambda: time.monotonic())
         self._lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._task: asyncio.Task | None = None
@@ -355,6 +357,10 @@ class GoveeBleAdapter:
         return self._thread is not None and self._thread.is_alive()
 
     def health_snapshot(self) -> dict[str, str | int]:
+        return {**self._connection_health_snapshot(), **self._send_metrics.snapshot(),
+                "host_send_unit": "color writes"}
+
+    def _connection_health_snapshot(self) -> dict[str, str | int]:
         """Return connection state owned by this adapter's existing BLE loop."""
         attempts = self._state.reconnect_attempts
         if self._state.connected:
@@ -374,6 +380,7 @@ class GoveeBleAdapter:
         if self._started or (self._thread is not None and self._thread.is_alive()):
             return
         self._ready_event.clear()
+        self._send_metrics.reset()
         self._started = True
         self._thread = threading.Thread(
             target=self._run_loop,
@@ -690,7 +697,15 @@ class GoveeBleAdapter:
 
     async def _ble_write(self, client: Any, data: bytes) -> None:
         """Write a packet to the Govee BLE characteristic."""
-        await client.write_gatt_char(GOVEE_BLE_CHAR_UUID, data, response=False)
+        color_write = data[:2] == b"\x33\x05" and len(data) > 2 and data[2] in {0x02, 0x0D, 0x15}
+        began = time.monotonic()
+        success = False
+        try:
+            await client.write_gatt_char(GOVEE_BLE_CHAR_UUID, data, response=False)
+            success = True
+        finally:
+            if color_write:
+                self._send_metrics.record(began, time.monotonic(), success)
 
 
 # ---------------------------------------------------------------------------

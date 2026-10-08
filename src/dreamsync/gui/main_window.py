@@ -11407,6 +11407,7 @@ def create_main_window(
         detail = "\n".join(
             f"{entry.name} ({entry.device_type}): {entry.status}"
             + (f", {entry.latency_ms:.0f} ms" if entry.latency_ms is not None else "")
+            + (f", {entry.host_measurement_text}" if entry.host_measurement_text else "")
             + (f" — {entry.error}" if entry.error else "")
             for entry in snapshot.entries
         )

@@ -121,7 +121,7 @@ def make_router(config, *, verified=True):
     return SimpleNamespace(router=router, events=events, created=created, now=now, available=available)
 
 
-def test_confirmed_low_lan_rate_releases_before_ble_and_never_switches_back(config):
+def test_low_lan_rate_releases_before_ble_and_requires_repeated_recovery_probes(config):
     test = make_router(config)
     try:
         assert test.router.health_snapshot()["active_transport"] == "lan"
@@ -162,7 +162,7 @@ def test_local_errors_only_count_attempts_not_rate_limited_calls(config):
         test.available[0] = OSError("listener busy")
         test.router.check_health()
         assert "ble-start" not in test.events
-        assert "confirmed delivery rate required" in test.router.health_snapshot()["error"]
+        assert "sustained rate below 4 Hz required" in test.router.health_snapshot()["error"]
     finally:
         test.router.close()
 
@@ -186,7 +186,7 @@ def test_no_unvalidated_fallback(config):
         for _ in range(3):
             test.router.check_health()
         assert "ble-start" not in test.events
-        assert "confirmed delivery rate required" in test.router.health_snapshot()["error"]
+        assert "sustained rate below 4 Hz required" in test.router.health_snapshot()["error"]
         for step in range(1, 4):
             test.now[0] = step * 5
             test.router.report_lan_delivery_sample(LanDeliverySample(
@@ -225,6 +225,133 @@ def test_initial_lan_failure_uses_ble_with_setup_grace_and_no_flapping(config):
             test.router.check_health()
         assert "lan-on" not in test.events
         assert "No available validated fallback" in test.router.health_snapshot()["error"]
+    finally:
+        test.router.close()
+
+
+def drive_host_windows(test, successes, demand=30):
+    start = test.now[0]
+    for window in range(3):
+        for index in range(demand):
+            test.now[0] = start + window * 5 + index * 5 / demand
+            test.created["lan"].rate_limited = index >= successes
+            test.router.send_frame([(index, 2, 3)])
+        test.now[0] = start + (window + 1) * 5
+        test.router.check_health()
+
+
+@pytest.mark.parametrize("successes, switches", [(0, True), (19, True), (20, False), (21, False)])
+def test_runtime_host_rate_drives_strict_threshold(config, successes, switches):
+    test = make_router(config)
+    try:
+        drive_host_windows(test, successes)
+        assert (test.router.health_snapshot()["active_transport"] == "ble") is switches
+        assert test.router.health_snapshot()["lan_delivery_rate_hz"] == "unknown"
+        assert test.router.health_snapshot()["lan_switch_rate_source"] == "host_send"
+    finally:
+        test.router.close()
+
+
+def test_low_producer_demand_and_idle_do_not_trigger_fallback(config):
+    test = make_router(config)
+    try:
+        drive_host_windows(test, 0, demand=15)
+        test.now[0] += 15
+        test.router.check_health()
+        assert test.router.health_snapshot()["active_transport"] == "lan"
+    finally:
+        test.router.close()
+
+
+def test_recovery_returns_to_lan_and_can_fall_back_again(config):
+    test = make_router(config)
+    try:
+        drive_host_windows(test, 15)
+        test.now[0] = 44
+        test.router.check_health()
+        assert test.router.health_snapshot()["active_transport"] == "ble"
+        for tick in [45, 50, 55]:
+            test.now[0] = tick
+            test.router.check_health()
+        assert test.router.health_snapshot()["active_transport"] == "lan"
+        assert test.events.index("ble-stop") < len(test.events) - 2
+        assert test.events[-2:] == ["lan-on", "lan-brightness"]
+        drive_host_windows(test, 15)
+        assert test.router.health_snapshot()["active_transport"] == "ble"
+    finally:
+        test.router.close()
+
+
+def test_recovery_requires_spaced_successes_and_backs_off_failure(config):
+    test = make_router(config, verified=False)
+    try:
+        test.now[0] = 30
+        test.router.check_health()  # Failed probe; next attempt at 60.
+        test.available[0] = True
+        for tick in [35, 40, 45, 59, 60, 60, 60, 64]:
+            test.now[0] = tick
+            test.router.check_health()
+        assert test.router.health_snapshot()["active_transport"] == "ble"
+        for tick in [65, 70]:
+            test.now[0] = tick
+            test.router.check_health()
+        assert test.router.health_snapshot()["active_transport"] == "lan"
+    finally:
+        test.router.close()
+
+
+def test_failed_lan_reactivation_restores_ble_owner(config):
+    test = make_router(config, verified=False)
+    old = test.created["ble"]
+    def fail(_config):
+        raise OSError("LAN activation failed")
+    test.router._lan_factory = fail
+    try:
+        test.available[0] = True
+        for tick in [30, 35, 40]:
+            test.now[0] = tick
+            test.router.check_health()
+        assert test.router.health_snapshot()["active_transport"] == "ble"
+        assert not old.worker_running
+        assert test.events[-2:] == ["ble-stop", "ble-start"]
+    finally:
+        test.router.close()
+
+
+def test_recovery_never_starts_lan_when_ble_cannot_stop(config):
+    test = make_router(config, verified=False)
+    try:
+        test.created["ble"].refuse_stop = True
+        test.available[0] = True
+        for tick in [30, 35, 40, 45]:
+            test.now[0] = tick
+            test.router.check_health()
+        assert test.router.health_snapshot()["active_transport"] == "ble"
+        assert "lan-on" not in test.events
+        assert test.events.count("ble-stop") == 1
+        assert test.router._next_lan_retry_at > 45
+    finally:
+        test.created["ble"].refuse_stop = False
+        test.router.close()
+
+
+def test_pause_resets_recovery_probe_streak(config):
+    test = make_router(config, verified=False)
+    try:
+        test.available[0] = True
+        test.now[0] = 30
+        test.router.check_health()
+        test.router.paused = True
+        test.now[0] = 35
+        test.router.check_health()
+        test.router.paused = False
+        for tick in [40, 45]:
+            test.now[0] = tick
+            test.router.check_health()
+        assert test.router.health_snapshot()["active_transport"] == "ble"
+        test.now[0] = 50
+        test.router.check_health()
+        assert test.router.health_snapshot()["active_transport"] == "lan"
     finally:
         test.router.close()
 
