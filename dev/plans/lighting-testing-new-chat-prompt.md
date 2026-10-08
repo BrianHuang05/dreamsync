@@ -142,6 +142,13 @@ Explicit identity metadata and opt-in automatic selection/fallback are now
 implemented; hardware fallback validation is pending. See
 `dev/plans/lan-ble-transport-selection.md` for policy, limits and next Couch BLE test.
 
+Couch BLE 3 Hz/30-second screen failed: two visible freezes, two disconnects and
+write errors, 72 successful color writes (~2.40/sec), 3.43-second maximum gap.
+The uniform 12-segment workload sends one color packet per frame. Couch remains
+fixed LAN; no validated BLE fallback rate is asserted. Next: separate 1 and 2 Hz
+30-second screens, then longer validation if a rate passes. The 3 Hz production
+ceiling does not imply all BLE devices are reliable at that rate.
+
 Latest decision (2026-10-07): retain `0D` as the accepted RGB command. The
 comparison showed visible updates with 0D, but supplied telemetry still recorded
 4 disconnects/errors and a 9.56-second maximum gap. Both 02 runs stayed connected

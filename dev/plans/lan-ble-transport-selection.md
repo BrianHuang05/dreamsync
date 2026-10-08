@@ -67,6 +67,15 @@ existing owner's reconnect/recovery behavior.
 
 ## Current hardware evidence and next test
 
+Couch BLE 3 Hz screen (2026-10-08): user observed two freezes. Telemetry shows
+72 successful color writes in 30 seconds (~2.40/sec), two write errors and two
+disconnects, maximum gap 3.43 seconds. Reconnect setups were at ~11.37 and
+24.37 seconds after measurement start. This is a failed fallback screen; retain
+Couch on LAN and do not set `ble_validated_fps: 3.0` for it.
+The solid-color workload groups all 12 segments into one color packet per frame,
+so this failure cannot be attributed to 12 color packets per frame. The report's
+`bulb_color_command: 0d` is unused for `protocol: segment`.
+
 LAN strips were visually validated through 30 Hz. Couch, Blinds and Overhead
 have `lan_validated_fps: 30.0`; their existing caps and fixed selection remain.
 Their BLE command behavior and stability are not yet validated, so no
@@ -74,27 +83,30 @@ Their BLE command behavior and stability are not yet validated, so no
 Floor Lamp H6006 passed 1 Hz for 90 seconds and 2–4 Hz short screens, with
 repeated disconnects at 5 Hz. This evidence does not validate other strips' BLE.
 
-With DreamSync/DreamView and Govee Home inactive, test Couch's confirmed BLE
-endpoint at the accepted 3 Hz screening rate:
+With DreamSync/DreamView and Govee Home inactive, screen Couch's confirmed BLE
+endpoint at 1 and 2 Hz in separate sessions. The global 3 Hz cap is a ceiling,
+not a reliability guarantee for every model; a fallback may need a lower rate.
 
 ```bash
-.venv/bin/python -u dev/scripts/test_ble_update_rates.py \
-  --address DD:6E:05:86:6A:53 --protocol segment --segments 12 \
-  --rates 3 --seconds 30 --session-variants baseline \
-  --output couch-ble-3hz.json 2>&1 | tee couch-ble-3hz.log
+for rate in 1 2; do
+  .venv/bin/python -u dev/scripts/test_ble_update_rates.py \
+    --address DD:6E:05:86:6A:53 --protocol segment --segments 12 \
+    --rates "$rate" --seconds 30 --session-variants baseline \
+    --output "couch-ble-${rate}hz.json" 2>&1 | tee "couch-ble-${rate}hz.log"
+done
 ```
 
 Watch for correct color changes, freezes and jumps; share JSON/logs. A clean
 short screen must be followed by longer validation before treating it as a
 reliable fallback. Preserve the config until that evidence is available.
 
-Once the BLE endpoint is visibly correct and stable, the same Couch entry can
-opt in by adding:
+Once the BLE endpoint is visibly correct and stable at a tested rate, the same
+Couch entry can opt in. Example below uses 1 Hz and is not yet validated:
 
 ```yaml
 transport_policy: auto
 protocol: segment
-ble_validated_fps: 3.0
+ble_validated_fps: 1.0
 ```
 
 That entry already has the confirmed addresses and LAN ID/rate. Do not create
