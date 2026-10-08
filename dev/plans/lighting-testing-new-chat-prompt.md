@@ -140,14 +140,15 @@ User preference: validated LAN first, BLE fallback when local LAN fails or
 becomes unreliable. LAN is local Wi-Fi, not the internet connection.
 Explicit identity metadata and opt-in automatic selection/fallback are now
 implemented; hardware fallback validation is pending. See
-`dev/plans/lan-ble-transport-selection.md` for policy, limits and next Couch BLE test.
+`dev/plans/lan-ble-transport-selection.md` for policy, limits and accepted scope.
 
 Couch BLE 3 Hz/30-second screen failed: two visible freezes, two disconnects and
 write errors, 72 successful color writes (~2.40/sec), 3.43-second maximum gap.
 The uniform 12-segment workload sends one color packet per frame. Couch remains
-fixed LAN; no validated BLE fallback rate is asserted. Next: separate 1 and 2 Hz
-30-second screens, then longer validation if a rate passes. The 3 Hz production
-ceiling does not imply all BLE devices are reliable at that rate.
+fixed LAN; no validated BLE fallback rate is asserted. User explicitly declines
+further Couch BLE testing because its LAN path is already verified. Do not repeat
+or request lower-rate Couch BLE screens unless the user later wants that fallback.
+The 3 Hz production ceiling does not imply all BLE devices are reliable at that rate.
 
 Latest decision (2026-10-07): retain `0D` as the accepted RGB command. The
 comparison showed visible updates with 0D, but supplied telemetry still recorded
@@ -209,8 +210,9 @@ aren't proof of that protocol.
    benchmarked. Hardware results show 5 Hz BLE link loss persists.
 2. BLE is capped at 3 Hz by user decision. Longer and fleet validation remain.
 3. Identity unification and automatic transport selection/fallback are implemented
-   as opt-in. Validate Couch BLE first, then controlled fallback. Keep configured
-   LAN paths fixed until their paired BLE paths have dependable evidence.
+   as opt-in. Proceed using verified LAN paths; further Couch BLE validation is
+   out of scope by user decision. Keep configured LAN paths fixed and report
+   degradation on failure rather than selecting an unvalidated BLE fallback.
 4. Automatic return to LAN during a show and silent frame-loss detection remain
    outside the current conservative fallback policy.
 

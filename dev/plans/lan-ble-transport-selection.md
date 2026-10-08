@@ -65,7 +65,7 @@ again. BLE gets a connection-setup grace period before disconnected checks count
 If no validated fallback exists, health reports degradation and keeps the
 existing owner's reconnect/recovery behavior.
 
-## Current hardware evidence and next test
+## Current hardware evidence and accepted scope
 
 Couch BLE 3 Hz screen (2026-10-08): user observed two freezes. Telemetry shows
 72 successful color writes in 30 seconds (~2.40/sec), two write errors and two
@@ -83,32 +83,18 @@ Their BLE command behavior and stability are not yet validated, so no
 Floor Lamp H6006 passed 1 Hz for 90 seconds and 2–4 Hz short screens, with
 repeated disconnects at 5 Hz. This evidence does not validate other strips' BLE.
 
-With DreamSync/DreamView and Govee Home inactive, screen Couch's confirmed BLE
-endpoint at 1 and 2 Hz in separate sessions. The global 3 Hz cap is a ceiling,
-not a reliability guarantee for every model; a fallback may need a lower rate.
+User decision (2026-10-08): stop Couch BLE testing and proceed with its verified
+LAN path. Lower-rate BLE screens are optional future work only if the user wants
+a Couch BLE fallback; they are not prerequisites for using verified LAN devices.
+Keep LAN strips on LAN and existing BLE-only devices capped at 3 Hz. The ceiling
+does not imply every BLE model is reliable at that rate.
 
-```bash
-for rate in 1 2; do
-  .venv/bin/python -u dev/scripts/test_ble_update_rates.py \
-    --address DD:6E:05:86:6A:53 --protocol segment --segments 12 \
-    --rates "$rate" --seconds 30 --session-variants baseline \
-    --output "couch-ble-${rate}hz.json" 2>&1 | tee "couch-ble-${rate}hz.log"
-done
-```
+If a LAN path fails without a validated alternative, report degraded/unavailable
+operation and allow LAN recovery. Do not silently select the failed Couch BLE
+path or claim automatic fallback is hardware-verified. Identity metadata remains
+useful without enabling alternate transport writers.
 
-Watch for correct color changes, freezes and jumps; share JSON/logs. A clean
-short screen must be followed by longer validation before treating it as a
-reliable fallback. Preserve the config until that evidence is available.
-
-Once the BLE endpoint is visibly correct and stable at a tested rate, the same
-Couch entry can opt in. Example below uses 1 Hz and is not yet validated:
-
-```yaml
-transport_policy: auto
-protocol: segment
-ble_validated_fps: 1.0
-```
-
-That entry already has the confirmed addresses and LAN ID/rate. Do not create
-a second BLE entry for the same strip. No need to change Ethernet setup or buy
-hardware. Controlled fallback verification remains pending hardware results.
+Next practical validation is ordinary DreamSync playback with the existing LAN
+strips and BLE-only devices at the accepted caps. Observe fleet freezes and health
+reporting; retain the established LAN/BLE assignments. Automatic fallback stays
+opt-in, with hardware validation pending for any device that needs that feature.
