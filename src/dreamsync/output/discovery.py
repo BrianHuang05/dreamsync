@@ -3,9 +3,22 @@ from __future__ import annotations
 import json
 import logging
 import socket
+import time
+import threading
+from functools import wraps
 from dataclasses import dataclass
 
 _logger = logging.getLogger(__name__)
+_LAN_QUERY_LOCK = threading.RLock()
+
+
+def serialize_lan_queries(function):
+    """Share UDP 4002 ownership among discovery, health and selection queries."""
+    @wraps(function)
+    def query(*args, **kwargs):
+        with _LAN_QUERY_LOCK:
+            return function(*args, **kwargs)
+    return query
 
 MCAST_GRP = "239.255.255.250"
 MCAST_PORT = 4001
@@ -23,6 +36,7 @@ class GoveeDevice:
     sku: str
     device_id: str
     raw: dict
+    response_ms: float | None = None  # Direct scan reply RTT, not visible latency
 
 
 def _local_ipv4_addresses() -> list[str]:
@@ -69,6 +83,7 @@ def _send_multicast_scan(sender: socket.socket) -> None:
         raise OSError(detail)
 
 
+@serialize_lan_queries
 def scan_devices(timeout: float = 5.0) -> list[GoveeDevice]:
     """Scan the local network for Govee LAN-capable devices.
 
@@ -90,8 +105,6 @@ def scan_devices(timeout: float = 5.0) -> list[GoveeDevice]:
 
         devices: list[GoveeDevice] = []
         seen: set[str] = set()
-        import time
-
         start = time.monotonic()
         while time.monotonic() - start < timeout:
             remaining = timeout - (time.monotonic() - start)
@@ -122,6 +135,7 @@ def scan_devices(timeout: float = 5.0) -> list[GoveeDevice]:
         listener.close()
 
 
+@serialize_lan_queries
 def probe_devices(
     ips: list[str],
     timeout: float = 1.0,
@@ -138,21 +152,22 @@ def probe_devices(
         listener.bind(("", LISTEN_PORT))
         listener.settimeout(max(0.01, float(timeout)))
         sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        sent_at: dict[str, float] = {}
         try:
             for ip in unique_ips:
+                sent_at[ip] = time.monotonic()
                 sender.sendto(_SCAN_MSG, (ip, MCAST_PORT))
         finally:
             sender.close()
 
         devices: list[GoveeDevice] = []
         pending = set(unique_ips)
-        import time
-
         deadline = time.monotonic() + max(0.01, float(timeout))
         while pending and time.monotonic() < deadline:
             listener.settimeout(max(0.01, deadline - time.monotonic()))
             try:
                 data, addr = listener.recvfrom(4096)
+                received_at = time.monotonic()
             except socket.timeout:
                 break
             ip = addr[0]
@@ -169,6 +184,7 @@ def probe_devices(
                     sku=str(device_data.get("sku", "")),
                     device_id=str(device_data.get("device", "")),
                     raw=raw,
+                    response_ms=(received_at - sent_at[ip]) * 1000.0,
                 )
             )
             pending.remove(ip)

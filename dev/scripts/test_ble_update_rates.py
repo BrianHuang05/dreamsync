@@ -32,6 +32,10 @@ from dreamsync.output.auto_detect import load_device_config
 
 
 class MeasuredAdapter(GoveeBleAdapter):
+    def _output_rate_hz(self):
+        # Explicit hardware diagnostics can exceed the production safety cap.
+        return max(0.1, self.config.max_fps)
+
     def __init__(self, config, session_variant="baseline", bulb_color_command="0d"):
         if bulb_color_command not in {"0d", "02"}:
             raise ValueError("Unknown bulb color command")

@@ -298,6 +298,7 @@ class GoveeLanAdapter:
         self._min_frame_interval = 1.0 / max(1, config.fps)
         self._last_frame_at = -1e9
         self.last_send_ok: bool = True
+        self.send_error_count: int = 0
         self.paused: bool = False
 
     def close(self) -> None:
@@ -305,11 +306,22 @@ class GoveeLanAdapter:
         if self._owned_transport is not None:
             self._owned_transport.close()
 
+    def release_stream(self) -> None:
+        """Relinquish streaming before another transport takes over."""
+        try:
+            if self.config.transport == TransportMode.RAZER:
+                self._send(build_razer_json(build_razer_activate_packet(False)))
+        except OSError as exc:
+            _logger.warning("Could not release LAN streaming for %s: %s", self.config.device_ip, exc)
+        finally:
+            self.close()
+
     def _send(self, payload: bytes) -> None:
         try:
             self._transport(payload, self.config.device_ip, self.config.port)
         except OSError:
             self.last_send_ok = False
+            self.send_error_count += 1
             raise
         self.last_send_ok = True
 
@@ -658,6 +670,10 @@ class MultiGoveeLanAdapter:
         health: dict[str, dict[str, str | int]] = {}
         for adapter, _renderer, _role, _scale, _placement in self.devices:
             address = adapter.config.device_ip
+            snapshot = getattr(adapter, "health_snapshot", None)
+            if snapshot is not None:
+                health[address] = snapshot()
+                continue
             if adapter.last_send_ok:
                 health[address] = {"status": "unknown", "error": ""}
             else:

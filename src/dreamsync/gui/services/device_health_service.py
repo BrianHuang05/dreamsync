@@ -120,6 +120,14 @@ class DeviceHealthService:
             runtime_health = {}
         for config in configs:
             observation = runtime_health.get(config.address, {})
+            if getattr(config, "transport_policy", "fixed") == "auto":
+                entries.append(DeviceHealthEntry(
+                    name=config.name, address=config.address,
+                    device_type=str(observation.get("active_transport") or "auto"),
+                    status=str(observation.get("status") or "unknown"),
+                    error=str(observation.get("error") or ""),
+                ))
+                continue  # The transport owner performs serialized identity health queries.
             device_type = str(config.type or "").lower()
             if device_type == "auto":
                 device_type = "ble" if ":" in config.address else "lan"

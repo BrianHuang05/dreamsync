@@ -56,6 +56,7 @@ _logger = logging.getLogger(__name__)
 
 GOVEE_BLE_SERVICE_UUID = "00010203-0405-0607-0809-0a0b0c0d1910"
 GOVEE_BLE_CHAR_UUID = "00010203-0405-0607-0809-0a0b0c0d2b11"
+BLE_SAFE_MAX_FPS = 3.0
 
 # BLE device name prefixes used for discovery
 GOVEE_NAME_PREFIXES = ("Govee_", "ihoment_")
@@ -227,7 +228,7 @@ class GoveeBleConfig:
     name: str = ""  # Human-readable name (from discovery)
     protocol: BleProtocol = BleProtocol.SEGMENT  # Command format
     segments: int = 15  # Segment count (only used by SEGMENT protocol)
-    max_fps: float = 5.0  # Maximum color updates per second
+    max_fps: float = BLE_SAFE_MAX_FPS  # Production ceiling; lower per-device limits are allowed
     reconnect_delay: float = 2.0  # Seconds between reconnection attempts
     connect_timeout: float = 10.0  # BLE connection timeout
 
@@ -348,6 +349,10 @@ class GoveeBleAdapter:
     @property
     def connected(self) -> bool:
         return self._state.connected
+
+    @property
+    def worker_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
 
     def health_snapshot(self) -> dict[str, str | int]:
         """Return connection state owned by this adapter's existing BLE loop."""
@@ -506,7 +511,7 @@ class GoveeBleAdapter:
     async def _async_loop(self) -> None:
         """Main async loop: connect, process queue, reconnect on failure."""
         bleak = _require_bleak()
-        min_interval = 1.0 / max(0.1, self.config.max_fps)
+        min_interval = 1.0 / self._output_rate_hz()
 
         while self._started:
             # Wait while paused — don't attempt connections
@@ -666,6 +671,10 @@ class GoveeBleAdapter:
                 self.config.address, delay, self._state.reconnect_attempts,
             )
             await asyncio.sleep(delay)
+
+    def _output_rate_hz(self) -> float:
+        """Enforce the production ceiling even for older configuration files."""
+        return max(0.1, min(BLE_SAFE_MAX_FPS, self.config.max_fps))
 
     async def _next_queued_frame(self):
         """Wait up to 500 ms without blocking BLE callbacks or cancellation."""

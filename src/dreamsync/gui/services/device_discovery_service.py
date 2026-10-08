@@ -326,7 +326,8 @@ class DeviceDiscoveryService:
             protocol=normalized_protocol,
             role=normalized_role,
             brightness_scale=brightness_scale,
-            max_fps=float(max_fps if max_fps is not None else 5.0),
+            max_fps=float(max_fps if max_fps is not None else
+                          (3.0 if normalized_type == "ble" else 5.0)),
             placement=DevicePlacement(x=float(x), y=float(y), z=float(z)),
         )
 
@@ -353,6 +354,18 @@ class DeviceDiscoveryService:
                         config,
                         placement=placement,
                         group_definitions=existing.group_definitions,
+                        device_id=config.device_id or existing.device_id,
+                        lan_address=config.lan_address or existing.lan_address,
+                        ble_address=config.ble_address or existing.ble_address,
+                        transport_policy=existing.transport_policy,
+                        protocol=(config.protocol or existing.protocol
+                                  if existing.transport_policy == "auto" else config.protocol),
+                        transport=(config.transport or existing.transport
+                                   if existing.transport_policy == "auto" else config.transport),
+                        lan_validated_fps=(config.lan_validated_fps if config.lan_validated_fps is not None
+                                           else existing.lan_validated_fps),
+                        ble_validated_fps=(config.ble_validated_fps if config.ble_validated_fps is not None
+                                           else existing.ble_validated_fps),
                     )
                 )
                 updated = True

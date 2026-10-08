@@ -30,6 +30,7 @@ from dreamsync.output.govee_lan import (
     build_ptreal_power_packet,
 )
 from dreamsync.output.roles import DeviceRole, default_device_config, infer_device_type
+from dreamsync.output.discovery import serialize_lan_queries
 from dreamsync.render import RenderMode, SegmentRenderer
 from dreamsync.spatial.mapper import SpatialMapper
 from dreamsync.spatial.models import DevicePlacement, parse_device_placement
@@ -76,6 +77,12 @@ class DeviceConfig:
     max_fps: float = 5.0
     placement: DevicePlacement | None = None
     group_definitions: tuple[GroupDefinition, ...] = ()
+    device_id: str | None = None  # Confirmed physical LAN identity; never guessed from model/name
+    lan_address: str | None = None
+    ble_address: str | None = None
+    transport_policy: str = "fixed"  # opt-in "auto" prefers validated LAN, falls back to BLE
+    lan_validated_fps: float | None = None
+    ble_validated_fps: float | None = None
 
 
 @dataclass(frozen=True)
@@ -120,7 +127,7 @@ class DetectedDevice:
 
     name: str
     address: str
-    connection_type: Literal["lan", "ble", "unreachable"]
+    connection_type: Literal["lan", "ble", "auto", "unreachable"]
     latency: LatencyStats
     role: Literal["realtime", "follower", "slow", "unreachable"]
     config: DeviceConfig
@@ -143,6 +150,7 @@ def _is_ip_address(address: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+@serialize_lan_queries
 def _probe_lan_batch(
     ips: list[str],
     num_packets: int = 5,
@@ -212,6 +220,7 @@ def _probe_lan_batch(
     return {ip: LatencyStats(samples=s) for ip, s in samples.items()}
 
 
+@serialize_lan_queries
 def probe_lan_device(
     ip: str,
     num_packets: int = 100,
@@ -263,7 +272,7 @@ def probe_ble_device(
     address: str,
     protocol: str | None = None,
     num_packets: int = 100,
-    rate_hz: float = 5.0,
+    rate_hz: float = 3.0,
 ) -> LatencyStats:
     """Probe a BLE Govee device by connecting and timing write round-trips.
 
@@ -271,10 +280,10 @@ def probe_ble_device(
     """
     import asyncio
 
-    from dreamsync.output.govee_ble import GOVEE_BLE_CHAR_UUID, _require_bleak
+    from dreamsync.output.govee_ble import BLE_SAFE_MAX_FPS, GOVEE_BLE_CHAR_UUID, _require_bleak
 
     bleak = _require_bleak()
-    interval = 1.0 / max(0.1, rate_hz)
+    interval = 1.0 / max(0.1, min(BLE_SAFE_MAX_FPS, rate_hz))
 
     async def _probe() -> list[float]:
         samples: list[float] = []
@@ -388,17 +397,29 @@ def load_device_config(path: Path) -> list[DeviceConfig]:
             protocol=entry.get("protocol"),
             role=entry.get("role"),
             brightness_scale=float(bs_raw) if bs_raw is not None else None,
-            max_fps=float(entry.get("max_fps", 5.0)),
+            max_fps=float(entry.get("max_fps", 3.0 if entry.get("type", "auto") == "ble"
+                                    or (entry.get("type", "auto") == "auto"
+                                        and not _is_ip_address(entry["address"])) else 5.0)),
             placement=placement,
             group_definitions=group_definitions,
+            device_id=entry.get("device_id"),
+            lan_address=entry.get("lan_address"),
+            ble_address=entry.get("ble_address"),
+            transport_policy=entry.get("transport_policy", "fixed"),
+            lan_validated_fps=float(entry["lan_validated_fps"]) if entry.get("lan_validated_fps") is not None else None,
+            ble_validated_fps=float(entry["ble_validated_fps"]) if entry.get("ble_validated_fps") is not None else None,
         ))
 
+    from dreamsync.output.transport_selection import validate_transport_configs
+    validate_transport_configs(configs)
     return configs
 
 
 def save_device_config(path: Path, configs: list[DeviceConfig]) -> None:
     """Write a list of DeviceConfig objects back to a YAML file."""
     yaml = _require_yaml()
+    from dreamsync.output.transport_selection import validate_transport_configs
+    validate_transport_configs(configs)
     definitions = next(
         (cfg.group_definitions for cfg in configs if cfg.group_definitions),
         (),
@@ -434,6 +455,12 @@ def device_config_to_mapping(config: DeviceConfig) -> dict[str, object]:
         data["brightness_scale"] = config.brightness_scale
     if config.placement is not None:
         data.update(placement_to_mapping(config.placement))
+    for name in ("device_id", "lan_address", "ble_address", "lan_validated_fps", "ble_validated_fps"):
+        value = getattr(config, name)
+        if value is not None:
+            data[name] = value
+    if config.transport_policy != "fixed":
+        data["transport_policy"] = config.transport_policy
     return data
 
 
@@ -464,6 +491,19 @@ def detect_all_devices(
     the caller passed ``--probe-packets``), it overrides both
     *lan_packets* and *ble_packets* for backward compatibility.
     """
+    from dreamsync.output.transport_selection import validate_transport_configs
+    validate_transport_configs(configs)
+    if any(config.transport_policy == "auto" for config in configs):
+        fixed = [config for config in configs if config.transport_policy == "fixed"]
+        fixed_detected = iter(detect_all_devices(
+            fixed, num_packets, rate_hz, lan_packets=lan_packets, ble_packets=ble_packets,
+            lan_rate_hz=lan_rate_hz, ble_rate_hz=ble_rate_hz, parallel=parallel, probe_ble=probe_ble,
+        )) if fixed else iter(())
+        return [DetectedDevice(
+            name=config.name, address=config.address, connection_type="auto",
+            latency=LatencyStats(samples=[]), role="realtime", config=config,
+        ) if config.transport_policy == "auto" else next(fixed_detected) for config in configs]
+
     # Legacy override: if caller explicitly set num_packets, use it everywhere
     _lan_pkt = lan_packets
     _ble_pkt = ble_packets
@@ -734,7 +774,14 @@ def build_multi_adapter(
         device_role = DeviceRole(cfg.role) if cfg.role else default_role
         device_bs = cfg.brightness_scale if cfg.brightness_scale is not None else default_bs
 
-        if dev.connection_type == "lan":
+        if cfg.transport_policy == "auto":
+            from dreamsync.output.adaptive_transport import AdaptiveGoveeAdapter
+            adapter = AdaptiveGoveeAdapter(cfg, fps=fps, brightness=brightness)
+            renderer = SegmentRenderer(segments=cfg.segments, mode=render_mode, mirror=mirror,
+                                       device_type=device_type.value)
+            device_triples.append((adapter, renderer, device_role, device_bs, cfg.placement))
+
+        elif dev.connection_type == "lan":
             transport = dev.transport or TransportMode.PTREAL
             if transport == TransportMode.COLORWC:
                 effective_fps = min(fps, 10)

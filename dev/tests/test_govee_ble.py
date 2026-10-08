@@ -269,7 +269,7 @@ class GoveeBleConfigTests(unittest.TestCase):
         self.assertEqual(cfg.address, "AA:BB:CC:DD:EE:FF")
         self.assertEqual(cfg.name, "")
         self.assertEqual(cfg.segments, 15)
-        self.assertEqual(cfg.max_fps, 5.0)
+        self.assertEqual(cfg.max_fps, 3.0)
         self.assertEqual(cfg.reconnect_delay, 2.0)
         self.assertEqual(cfg.connect_timeout, 10.0)
 

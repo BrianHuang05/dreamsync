@@ -49,6 +49,10 @@ devices:
   # BLE address DD:6E:05:86:6A:53; hardware 3.05.00 / software 1.03.01.
   # Wi-Fi hardware 1.04.01 / software 1.06.24 (differs from Blinds strip).
   address: 10.126.166.180
+  device_id: 39:8A:DD:6E:05:86:6A:53
+  lan_address: 10.126.166.180
+  ble_address: DD:6E:05:86:6A:53
+  lan_validated_fps: 30.0
   type: lan
   segments: 12
   max_fps: 5.0
@@ -142,6 +146,10 @@ devices:
   # BLE address DE:B6:43:46:7C:3F; hardware 3.05.00 / software 1.03.01.
   # Wi-Fi hardware 1.04.01 / software 1.03.08.
   address: 10.126.166.155
+  device_id: 23:70:DE:B6:43:46:7C:3F
+  lan_address: 10.126.166.155
+  ble_address: DE:B6:43:46:7C:3F
+  lan_validated_fps: 30.0
   type: lan
   segments: 12
   max_fps: 5.0
@@ -248,6 +256,10 @@ devices:
   # BLE address DA:B9:84:C6:35:57; hardware 3.05.00 / software 1.00.23.
   # Wi-Fi hardware 1.04.01 / software 1.03.08.
   address: 10.126.166.156
+  device_id: 2A:65:DA:B9:84:C6:35:57
+  lan_address: 10.126.166.156
+  ble_address: DA:B9:84:C6:35:57
+  lan_validated_fps: 30.0
   type: lan
   segments: 25
   max_fps: 5.0
@@ -447,7 +459,7 @@ devices:
   address: C7:90:80:C6:44:74
   type: ble
   segments: 15
-  max_fps: 5.0
+  max_fps: 3.0
   protocol: segment
   role: accent
   x: -0.8935714285714282
@@ -572,7 +584,7 @@ devices:
   address: D7:01:86:46:44:59
   type: ble
   segments: 15
-  max_fps: 5.0
+  max_fps: 3.0
   protocol: segment
   role: accent
   brightness_scale: 1.0
@@ -699,7 +711,7 @@ devices:
   address: D0:C9:07:95:15:DB
   type: ble
   segments: 15
-  max_fps: 5.0
+  max_fps: 3.0
   protocol: bulb
   role: accent
   brightness_scale: 1.0
@@ -717,7 +729,7 @@ devices:
   address: 98:17:3C:09:7E:ED
   type: ble
   segments: 15
-  max_fps: 5.0
+  max_fps: 3.0
   protocol: bulb
   role: accent
   brightness_scale: 1.0
@@ -735,7 +747,7 @@ devices:
   address: D0:C9:07:95:14:8B
   type: ble
   segments: 15
-  max_fps: 5.0
+  max_fps: 3.0
   protocol: bulb
   role: accent
   brightness_scale: 1.0
@@ -753,7 +765,7 @@ devices:
   address: D0:C9:07:C5:14:45
   type: ble
   segments: 15
-  max_fps: 5.0
+  max_fps: 3.0
   protocol: bulb
   role: accent
   brightness_scale: 1.0
@@ -771,7 +783,7 @@ devices:
   address: D0:C9:07:70:AD:A3
   type: ble
   segments: 15
-  max_fps: 5.0
+  max_fps: 3.0
   protocol: bulb
   role: accent
   brightness_scale: 1.0
@@ -789,7 +801,7 @@ devices:
   address: 98:17:3C:07:BA:47
   type: ble
   segments: 15
-  max_fps: 5.0
+  max_fps: 3.0
   protocol: bulb
   role: accent
   brightness_scale: 1.0

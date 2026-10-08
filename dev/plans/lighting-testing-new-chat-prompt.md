@@ -131,6 +131,17 @@ output after evidence; current experimental changes are in the test script.
 
 ## BLE investigation still pending
 
+Update (2026-10-08): user accepts 0D and chooses a production BLE ceiling of
+3 Hz. Floor Lamp passed 1 Hz for 90 seconds and 2–4 Hz short screens; 5 Hz
+repeatedly lost the connection. Production cap/defaults/config are now 3 Hz;
+explicit diagnostics can exceed the cap. User prefers 30-second screening
+tests, with longer validation after a promising result.
+User preference: validated LAN first, BLE fallback when local LAN fails or
+becomes unreliable. LAN is local Wi-Fi, not the internet connection.
+Explicit identity metadata and opt-in automatic selection/fallback are now
+implemented; hardware fallback validation is pending. See
+`dev/plans/lan-ble-transport-selection.md` for policy, limits and next Couch BLE test.
+
 Latest decision (2026-10-07): retain `0D` as the accepted RGB command. The
 comparison showed visible updates with 0D, but supplied telemetry still recorded
 4 disconnects/errors and a 9.56-second maximum gap. Both 02 runs stayed connected
@@ -143,9 +154,8 @@ local send errors propagated to health/return values, socket release on multi-
 adapter deactivate/shutdown, async BLE queue polling (10 ms maximum poll delay),
 and frame deadlines that include write time and skip overruns. RGB stays 0D.
 Hardware validation is pending. See `dev/plans/output-optimization-results.md`.
-Identity unification/automatic transport choice is still pending: UDP send speed
-is not a reliability score, and confirmed device identity plus fallback policy
-are prerequisites.
+The subsequent identity/selection implementation is opt-in and requires confirmed
+endpoints plus validated rates. UDP send speed is not a reliability score.
 
 Already implemented: newest-frame coalescing after rate-limit waits, shared
 discovery cache and serialized connection setup, with discovered BLEDevice
@@ -172,7 +182,8 @@ over mandatory capture or buying another controller.
 
 Use `--bulb-color-command 0d|02` on an explicit H6006 with baseline session setup.
 See `dev/scripts/ble-update-rates.md` for the 90-second, 5-Hz 0D/02/02/0D sequence.
-No hardware results for this command comparison yet; production is unchanged.
+Results: 0D changes colors but disconnects at 5 Hz; 02 stayed connected without
+visible updates. Keep 0D. Do not repeat the comparison unless new evidence warrants it.
 
 Sources:
 - https://github.com/flippinhutt/govee-H6006-HA/blob/main/custom_components/govee_h6006/protocols/h6006.py
@@ -186,16 +197,15 @@ aren't proof of that protocol.
 
 ## Remaining work after current results
 
-1. Separate LAN activation reliability from throughput, then run individual and
-   fleet stability tests and choose validated rates with margin.
-2. Implement/test H6006 0D-versus-02 diagnostic; resolve BLE reliability before
-   higher-rate fleet testing.
-3. Consider production persistent UDP sockets, truthful send-error reporting,
-   BLE nonblocking queue waits and deadline pacing. Benchmark improvements;
-   they are not established cures for link loss.
-4. LAN/BLE identity unification and automatic transport choice remain unimplemented.
-   I favor choosing the faster reliable transport, but that requires dependable
-   measurements and fallback behavior.
+1. Production persistent UDP sockets, truthful send-error reporting, BLE
+   nonblocking queue waits and deadline pacing are implemented and locally
+   benchmarked. Hardware results show 5 Hz BLE link loss persists.
+2. BLE is capped at 3 Hz by user decision. Longer and fleet validation remain.
+3. Identity unification and automatic transport selection/fallback are implemented
+   as opt-in. Validate Couch BLE first, then controlled fallback. Keep configured
+   LAN paths fixed until their paired BLE paths have dependable evidence.
+4. Automatic return to LAN during a show and silent frame-loss detection remain
+   outside the current conservative fallback policy.
 
 Begin by checking the current branch and reading the supplied latest results.
 Explain what the evidence supports and what remains uncertain, then carry out

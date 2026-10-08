@@ -66,7 +66,7 @@ def test_idle_queue_allows_callbacks_and_cancellation():
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("write_duration", [.04, .25])
+@pytest.mark.parametrize("write_duration", [.04, .4])
 def test_deadlines_include_write_time_and_skip_overruns(monkeypatch, write_duration):
     clock = [100.0]
     starts = []
@@ -93,4 +93,10 @@ def test_deadlines_include_write_time_and_skip_overruns(monkeypatch, write_durat
     adapter._ble_write = write
     asyncio.run(adapter._async_loop())
     gaps = [b - a for a, b in zip(starts, starts[1:])]
-    assert gaps == pytest.approx([.2 if write_duration < .2 else .4] * 9)
+    assert gaps == pytest.approx([1 / 3 if write_duration < 1 / 3 else 2 / 3] * 9)
+
+
+def test_production_ble_rate_cap_respects_lower_limits():
+    for requested, expected in [(1, 1), (3, 3), (5, 3), (20, 3)]:
+        adapter = ble.GoveeBleAdapter(ble.GoveeBleConfig(address="test", max_fps=requested))
+        assert adapter._output_rate_hz() == expected

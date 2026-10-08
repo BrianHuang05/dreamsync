@@ -1,5 +1,11 @@
 # Output optimization results — 2026-10-07
 
+Follow-up (2026-10-08): these optimizations are implemented; hardware results
+still show four disconnects and a ~9.46-second maximum gap at 5 Hz. User has
+chosen a production BLE ceiling of 3 Hz. The tests now verify that ceiling.
+Identity/automatic selection work is described in `lan-ble-transport-selection.md`.
+The original implementation measurements below are retained as history.
+
 LAN adapters now reuse a lazily opened UDP socket for control and frame packets.
 An OSError closes the failed socket, marks local send health as failed, and
 returns False for frames or propagates for control commands. The next send can
