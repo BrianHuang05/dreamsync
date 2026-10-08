@@ -131,6 +131,22 @@ output after evidence; current experimental changes are in the test script.
 
 ## BLE investigation still pending
 
+Latest decision (2026-10-07): retain `0D` as the accepted RGB command. The
+comparison showed visible updates with 0D, but supplied telemetry still recorded
+4 disconnects/errors and a 9.56-second maximum gap. Both 02 runs stayed connected
+at ~4.90 host writes/sec but did not change colors. Do not adopt 02 or assume
+older firmware explains this. User chose to proceed to output optimizations.
+Ethernet is unavailable because apartment ports are damaged; use Wi-Fi/BLE.
+
+Production optimizations now implemented: lazy persistent LAN UDP sockets,
+local send errors propagated to health/return values, socket release on multi-
+adapter deactivate/shutdown, async BLE queue polling (10 ms maximum poll delay),
+and frame deadlines that include write time and skip overruns. RGB stays 0D.
+Hardware validation is pending. See `dev/plans/output-optimization-results.md`.
+Identity unification/automatic transport choice is still pending: UDP send speed
+is not a reliability score, and confirmed device identity plus fallback policy
+are prerequisites.
+
 Already implemented: newest-frame coalescing after rate-limit waits, shared
 discovery cache and serialized connection setup, with discovered BLEDevice
 objects. Counter handled ~18.6 host writes/sec at requested 20 without errors;

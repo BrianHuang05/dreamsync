@@ -550,9 +550,10 @@ class GoveeBleAdapter:
                 last_brightness = 100
                 keepalive_interval = 2.0  # seconds between keep-alive packets
                 last_keepalive_at = time.monotonic()
+                next_frame_at = self._state.last_send_at + min_interval
                 while self._started and client.is_connected:
                     try:
-                        item = self._queue.get(timeout=0.5)
+                        item = await self._next_queued_frame()
                     except queue.Empty:
                         # No color update — send keep-alive if needed
                         now = time.monotonic()
@@ -577,7 +578,7 @@ class GoveeBleAdapter:
                     # faster than BLE. Bound the drain so a busy producer cannot
                     # starve writes; never discard the shutdown sentinel.
                     now = time.monotonic()
-                    wait = min_interval - (now - self._state.last_send_at)
+                    wait = next_frame_at - now
                     if wait > 0:
                         await asyncio.sleep(wait)
                     for _ in range(self._queue.maxsize):
@@ -595,6 +596,7 @@ class GoveeBleAdapter:
                         return
                     if not self._started:
                         return
+                    frame_started = time.monotonic()
 
                     is_segment_frame = (
                         isinstance(item, tuple)
@@ -630,6 +632,14 @@ class GoveeBleAdapter:
                         for pkt in packets:
                             await self._ble_write(client, pkt)
                     self._state.last_send_at = time.monotonic()
+                    # Schedule from frame start, not write completion. After an
+                    # overrun skip missed slots rather than bursting old frames.
+                    if frame_started - next_frame_at >= min_interval:
+                        next_frame_at = frame_started  # resume after an idle period
+                    next_frame_at += min_interval
+                    if next_frame_at < self._state.last_send_at:
+                        missed = int((self._state.last_send_at - next_frame_at) / min_interval) + 1
+                        next_frame_at += missed * min_interval
                     last_keepalive_at = time.monotonic()
 
             except Exception as exc:
@@ -656,6 +666,18 @@ class GoveeBleAdapter:
                 self.config.address, delay, self._state.reconnect_attempts,
             )
             await asyncio.sleep(delay)
+
+    async def _next_queued_frame(self):
+        """Wait up to 500 ms without blocking BLE callbacks or cancellation."""
+        deadline = time.monotonic() + 0.5
+        while True:
+            try:
+                return self._queue.get_nowait()
+            except queue.Empty:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise
+                await asyncio.sleep(min(0.01, remaining))
 
     async def _ble_write(self, client: Any, data: bytes) -> None:
         """Write a packet to the Govee BLE characteristic."""

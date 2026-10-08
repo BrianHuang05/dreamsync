@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import socket
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -107,12 +108,33 @@ def build_command_json(cmd: str, data: dict) -> bytes:
 
 
 def _default_udp_transport(payload: bytes, ip: str, port: int) -> None:
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.sendto(payload, (ip, port))
-        sock.close()
-    except OSError as exc:
-        _logger.warning("Govee UDP send error to %s:%d: %s", ip, port, exc)
+
+
+class _PersistentUdpTransport:
+    """Lazily own one socket; serialize sends with explicit release."""
+
+    def __init__(self):
+        self._socket = None
+        self._lock = threading.Lock()
+
+    def __call__(self, payload, ip, port):
+        with self._lock:
+            if self._socket is None:
+                self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                self._socket.sendto(payload, (ip, port))
+            except OSError:
+                self._socket.close()
+                self._socket = None
+                raise
+
+    def close(self):
+        with self._lock:
+            if self._socket is not None:
+                self._socket.close()
+                self._socket = None
 
 
 # ---------------------------------------------------------------------------
@@ -270,17 +292,32 @@ class GoveeLanAdapter:
         monotonic_fn: Callable[[], float] | None = None,
     ) -> None:
         self.config = config
-        self._transport = transport or _default_udp_transport
+        self._owned_transport = _PersistentUdpTransport() if transport is None else None
+        self._transport = transport if transport is not None else self._owned_transport
         self._monotonic = monotonic_fn or time.monotonic
         self._min_frame_interval = 1.0 / max(1, config.fps)
         self._last_frame_at = -1e9
         self.last_send_ok: bool = True
         self.paused: bool = False
 
+    def close(self) -> None:
+        """Release the owned socket; the next send can reopen it."""
+        if self._owned_transport is not None:
+            self._owned_transport.close()
+
+    def _send(self, payload: bytes) -> None:
+        try:
+            self._transport(payload, self.config.device_ip, self.config.port)
+        except OSError:
+            self.last_send_ok = False
+            raise
+        self.last_send_ok = True
+
     def send_frame(self, colors: list[tuple[int, int, int]]) -> bool:
         """Send a frame of RGB segment colors to the device.
 
-        Returns True if the frame was sent, False if rate-limited or paused.
+        Returns True on local send success; False on error, rate limit or pause.
+        UDP send success does not confirm delivery to the light.
         """
         if self.paused:
             return False
@@ -312,35 +349,35 @@ class GoveeLanAdapter:
                 "colorwc", {"color": {"r": r, "g": g, "b": b}, "colorTemInKelvin": 0}
             )
         try:
-            self._transport(payload, self.config.device_ip, self.config.port)
+            self._send(payload)
             self.last_send_ok = True
         except OSError as exc:
             _logger.warning("send_frame failed for %s: %s", self.config.device_ip, exc)
             self.last_send_ok = False
         self._last_frame_at = now
-        return True
+        return self.last_send_ok
 
     def turn_on(self) -> None:
         if self.config.transport == TransportMode.PTREAL:
             payload = build_ptreal_json([build_ptreal_power_packet(True)])
         else:
             payload = build_command_json("turn", {"value": 1})
-        self._transport(payload, self.config.device_ip, self.config.port)
+        self._send(payload)
         # Activate razer/DreamView mode after power-on
         if self.config.transport == TransportMode.RAZER:
             activate = build_razer_json(build_razer_activate_packet(True))
-            self._transport(activate, self.config.device_ip, self.config.port)
+            self._send(activate)
 
     def turn_off(self) -> None:
         # Deactivate razer mode before power-off
         if self.config.transport == TransportMode.RAZER:
             deactivate = build_razer_json(build_razer_activate_packet(False))
-            self._transport(deactivate, self.config.device_ip, self.config.port)
+            self._send(deactivate)
         if self.config.transport == TransportMode.PTREAL:
             payload = build_ptreal_json([build_ptreal_power_packet(False)])
         else:
             payload = build_command_json("turn", {"value": 0})
-        self._transport(payload, self.config.device_ip, self.config.port)
+        self._send(payload)
 
     def set_brightness(self, value: int) -> None:
         """Set device hardware brightness (0-100)."""
@@ -349,14 +386,14 @@ class GoveeLanAdapter:
             payload = build_ptreal_json([build_ptreal_brightness_packet(value)])
         else:
             payload = build_command_json("brightness", {"value": value})
-        self._transport(payload, self.config.device_ip, self.config.port)
+        self._send(payload)
 
     def set_solid_color(self, r: int, g: int, b: int) -> None:
         """Set the entire strip to a single color via the colorwc command."""
         payload = build_command_json(
             "colorwc", {"color": {"r": r, "g": g, "b": b}, "colorTemInKelvin": 0}
         )
-        self._transport(payload, self.config.device_ip, self.config.port)
+        self._send(payload)
 
     def emit(self, t: float, intent: LightingIntent) -> bool:
         """OutputAdapter-compatible emit: renders intent as a solid color frame."""
@@ -592,7 +629,9 @@ class MultiGoveeLanAdapter:
         self._dreamview_preflight_complete = True
 
     def deactivate(self) -> None:
-        """Stop BLE follower threads."""
+        """Release LAN sockets and stop BLE follower threads."""
+        for adapter, *_rest in self.devices:
+            adapter.close()
         if getattr(self, "_keep_ble_connected", False):
             return
         for follower in self._ble_followers:
@@ -608,7 +647,9 @@ class MultiGoveeLanAdapter:
         self._keep_ble_connected = bool(enabled)
 
     def shutdown(self) -> None:
-        """Disconnect BLE followers when replacing the hardware configuration."""
+        """Release transports when replacing the hardware configuration."""
+        for adapter, *_rest in self.devices:
+            adapter.close()
         for follower in self._ble_followers:
             self._ble_adapter_for(follower).stop()
 
