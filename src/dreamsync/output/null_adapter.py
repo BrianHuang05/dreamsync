@@ -164,6 +164,10 @@ class PreviewMirrorAdapter:
         if callable(shutdown):
             shutdown()
 
+    def report_lan_delivery_sample(self, address: str, sample) -> bool:
+        report = getattr(self._output_adapter, "report_lan_delivery_sample", None)
+        return bool(report(address, sample)) if callable(report) else False
+
     def device_health_snapshot(self) -> dict:
         snapshot = getattr(self._output_adapter, "device_health_snapshot", None)
         return dict(snapshot()) if callable(snapshot) else {}

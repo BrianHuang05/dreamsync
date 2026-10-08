@@ -665,6 +665,14 @@ class MultiGoveeLanAdapter:
         for follower in self._ble_followers:
             self._ble_adapter_for(follower).stop()
 
+    def report_lan_delivery_sample(self, address: str, sample) -> bool:
+        """Route confirmed observation windows to the owning physical device."""
+        for adapter, *_rest in self.devices:
+            if adapter.config.device_ip == address:
+                report = getattr(adapter, "report_lan_delivery_sample", None)
+                return bool(report(sample)) if report is not None else False
+        return False
+
     def device_health_snapshot(self) -> dict[str, dict[str, str | int]]:
         """Expose passive transport observations without issuing new I/O."""
         health: dict[str, dict[str, str | int]] = {}

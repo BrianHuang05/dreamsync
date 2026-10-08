@@ -7,9 +7,10 @@ Explicit `test_ble_update_rates.py` diagnostics can exceed it for investigation.
 Bulb RGB remains 0D. This caps frame frequency, not every constituent packet;
 brightness changes and segment frames can require additional writes.
 
-Validation: 368 automated tests passed across transport policy, BLE/LAN output,
-config/discovery, health, connection coordination, playback and sessions. No
-hardware validation of automatic switching has been performed yet.
+Validation of the new 4 Hz rule: 395 integration tests passed, followed by 49
+focused policy/routing tests including six added identity, session-wrapper and
+handoff-recovery checks. No hardware validation of automatic switching has been
+performed yet. See `lighting-remaining-tasks.md` for the current assessment.
 
 ## Identity and preference
 
@@ -44,19 +45,41 @@ One path owns the light. The old path releases streaming/stops its writer before
 the next starts. Failure to stop a BLE worker retains ownership and blocks a
 second writer.
 
-A background monitor checks every five seconds. Three consecutive missing
-identity replies, replies slower than 200 ms, or changes between consecutive
-reply RTTs larger than 100 ms trigger fallback. Three actual local send errors
-also trigger fallback. A rate-limited frame is not a new error. Query exceptions
-(such as failure to obtain a listener) report unavailable monitoring rather than
-proving the device offline. LAN query ownership is serialized within one process
-because all replies target UDP 4002; unrelated processes must still be stopped.
+A background monitor checks every five seconds. During active LAN output, the
+only LAN-to-BLE switching trigger is confirmed usable delivery below **4 Hz**
+over three contiguous observation windows, each at least five seconds long.
+Exactly 4 Hz retains LAN. A complete confirmed delivery failure counts as 0 Hz.
+A brief dip or recovered window resets the streak. BLE fallback must already
+have a validated rate and remains capped at 3 Hz.
 
-The response-time thresholds are conservative policy defaults awaiting hardware
-validation. They measure local discovery reply consistency, not optical latency.
-A device can reply while its streaming output is frozen; a firewall can allow
-discovery yet block frame packets. Silent frame loss is not detected by these
-checks. Reliable visible operation still requires hardware observation.
+Observation windows must describe active changing-frame demand of at least
+4 Hz within the configured output cap; static scenes, deliberate low rates and
+pauses are not link failures. Windows must have finite monotonic timestamps,
+valid frame counts and a consistent source. Duplicate/overlapping windows,
+gaps, stale data and prior-activation data cannot establish persistence.
+The latest observation must end within the past five seconds. Identity and LAN
+endpoint must match the active owner. Recovery arriving before handoff cancels
+the switch without consuming the BLE fallback candidate.
+
+`LanDeliverySample` in `output/lan_rate_policy.py` accepts `device_ack` or
+`visual` frame-count evidence. Report it through
+`SessionService.report_lan_delivery_sample(address, sample)` or the equivalent
+multi-adapter API. Session and preview wrappers forward to the same owner.
+Health snapshots expose the fresh delivery rate/source, or `unknown`.
+
+Missing scan replies and local send errors still report LAN degradation, but
+they no longer independently initiate a switch or get converted to a delivered
+rate. Slow/inconsistent scan RTTs are not a throughput measurement. Query
+exceptions report unavailable monitoring, not proof of device failure. LAN
+query ownership is serialized within one process because replies target UDP
+4002; unrelated processes must still be stopped.
+
+**Current acquisition limitation:** no production component currently produces
+confirmed LAN frame-delivery counts. The predicate and observation-routing API
+are implemented, but exact live throughput switching awaits a dependable rate
+source. UDP send success, scan response timing and renderer frame traces cannot
+fill that gap. A device can reply while its streaming output is frozen. Unknown
+delivery keeps LAN; do not enable switching by substituting host-send metrics.
 
 Fallback is held for the remainder of the activation. Each route is attempted
 once; there is no automatic return to LAN during a show. This prevents transport

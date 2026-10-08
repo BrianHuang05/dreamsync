@@ -138,6 +138,12 @@ explicit diagnostics can exceed the cap. User prefers 30-second screening
 tests, with longer validation after a promising result.
 User preference: validated LAN first, BLE fallback when local LAN fails or
 becomes unreliable. LAN is local Wi-Fi, not the internet connection.
+Latest switching rule: during active LAN output, switch only after confirmed
+delivery is strictly below 4 Hz across three contiguous >=5-second windows
+under active >=4 Hz demand. Exactly 4 Hz, brief dips, idle scenes and unknown
+rates retain LAN. Reachability/send errors report degradation but cannot replace
+delivered-frame evidence. The gate and reporting API are implemented; production
+delivery-rate acquisition remains missing. See `dev/plans/lighting-remaining-tasks.md`.
 Explicit identity metadata and opt-in automatic selection/fallback are now
 implemented; hardware fallback validation is pending. See
 `dev/plans/lan-ble-transport-selection.md` for policy, limits and accepted scope.
@@ -210,7 +216,9 @@ aren't proof of that protocol.
    benchmarked. Hardware results show 5 Hz BLE link loss persists.
 2. BLE is capped at 3 Hz by user decision. Longer and fleet validation remain.
 3. Identity unification and automatic transport selection/fallback are implemented
-   as opt-in. Proceed using verified LAN paths; further Couch BLE validation is
+   as opt-in. The sustained below-4-Hz rule is implemented and tested, but no
+   production LAN delivery-rate source exists yet. Proceed using verified LAN paths;
+   further Couch BLE validation is
    out of scope by user decision. Keep configured LAN paths fixed and report
    degradation on failure rather than selecting an unvalidated BLE fallback.
 4. Automatic return to LAN during a show and silent frame-loss detection remain

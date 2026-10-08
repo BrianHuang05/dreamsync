@@ -9,6 +9,7 @@ from dreamsync.output.auto_detect import (
     DeviceConfig, build_multi_adapter, detect_all_devices, load_device_config, save_device_config,
 )
 from dreamsync.output.transport_selection import candidates_for, validate_transport_configs
+from dreamsync.output.lan_rate_policy import LanDeliverySample
 
 
 @pytest.fixture
@@ -120,15 +121,17 @@ def make_router(config, *, verified=True):
     return SimpleNamespace(router=router, events=events, created=created, now=now, available=available)
 
 
-def test_three_lan_misses_release_before_ble_and_never_switch_back(config):
+def test_confirmed_low_lan_rate_releases_before_ble_and_never_switches_back(config):
     test = make_router(config)
     try:
         assert test.router.health_snapshot()["active_transport"] == "lan"
-        test.available[0] = False
-        for _ in range(2):
+        for step in range(1, 4):
+            test.now[0] = step * 5
+            assert test.router.report_lan_delivery_sample(LanDeliverySample(
+                config.device_id, config.lan_address, (step - 1) * 5, step * 5, 30, 15, "visual"))
             test.router.check_health()
-        assert "ble-start" not in test.events
-        test.router.check_health()
+            if step < 3:
+                assert "ble-start" not in test.events
         assert test.events.index("lan-release") < test.events.index("ble-start")
         assert test.router.send_frame([(1, 2, 3)])
         assert test.events[-1] == "ble-frame"
@@ -158,7 +161,8 @@ def test_local_errors_only_count_attempts_not_rate_limited_calls(config):
             test.router.send_frame([(1, 2, 3)])
         test.available[0] = OSError("listener busy")
         test.router.check_health()
-        assert "ble-start" in test.events
+        assert "ble-start" not in test.events
+        assert "confirmed delivery rate required" in test.router.health_snapshot()["error"]
     finally:
         test.router.close()
 
@@ -182,6 +186,12 @@ def test_no_unvalidated_fallback(config):
         for _ in range(3):
             test.router.check_health()
         assert "ble-start" not in test.events
+        assert "confirmed delivery rate required" in test.router.health_snapshot()["error"]
+        for step in range(1, 4):
+            test.now[0] = step * 5
+            test.router.report_lan_delivery_sample(LanDeliverySample(
+                config.device_id, config.lan_address, (step - 1) * 5, step * 5, 30, 0, "device_ack"))
+        test.router.check_health()
         assert "No available validated fallback" in test.router.health_snapshot()["error"]
     finally:
         test.router.close()
@@ -227,7 +237,7 @@ def test_lan_replies_must_match_physical_id(config, monkeypatch):
 
 
 @pytest.mark.parametrize("response_times", [[250, 250, 250], [20, 150, 20, 150]])
-def test_repeated_slow_or_inconsistent_local_replies_fall_back(config, response_times):
+def test_slow_or_inconsistent_scan_replies_never_substitute_for_delivery_rate(config, response_times):
     test = make_router(config)
     try:
         for rtt in response_times[:-1]:
@@ -236,7 +246,7 @@ def test_repeated_slow_or_inconsistent_local_replies_fall_back(config, response_
         assert "ble-start" not in test.events
         test.available[0] = adaptive.LanObservation(True, response_times[-1])
         test.router.check_health()
-        assert "ble-start" in test.events
+        assert "ble-start" not in test.events
     finally:
         test.router.close()
 
@@ -333,3 +343,76 @@ def test_shared_lan_query_lock_prevents_reply_listener_competition():
     with ThreadPoolExecutor(max_workers=3) as pool:
         list(pool.map(lambda _: query(), range(6)))
     assert state["maximum"] == 1
+
+
+@pytest.mark.parametrize("reason", ["identity", "endpoint", "previous_activation", "paused"])
+def test_delivery_evidence_is_bound_to_active_identity_and_session(config, reason):
+    test = make_router(config)
+    test.now[0] = 5
+    observation = LanDeliverySample(config.device_id, config.lan_address, 0, 5, 30, 0, "visual")
+    try:
+        if reason == "identity":
+            observation = replace(observation, device_id="other-light")
+        elif reason == "endpoint":
+            observation = replace(observation, address="10.0.0.2")
+        elif reason == "previous_activation":
+            test.router._activated_at = 1
+        else:
+            test.router.paused = True
+        assert not test.router.report_lan_delivery_sample(observation)
+        assert test.router.health_snapshot()["lan_delivery_rate_hz"] == "unknown"
+        test.router.check_health()
+        assert "ble-start" not in test.events
+    finally:
+        test.router.close()
+
+
+def test_delivery_reporting_routes_through_session_and_preview_wrappers(config):
+    from dreamsync.gui.services.session_service import SessionService
+    from dreamsync.output.govee_lan import MultiGoveeLanAdapter
+    from dreamsync.output.null_adapter import PreviewMirrorAdapter
+    from dreamsync.output.roles import DeviceRole
+    test = make_router(config)
+    multi = MultiGoveeLanAdapter([(test.router, None, DeviceRole.PRIMARY)])
+    wrapped = PreviewMirrorAdapter(multi, SimpleNamespace())
+    service = SessionService()
+    service._hardware_adapter = wrapped
+    try:
+        for step in range(1, 4):
+            test.now[0] = step * 5
+            observation = LanDeliverySample(config.device_id, config.lan_address,
+                                            (step - 1) * 5, step * 5, 30, 0, "visual")
+            assert not service.report_lan_delivery_sample("other-light", observation)
+            assert service.report_lan_delivery_sample(config.address, observation)
+            test.router.check_health()
+        assert test.router.health_snapshot()["active_transport"] == "ble"
+        assert not service.report_lan_delivery_sample(config.address, observation)
+    finally:
+        multi.shutdown()
+
+
+def test_recovery_arriving_before_handoff_cancels_switch_without_consuming_fallback(config):
+    test = make_router(config)
+    try:
+        for step in range(1, 4):
+            test.now[0] = step * 5
+            test.router.report_lan_delivery_sample(LanDeliverySample(
+                config.device_id, config.lan_address, (step - 1) * 5, step * 5, 30, 15, "visual"))
+        switch = test.router._try_next
+        def recover_then_switch(reason, **kwargs):
+            test.now[0] = 20
+            test.router.report_lan_delivery_sample(LanDeliverySample(
+                config.device_id, config.lan_address, 15, 20, 30, 20, "visual"))
+            return switch(reason, **kwargs)
+        test.router._try_next = recover_then_switch
+        test.router.check_health()
+        assert "ble-start" not in test.events
+        test.router._try_next = switch
+        for step in range(5, 8):
+            test.now[0] = step * 5
+            test.router.report_lan_delivery_sample(LanDeliverySample(
+                config.device_id, config.lan_address, (step - 1) * 5, step * 5, 30, 15, "visual"))
+        test.router.check_health()
+        assert "ble-start" in test.events
+    finally:
+        test.router.close()

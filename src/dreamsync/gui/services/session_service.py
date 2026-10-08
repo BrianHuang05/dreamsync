@@ -1055,6 +1055,11 @@ class SessionService:
         if callable(connect):
             connect()
 
+    def report_lan_delivery_sample(self, address: str, sample) -> bool:
+        """Accept device/visual delivery observations through the transport owner."""
+        report = getattr(self._hardware_adapter, "report_lan_delivery_sample", None)
+        return bool(report(address, sample)) if callable(report) else False
+
     def hardware_health_snapshot(self) -> dict[str, dict[str, str | int]]:
         """Read observations from the active persistent adapter; never probe."""
         adapter = self._hardware_adapter

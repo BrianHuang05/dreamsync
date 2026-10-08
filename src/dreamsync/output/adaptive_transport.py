@@ -10,6 +10,7 @@ from dreamsync.output.discovery import probe_devices
 from dreamsync.output.govee_ble import BleProtocol, GoveeBleAdapter, GoveeBleConfig
 from dreamsync.output.govee_lan import GoveeLanAdapter, GoveeLanConfig, TransportMode
 from dreamsync.output.transport_selection import candidates_for
+from dreamsync.output.lan_rate_policy import LanDeliverySample, LanRatePolicy
 
 _logger = logging.getLogger(__name__)
 
@@ -35,15 +36,13 @@ def identity_replies(config):
 class AdaptiveGoveeAdapter(GoveeLanAdapter):
     """Render under the original address; switch only confirmed, validated routes.
 
-    LAN is checked every five seconds. Three missed identity replies, three local
-    frame errors, slow/inconsistent replies, or disconnected BLE checks trigger fallback.
-    Candidates
-    are attempted once per activation, preventing automatic switch-back/flapping.
+    During LAN output, only sustained confirmed delivery below 4 Hz triggers
+    fallback. Reachability/errors report degradation, not delivered-frame rate.
+    Candidates are attempted once per activation, preventing switch-back/flapping.
     """
 
     def __init__(self, config, *, fps=30, brightness=1.0, lan_factory=GoveeLanAdapter,
-                 ble_factory=GoveeBleAdapter, verify_lan=None, clock=time.monotonic,
-                 lan_slow_ms=200.0, lan_jitter_ms=100.0):
+                 ble_factory=GoveeBleAdapter, verify_lan=None, clock=time.monotonic):
         logical = GoveeLanConfig(config.address, segments=config.segments, fps=min(fps, config.max_fps),
                                  brightness=brightness, transport=TransportMode(config.transport))
         super().__init__(logical, transport=lambda *_args: None)
@@ -52,9 +51,7 @@ class AdaptiveGoveeAdapter(GoveeLanAdapter):
         self._ble_factory = ble_factory
         self._verify_lan = verify_lan or (lambda: identity_replies(config))
         self._clock = clock
-        self._lan_slow_ms = lan_slow_ms
-        self._lan_jitter_ms = lan_jitter_ms
-        self._last_response_ms = None
+        self._lan_rate_policy = LanRatePolicy()
         self._candidates = candidates_for(config)
         self._attempted = set()
         self._active = None
@@ -85,7 +82,7 @@ class AdaptiveGoveeAdapter(GoveeLanAdapter):
         else:
             active.release_stream()
 
-    def _try_next(self, reason):
+    def _try_next(self, reason, *, require_low_lan_rate=False):
         with self._switch_lock:
             if self._stop_event.is_set():
                 return False
@@ -99,7 +96,12 @@ class AdaptiveGoveeAdapter(GoveeLanAdapter):
                         available = observation.available if isinstance(observation, LanObservation) else observation
                         if not available:
                             continue
-                    self._release_current()
+                    with self._state_lock:
+                        if require_low_lan_rate and (self._kind != "lan" or self.paused
+                                or not self._lan_rate_policy.should_fallback(self._clock())):
+                            self._attempted.discard(candidate.kind)
+                            return False
+                        self._release_current()
                     if self._stop_event.is_set():
                         return False
                     if candidate.kind == "lan":
@@ -125,7 +127,7 @@ class AdaptiveGoveeAdapter(GoveeLanAdapter):
                         self._active, self._kind = active, candidate.kind
                         self._activated_at = self._clock()
                         self._failures = self._local_errors = 0
-                        self._last_response_ms = None
+                        self._lan_rate_policy.reset()
                         self._error = "" if reason == "activation" else f"Fallback after {reason}"
                         self.last_send_ok = True
                     _logger.info("%s selected %s at validated %.2f Hz: %s", self.identity.name,
@@ -162,10 +164,19 @@ class AdaptiveGoveeAdapter(GoveeLanAdapter):
     def check_health(self):
         """One passive/identity health check; public for deterministic diagnostics."""
         with self._state_lock:
+            if self.paused:
+                self._lan_rate_policy.reset()
+                return
             active, kind = self._active, self._kind
             local_errors = self._local_errors
             age = self._clock() - self._activated_at
         if active is None or self._stop_event.is_set():
+            return
+        with self._state_lock:
+            below_threshold = kind == "lan" and self._lan_rate_policy.should_fallback(self._clock())
+        if below_threshold:
+            self._try_next("confirmed LAN delivery below 4 Hz for at least 15 seconds",
+                           require_low_lan_rate=True)
             return
         try:
             if local_errors >= 3:
@@ -174,12 +185,6 @@ class AdaptiveGoveeAdapter(GoveeLanAdapter):
                 observation = self._verify_lan()
                 if isinstance(observation, LanObservation):
                     healthy = observation.available
-                    if healthy and observation.response_ms is not None:
-                        rtt = observation.response_ms
-                        inconsistent = (self._last_response_ms is not None
-                                        and abs(rtt - self._last_response_ms) > self._lan_jitter_ms)
-                        healthy = rtt <= self._lan_slow_ms and not inconsistent
-                        self._last_response_ms = rtt
                 else:
                     healthy = observation
             else:
@@ -197,9 +202,28 @@ class AdaptiveGoveeAdapter(GoveeLanAdapter):
             self._failures = 0 if healthy else self._failures + 1
             if healthy and self._error.startswith("Health check unavailable:"):
                 self._error = ""
-            failed = self._failures >= 3 or local_errors >= 3
+            failed = kind == "ble" and self._failures >= 3
+            if kind == "lan" and (self._failures >= 3 or local_errors >= 3):
+                self._error = "LAN health degraded; confirmed delivery rate required before fallback"
+            elif kind == "lan" and healthy and self._error.startswith("LAN health degraded;"):
+                self._error = ""
         if failed:
             self._try_next(f"{kind} health failures")
+
+    def report_lan_delivery_sample(self, sample: LanDeliverySample) -> bool:
+        """Accept explicit delivery evidence for this identity/current activation.
+
+        Existing scan/send metrics must never call this API as delivery evidence.
+        Acknowledgment/visual measurement acquisition is an external integration.
+        """
+        sample.validate()
+        with self._state_lock:
+            if (self._kind != "lan" or self._stop_event.is_set() or self.paused
+                    or sample.device_id.upper() != self.identity.device_id.upper()
+                    or sample.address != self.identity.lan_address
+                    or sample.started_at < self._activated_at):
+                return False
+            return self._lan_rate_policy.record(sample, self._clock())
 
     def set_brightness(self, value):
         with self._state_lock:
@@ -209,6 +233,8 @@ class AdaptiveGoveeAdapter(GoveeLanAdapter):
 
     def send_frame(self, colors):
         if self.paused:
+            with self._state_lock:
+                self._lan_rate_policy.reset()
             return False
         with self._state_lock:
             active = self._active
@@ -259,5 +285,11 @@ class AdaptiveGoveeAdapter(GoveeLanAdapter):
                 status = active.health_snapshot()["status"]
             else:
                 status = "degraded" if self._failures or not self.last_send_ok else "unknown"
+            sample = self._lan_rate_policy.latest
+            fresh = (kind == "lan" and sample is not None and not self.paused
+                     and 0 <= self._clock() - sample.ended_at <= 5.0)
             return {"status": status, "error": self._error, "active_transport": kind,
-                    "device_id": self.identity.device_id or ""}
+                    "device_id": self.identity.device_id or "",
+                    "lan_delivery_rate_hz": f"{sample.delivered_hz:.3f}" if fresh else "unknown",
+                    "lan_delivery_source": sample.source if fresh else "unknown",
+                    "lan_fallback_threshold_hz": "4.000"}
