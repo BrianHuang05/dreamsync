@@ -27,7 +27,7 @@ from dreamsync.gui.models.spatial_scene import (
     SceneNode,
     group_section_chains,
 )
-from dreamsync.gui.services.device_discovery_service import DeviceTestSpec
+from dreamsync.gui.widgets.device_test_dialog import show_device_test_dialog
 from dreamsync.gui.qt import QtModules
 from dreamsync.gui.help_guide import show_help_guide
 from dreamsync.gui.services import (
@@ -1334,7 +1334,6 @@ def create_main_window(
         "index": -1,
         "awaiting_confirmation": False,
     }
-    discovery_test_state = {"thread": None, "worker": None}
     spatial_signal_block = {"value": False}
     spatial_object_mode_state = {"value": "move_strip"}
     simulation_frame_state = {"node_colors": {}}
@@ -1468,36 +1467,6 @@ def create_main_window(
 
     discovery_identify_receiver = _DiscoveryIdentifyReceiver(window)
 
-    class _DiscoveryTestWorker(QtCore.QObject):  # pragma: no cover - Qt only
-        completed = QtCore.Signal(object, object, str)
-
-        def __init__(self, entry: object, spec: DeviceTestSpec) -> None:
-            super().__init__()
-            self._entry = entry
-            self._spec = spec
-
-        @QtCore.Slot()
-        def run(self) -> None:
-            try:
-                result = device_discovery_service.test_device(self._entry, self._spec)
-            except Exception as exc:
-                self.completed.emit(self._entry, None, str(exc).strip() or type(exc).__name__)
-                return
-            self.completed.emit(self._entry, result, "")
-
-    class _DiscoveryTestReceiver(QtCore.QObject):  # pragma: no cover - Qt only
-        @QtCore.Slot(object, object, str)
-        def complete(self, entry: object, result: object, error: str) -> None:
-            device_discovery_panel.advanced_test_device_button.setEnabled(True)
-            if error:
-                _set_discovery_status(f"Advanced test failed for {entry.address}: {error}")
-            else:
-                _set_discovery_status(
-                    f"Advanced test finished for {entry.address}: "
-                    f"{getattr(result, 'frames_sent', 0)} frame(s) sent."
-                )
-
-    discovery_test_receiver = _DiscoveryTestReceiver(window)
     show_editor_state = {
         "show": show_service.new_show(),
         "track_index": None,
@@ -1918,85 +1887,16 @@ def create_main_window(
         _launch_identify_candidate(entry)
 
     def _show_advanced_device_test() -> None:  # pragma: no cover - Qt only
-        if discovery_test_state["thread"] is not None:
-            return
         entry = _current_discovery_entry()
         if entry is None:
             _set_discovery_status("Select a discovered device first.")
             return
-        dialog = QtWidgets.QDialog(window)
-        dialog.setWindowTitle(f"Advanced Test — {entry.name}")
-        dialog.setObjectName("advancedDeviceTestDialog")
-        layout = QtWidgets.QFormLayout(dialog)
-        color_edit = QtWidgets.QLineEdit("#3366ff")
-        color_edit.setObjectName("deviceTestColorEdit")
-        pattern_combo = QtWidgets.QComboBox()
-        patterns = ("solid", "alternate", "rainbow", "walk") if entry.source == "lan" else ("solid", "walk")
-        for pattern in patterns:
-            pattern_combo.addItem(pattern.title(), pattern)
-        pattern_combo.setObjectName("deviceTestPatternCombo")
-        duration_spin = QtWidgets.QDoubleSpinBox()
-        duration_spin.setRange(0.1, 15.0)
-        duration_spin.setValue(3.0)
-        duration_spin.setSuffix(" s")
-        duration_spin.setObjectName("deviceTestDurationSpin")
-        brightness_spin = QtWidgets.QDoubleSpinBox()
-        brightness_spin.setRange(0.05, 1.0)
-        brightness_spin.setSingleStep(0.05)
-        brightness_spin.setValue(0.2)
-        brightness_spin.setObjectName("deviceTestBrightnessSpin")
-        layout.addRow("Color", color_edit)
-        layout.addRow("Pattern", pattern_combo)
-        layout.addRow("Duration", duration_spin)
-        layout.addRow("Brightness", brightness_spin)
-        warning = QtWidgets.QLabel(
-            f"Only {escape(entry.name)} ({escape(entry.address)}) will be tested. "
-            "The device will be turned off when the test ends."
-        )
-        warning.setWordWrap(True)
-        layout.addRow(warning)
-        buttons = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.StandardButton.Ok
-            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).setText("Run Test")
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addRow(buttons)
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
-            return
-        spec = DeviceTestSpec(
-            color=color_edit.text().strip(),
-            pattern=str(pattern_combo.currentData()),
-            duration_seconds=float(duration_spin.value()),
-            brightness=float(brightness_spin.value()),
+        show_device_test_dialog(
+            QtCore, QtWidgets, window, device_discovery_service, entry,
             segments=int(device_discovery_panel.segments_spin.value()),
             transport=str(device_discovery_panel.transport_combo.currentData()),
             protocol=str(device_discovery_panel.protocol_combo.currentData()),
         )
-        try:
-            spec.validate(entry.source)
-        except ValueError as exc:
-            _set_discovery_status(str(exc))
-            return
-        device_discovery_panel.advanced_test_device_button.setEnabled(False)
-        _set_discovery_status(
-            f"Testing only {entry.address}: {spec.pattern}, {spec.duration_seconds:.1f}s, "
-            f"{spec.brightness:.0%} brightness…"
-        )
-        thread = QtCore.QThread()
-        worker = _DiscoveryTestWorker(entry, spec)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.completed.connect(discovery_test_receiver.complete)
-        worker.completed.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(
-            lambda: discovery_test_state.update({"thread": None, "worker": None})
-        )
-        discovery_test_state.update({"thread": thread, "worker": worker})
-        thread.start()
 
     def _discovery_form_config(entry: object) -> object:  # pragma: no cover - Qt only
         brightness = float(device_discovery_panel.brightness_spin.value())

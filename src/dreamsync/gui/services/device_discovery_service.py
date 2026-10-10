@@ -41,7 +41,7 @@ class DiscoveredDeviceEntry:
 
 @dataclass(frozen=True)
 class DeviceTestSpec:
-    """Validated, short-lived test requested for one selected device."""
+    """Validated test requested for one selected device."""
 
     color: str = "#3366ff"
     pattern: str = "solid"
@@ -50,6 +50,7 @@ class DeviceTestSpec:
     segments: int = 15
     transport: str = "ptreal"
     protocol: str = "segment"
+    repeat: bool = False
 
     def validate(self, source: str) -> None:
         _parse_hex_color(self.color)
@@ -415,7 +416,7 @@ class DeviceDiscoveryService:
         *,
         stop_event: threading.Event | None = None,
     ) -> DeviceTestResult:
-        """Run one bounded test against the explicitly selected device."""
+        """Run a selected-device test, optionally repeating until stopped."""
         if entry.source not in {"lan", "ble"}:
             raise ValueError(f"Unsupported discovery source: {entry.source}")
         spec.validate(entry.source)
@@ -447,11 +448,14 @@ class DeviceDiscoveryService:
                 adapter.turn_on()
             if hasattr(adapter, "set_brightness"):
                 adapter.set_brightness(max(1, round(float(spec.brightness) * 100)))
-            for frame, delay in _lan_test_frames(spec):
-                if stop_event.is_set():
+            while not stop_event.is_set():
+                for frame, delay in _lan_test_frames(spec):
+                    if stop_event.is_set():
+                        break
+                    frames_sent += int(bool(adapter.send_frame(frame)))
+                    _bounded_sleep(self._sleep, delay, stop_event)
+                if not spec.repeat:
                     break
-                frames_sent += int(bool(adapter.send_frame(frame)))
-                self._sleep(delay)
         finally:
             if hasattr(adapter, "send_frame"):
                 adapter.send_frame(off)
@@ -481,18 +485,21 @@ class DeviceDiscoveryService:
         adapter.start()
         try:
             self._wait_for_ble_connection(adapter, entry.address)
-            if spec.pattern == "solid":
-                r, g, b = _parse_hex_color(spec.color)
-                adapter.send_color(r, g, b, brightness)
-                frames_sent = 1
-                _bounded_sleep(self._sleep, spec.duration_seconds, stop_event)
-            else:
-                for frame, delay in _walk_frames(segments, spec.duration_seconds):
-                    if stop_event.is_set():
-                        break
-                    adapter.send_segment_colors(frame, brightness)
+            while not stop_event.is_set():
+                if spec.pattern == "solid":
+                    r, g, b = _parse_hex_color(spec.color)
+                    adapter.send_color(r, g, b, brightness)
                     frames_sent += 1
-                    self._sleep(delay)
+                    _bounded_sleep(self._sleep, spec.duration_seconds, stop_event)
+                else:
+                    for frame, delay in _walk_frames(segments, segments * 0.3 if spec.repeat else spec.duration_seconds):
+                        if stop_event.is_set():
+                            break
+                        adapter.send_segment_colors(frame, brightness)
+                        frames_sent += 1
+                        _bounded_sleep(self._sleep, delay, stop_event)
+                if not spec.repeat:
+                    break
             adapter.send_color(0, 0, 0, brightness)
         finally:
             adapter.stop()
@@ -639,7 +646,7 @@ def _lan_test_frames(spec: DeviceTestSpec):
     segments = max(1, int(spec.segments))
     color = _parse_hex_color(spec.color)
     if spec.pattern == "walk":
-        yield from _walk_frames(segments, spec.duration_seconds)
+        yield from _walk_frames(segments, segments * 0.3 if spec.repeat else spec.duration_seconds)
         return
     if spec.pattern == "alternate":
         frame = [color if index % 2 == 0 else (0, 0, 0) for index in range(segments)]

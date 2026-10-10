@@ -452,3 +452,38 @@ def test_advanced_ble_bulb_rejects_segment_patterns_before_adapter_creation() ->
         raise AssertionError("Expected BLE bulb walk test to be rejected")
 
     assert FakeBleAdapter.instances == []
+
+
+@pytest.mark.parametrize('source,pattern', [('lan', 'walk'), ('ble', 'walk'), ('ble', 'solid')])
+def test_advanced_test_repeats_until_cancelled(source, pattern):
+    import threading
+
+    stop = threading.Event()
+    sleeps = []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 12:
+            stop.set()
+
+    FakeLanAdapter.instances = []
+    FakeBleAdapter.instances = []
+    service = DeviceDiscoveryService(
+        lan_adapter_factory=FakeLanAdapter, ble_adapter_factory=FakeBleAdapter,
+        sleep_fn=sleep,
+    )
+    result = service.test_device(
+        DiscoveredDeviceEntry(key='test', source=source, name='Test', address='test'),
+        DeviceTestSpec(pattern=pattern, duration_seconds=0.3, repeat=True),
+        stop_event=stop,
+    )
+    assert result.stopped
+    assert result.frames_sent > 1
+    assert len(sleeps) == 12
+    if source == 'lan':
+        assert len(FakeLanAdapter.instances) == 1
+        assert FakeLanAdapter.instances[0].frames[-1] == [(0, 0, 0)] * 15
+    else:
+        assert len(FakeBleAdapter.instances) == 1
+        assert FakeBleAdapter.instances[0].stopped
+        assert FakeBleAdapter.instances[0].colors[-1][:3] == (0, 0, 0)
