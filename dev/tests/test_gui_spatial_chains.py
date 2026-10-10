@@ -73,7 +73,7 @@ def test_move_chain_preserves_links_and_rejects_out_of_bounds_move():
         controller.move_chain("strip", 1.0, 0.0, 0.0)
 
 
-def test_gui_blocks_invalid_strip_save_then_saves_oriented_line(tmp_path: Path):
+def test_gui_cancel_invalid_strip_save_then_saves_oriented_line(tmp_path: Path):
     QtWidgets = pytest.importorskip("PySide6.QtWidgets")
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     path = tmp_path / "devices.yaml"
@@ -106,9 +106,11 @@ def test_gui_blocks_invalid_strip_save_then_saves_oriented_line(tmp_path: Path):
     assert status_label is not None
     assert "Layout invalid" in validation_label.text()
 
+    QtCore = pytest.importorskip("PySide6.QtCore")
+    QtCore.QTimer.singleShot(0, lambda: app.activeModalWidget().reject())
     save_button.click()
     app.processEvents()
-    assert "Save blocked" in status_label.text()
+    assert "override was cancelled" in status_label.text()
     assert path.read_text(encoding="utf-8") == original
 
     apply_button.click()
@@ -211,6 +213,8 @@ def test_strip_keyboard_workflow_groups_tabs_and_toggles_fine_tune(tmp_path: Pat
     assert node_list.item(0).text() == "Strip A [3 sections]"
     assert not direction_widget.isVisible()
 
+    window.centralWidget().setCurrentIndex(1)
+    app.processEvents()
     canvas.setFocus()
     QtTest.QTest.keyClick(canvas, QtCore.Qt.Key.Key_M)
     app.processEvents()
@@ -311,7 +315,9 @@ def test_ctrl_tab_cycles_main_tabs_without_stepping_spatial_selection(tmp_path: 
     canvas = window.findChild(QtWidgets.QWidget, "spatialCanvas")
     selected_label = window.findChild(QtWidgets.QLabel, "selectedSpatialLabel")
 
-    assert tabs.currentIndex() == 0
+    tabs.setCurrentIndex(1)
+    app.processEvents()
+    assert tabs.currentIndex() == 1
     assert "Strip A" in selected_label.text()
     canvas.setFocus()
     QtTest.QTest.keyClick(
@@ -320,8 +326,8 @@ def test_ctrl_tab_cycles_main_tabs_without_stepping_spatial_selection(tmp_path: 
         QtCore.Qt.KeyboardModifier.ControlModifier,
     )
     app.processEvents()
-    assert tabs.currentIndex() == 1
-    assert tabs.tabText(tabs.currentIndex()) == "Devices"
+    assert tabs.currentIndex() == 2
+    assert tabs.tabText(tabs.currentIndex()) == "Palettes"
     assert "Strip A" in selected_label.text()
 
     QtTest.QTest.keyClick(
@@ -331,6 +337,52 @@ def test_ctrl_tab_cycles_main_tabs_without_stepping_spatial_selection(tmp_path: 
         | QtCore.Qt.KeyboardModifier.ShiftModifier,
     )
     app.processEvents()
-    assert tabs.currentIndex() == 0
-    assert tabs.tabText(tabs.currentIndex()) == "Devices / Spatial"
+    assert tabs.currentIndex() == 1
+    assert tabs.tabText(tabs.currentIndex()) == "Room Layout"
+    window.close()
+
+
+@pytest.mark.parametrize('permanent', [False, True])
+def test_spacing_override_requires_confirmation_and_persists_per_device(tmp_path, permanent):
+    from dreamsync.output.auto_detect import load_device_config, save_device_config
+
+    QtCore = pytest.importorskip('PySide6.QtCore')
+    QtWidgets = pytest.importorskip('PySide6.QtWidgets')
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    path = tmp_path / 'devices.yaml'
+    path.write_text('devices:\n  - name: Large strip\n    address: 10.0.0.2\n    segments: 2\n'
+                    '  - name: Other strip\n    address: 10.0.0.3\n    segments: 2\n')
+    window = create_main_window(require_qt(), GuiSettings(), config_path=path)
+    save = next(b for b in window.findChildren(QtWidgets.QPushButton) if b.text() == 'Save Layout')
+    errors = []
+
+    def confirm():
+        dialog = app.activeModalWidget()
+        try:
+            assert dialog.objectName() == 'spatialWarningDialog'
+            preview = dialog.findChild(QtWidgets.QGraphicsView, 'spatialWarningPreview')
+            outlined = [item for item in preview.scene().items()
+                        if isinstance(item, QtWidgets.QGraphicsEllipseItem)]
+            assert len(outlined) == 4
+            assert all(item.pen().color().name() == '#dc2626' for item in outlined)
+            dialog.findChild(QtWidgets.QPushButton, 'spatialWarningAdvancedButton').click()
+            checkbox = dialog.findChild(QtWidgets.QCheckBox, 'disableSpacingWarnings:10.0.0.2')
+            checkbox.setChecked(permanent)
+            dialog.findChild(QtWidgets.QPushButton, 'spatialWarningOverrideButton').click()
+        except BaseException as exc:
+            errors.append(exc)
+            dialog.reject()
+
+    QtCore.QTimer.singleShot(0, confirm)
+    save.click()
+    assert not errors, errors
+    controller = SpatialController(DeviceService())
+    controller.load(path)
+    assert {w.chain_key for w in controller.save_warnings()} == (
+        {'10.0.0.3'} if permanent else {'10.0.0.2', '10.0.0.3'})
+    configs = load_device_config(path)
+    assert configs[0].spacing_warnings_disabled is permanent
+    assert configs[1].spacing_warnings_disabled is False
+    save_device_config(path, configs)
+    assert load_device_config(path)[0].spacing_warnings_disabled is permanent
     window.close()

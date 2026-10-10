@@ -173,13 +173,27 @@ class SpatialController:
     def validate_layout(self) -> list[ChainValidation]:
         return validate_layout(self.nodes.values())
 
-    def save(self) -> None:
+    def save_warnings(self) -> list[ChainValidation]:
+        disabled = {
+            config.address for config in self.service.load_config(self.config_path)
+            if config.spacing_warnings_disabled
+        } if self.config_path else set()
+        return [
+            result for result in self.validate_layout()
+            if not result.valid and not (
+                result.chain_key in disabled
+                and len(result.errors) == len(result.invalid_links)
+            )
+        ]
+
+    def save(self, *, disable_spacing_warnings: set[str] | None = None) -> None:
         if self.config_path is None:
             raise ValueError("No config path loaded")
         self.service.save_scene(
             self.config_path,
             {key: (node.x, node.y, node.z) for key, node in self.nodes.items()},
             group_definitions=self.group_definitions,
+            disable_spacing_warnings=disable_spacing_warnings,
             device_groups=self.device_groups,
             section_groups={
                 key: node.groups

@@ -4187,16 +4187,19 @@ def create_main_window(
         if config_path is None or not config_path.exists():
             spatial_status_label.setText("No config loaded for spatial editing.")
             return
-        invalid = [validation for validation in spatial_controller.validate_layout() if not validation.valid]
+        invalid = spatial_controller.save_warnings()
+        disabled = set()
         if invalid:
-            first = invalid[0]
-            spatial_status_label.setText(
-                f"Save blocked: {first.label} is invalid. {first.errors[0]}"
+            from dreamsync.gui.widgets.spatial_warning_dialog import confirm_spatial_warnings
+
+            confirmed, disabled = confirm_spatial_warnings(
+                QtCore, QtGui, QtWidgets, window, spatial_controller.snapshot(), invalid
             )
-            _refresh_spatial_controls()
-            return
+            if not confirmed:
+                spatial_status_label.setText("Layout not saved: warning override was cancelled.")
+                return
         try:
-            spatial_controller.save()
+            spatial_controller.save(disable_spacing_warnings=disabled)
         except Exception as exc:
             _set_page_error(spatial_status_label, f"Could not save spatial config: {exc}")
             return
@@ -12653,6 +12656,10 @@ def create_main_window(
             )
 
         def _handler_for(self, sequence: str):
+            if QtWidgets.QApplication.activeModalWidget() is not None:
+                return None
+            if QtWidgets.QApplication.activeWindow() is not window:
+                return None
             current_widget = tabs.currentWidget()
             if current_widget is device_discovery_panel.widget:
                 device_actions = {
@@ -12666,6 +12673,14 @@ def create_main_window(
                 return _save_configuration
             if _show_text_input_has_focus():
                 return None
+            if current_widget is device_discovery_panel.widget:
+                scan_actions = {
+                    "B": lambda: _scan_discovery_devices("ble"),
+                    "L": lambda: _scan_discovery_devices("lan"),
+                    "S": lambda: _scan_discovery_devices("all"),
+                }
+                if sequence in scan_actions:
+                    return scan_actions[sequence]
             if current_widget is queue_panel.shows_widget and sequence == "Ctrl+O":
                 return _load_saved_show_file
             if current_widget is queue_panel.widget:

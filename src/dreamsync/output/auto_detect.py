@@ -83,6 +83,7 @@ class DeviceConfig:
     transport_policy: str = "fixed"  # opt-in "auto" prefers validated LAN, falls back to BLE
     lan_validated_fps: float | None = None
     ble_validated_fps: float | None = None
+    spacing_warnings_disabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -406,6 +407,7 @@ def load_device_config(path: Path) -> list[DeviceConfig]:
             lan_address=entry.get("lan_address"),
             ble_address=entry.get("ble_address"),
             transport_policy=entry.get("transport_policy", "fixed"),
+            spacing_warnings_disabled=entry.get("spacing_warnings_disabled") is True,
             lan_validated_fps=float(entry["lan_validated_fps"]) if entry.get("lan_validated_fps") is not None else None,
             ble_validated_fps=float(entry["ble_validated_fps"]) if entry.get("ble_validated_fps") is not None else None,
         ))
@@ -459,6 +461,8 @@ def device_config_to_mapping(config: DeviceConfig) -> dict[str, object]:
         value = getattr(config, name)
         if value is not None:
             data[name] = value
+    if config.spacing_warnings_disabled:
+        data["spacing_warnings_disabled"] = True
     if config.transport_policy != "fixed":
         data["transport_policy"] = config.transport_policy
     return data

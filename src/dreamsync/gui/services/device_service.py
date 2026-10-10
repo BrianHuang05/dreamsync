@@ -173,6 +173,7 @@ class DeviceService:
         device_groups: dict[str, tuple[str, ...]] | None = None,
         section_groups: dict[str, tuple[str, ...]] | None = None,
         section_exclude_groups: dict[str, tuple[str, ...]] | None = None,
+        disable_spacing_warnings: set[str] | None = None,
     ) -> None:
         yaml = self._require_yaml()
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -191,6 +192,8 @@ class DeviceService:
             if not isinstance(entry, dict):
                 continue
             key = str(entry.get("address", ""))
+            if disable_spacing_warnings and key in disable_spacing_warnings:
+                entry["spacing_warnings_disabled"] = True
             if device_groups is not None and key in device_groups:
                 if device_groups[key]:
                     entry["groups"] = list(device_groups[key])

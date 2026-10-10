@@ -212,3 +212,48 @@ def test_add_device_scans_identifies_and_adds_lan_and_ble(
     window.close()
     window.deleteLater()
     QtTest.QTest.qWait(20)
+
+
+def test_scan_shortcuts_work_with_tab_bar_focus_and_ignore_text_and_modals(tmp_path):
+    QtWidgets = pytest.importorskip('PySide6.QtWidgets')
+    QtCore = pytest.importorskip('PySide6.QtCore')
+    QtTest = pytest.importorskip('PySide6.QtTest')
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    path = tmp_path / 'devices.yaml'
+    path.write_text('devices: []\n')
+    service = _FakeDiscoveryService()
+    window = create_main_window(require_qt(), GuiSettings(), config_path=path, discovery_service=service)
+    window.show()
+    window.activateWindow()
+    tabs = window.centralWidget()
+    tabs.setCurrentIndex(1)
+    app.processEvents()
+    tabs.setCurrentIndex(0)
+    bar = tabs.tabBar()
+    bar.setFocus()
+    app.processEvents()
+    shortcut_filter = window._dreamsync_reliable_page_shortcut_filter
+    for key in ('B', 'L', 'S'):
+        assert shortcut_filter._handler_for(key) is not None
+    # Exercise the actual key event without involving scan threads in this focus regression.
+    handled = []
+    original = shortcut_filter._handler_for
+    shortcut_filter._handler_for = lambda sequence: (
+        (lambda: handled.append(sequence)) if original(sequence) is not None else None
+    )
+    for key in (QtCore.Qt.Key.Key_B, QtCore.Qt.Key.Key_L, QtCore.Qt.Key.Key_S):
+        QtTest.QTest.keyClick(bar, key)
+    assert handled == ['B', 'L', 'S']
+    edit = window.findChild(QtWidgets.QLineEdit, 'discoveredDeviceNameEdit')
+    assert edit is not None
+    edit.setEnabled(True)
+    edit.setFocus()
+    app.processEvents()
+    assert original('B') is None
+    dialog = QtWidgets.QDialog(window)
+    dialog.setModal(True)
+    dialog.show()
+    app.processEvents()
+    assert original('L') is None
+    dialog.close()
+    window.close()

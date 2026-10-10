@@ -392,6 +392,7 @@ class DeviceDiscoveryService:
                         lan_address=config.lan_address or existing.lan_address,
                         ble_address=config.ble_address or existing.ble_address,
                         transport_policy=existing.transport_policy,
+                        spacing_warnings_disabled=existing.spacing_warnings_disabled,
                         protocol=(config.protocol or existing.protocol
                                   if existing.transport_policy == "auto" else config.protocol),
                         transport=(config.transport or existing.transport
