@@ -6,7 +6,7 @@ from dreamsync.gui.services.device_discovery_service import DeviceTestSpec
 
 
 def show_device_test_dialog(
-    QtCore, QtWidgets, parent, service, entry, *, segments, transport, protocol
+    QtCore, QtWidgets, parent, service, entry, *, segments, transport, protocol, save_segments=None
 ):
     state = {"running": False, "pending": None, "thread": None, "error": "", "closing": None}
     stop_event = threading.Event()
@@ -34,6 +34,11 @@ def show_device_test_dialog(
     brightness.setRange(0.05, 1.0)
     brightness.setSingleStep(0.05)
     brightness.setValue(0.2)
+    segment_count = QtWidgets.QSpinBox()
+    segment_count.setObjectName("deviceTestSegmentsSpin")
+    segment_count.setRange(1, 2048)
+    segment_count.setValue(segments)
+    layout.addRow("Segments", segment_count)
     layout.addRow("Color", color)
     layout.addRow("Pattern", pattern)
     layout.addRow("Brightness", brightness)
@@ -54,7 +59,25 @@ def show_device_test_dialog(
     stop = buttons.addButton("Stop Test", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole)
     stop.setObjectName("deviceTestStopButton")
     stop.setEnabled(False)
+    save = buttons.addButton("Update Config", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole)
+    save.setObjectName("deviceTestUpdateConfigButton")
+    save.setEnabled(save_segments is not None)
+    save.setToolTip("Save the segment count to this device's config entry.")
+    save_status = QtWidgets.QLabel()
+    save_status.setObjectName("deviceTestSaveStatusLabel")
+    save_status.setWordWrap(True)
+    layout.addRow(save_status)
     layout.addRow(buttons)
+
+    def update_config():
+        try:
+            save_segments(segment_count.value())
+        except Exception as exc:
+            save_status.setText(f"Could not update config: {exc}")
+        else:
+            save_status.setText(f"Saved {segment_count.value()} segments to config.")
+
+    save.clicked.connect(update_config)
 
     def stop_test():
         state["running"] = False
@@ -66,26 +89,32 @@ def show_device_test_dialog(
 
     def request_test():
         state["running"] = True
-        stop_event.set()
         start.setEnabled(False)
         stop.setEnabled(True)
         spec = DeviceTestSpec(
             color=color.text().strip(), pattern=str(pattern.currentData()),
-            brightness=brightness.value(), segments=segments,
+            brightness=brightness.value(), segments=segment_count.value(),
             transport=transport, protocol=protocol, repeat=True,
         )
         try:
             spec.validate(entry.source)
         except ValueError as exc:
+            stop_event.set()
             state["pending"] = None
             status.setText(str(exc))
             return
-        state["pending"] = spec
-        status.setText("Starting test…")
+        state["latest"] = spec
+        if state["thread"] is not None and not stop_event.is_set():
+            status.setText(f"Testing {spec.pattern}, {spec.brightness:.0%} brightness…")
+        else:
+            state["pending"] = spec
+            status.setText("Starting test…")
 
     def run_test(spec):
         try:
-            service.test_device(entry, spec, stop_event=stop_event)
+            service.test_device(
+                entry, spec, stop_event=stop_event, spec_provider=lambda: state["latest"]
+            )
         except Exception as exc:
             state["error"] = str(exc).strip() or type(exc).__name__
 
@@ -122,6 +151,7 @@ def show_device_test_dialog(
     buttons.rejected.connect(dialog.reject)
     color.textChanged.connect(lambda: request_test() if state["running"] else None)
     pattern.currentIndexChanged.connect(lambda: request_test() if state["running"] else None)
+    segment_count.valueChanged.connect(lambda: request_test() if state["running"] else None)
     brightness.valueChanged.connect(lambda: request_test() if state["running"] else None)
     timer = QtCore.QTimer(dialog)
     timer.setInterval(50)

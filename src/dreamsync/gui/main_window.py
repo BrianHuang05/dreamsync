@@ -1891,8 +1891,14 @@ def create_main_window(
         if entry is None:
             _set_discovery_status("Select a discovered device first.")
             return
+        def save_test_segments(count):
+            device_discovery_service.update_device_segments(config_path, entry, count)
+            device_discovery_panel.segments_spin.setValue(count)
+            _reload_spatial_scene(status=f"Updated segment count for {entry.name}.")
+
         show_device_test_dialog(
             QtCore, QtWidgets, window, device_discovery_service, entry,
+            save_segments=save_test_segments if config_path is not None else None,
             segments=int(device_discovery_panel.segments_spin.value()),
             transport=str(device_discovery_panel.transport_combo.currentData()),
             protocol=str(device_discovery_panel.protocol_combo.currentData()),

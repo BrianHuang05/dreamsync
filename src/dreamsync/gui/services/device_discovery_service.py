@@ -332,6 +332,39 @@ class DeviceDiscoveryService:
             placement=DevicePlacement(x=float(x), y=float(y), z=float(z)),
         )
 
+    def update_device_segments(self, path: Path, entry: DiscoveredDeviceEntry, segments: int) -> None:
+        """Update only the selected entry's segment count, retaining other YAML data."""
+        import yaml
+
+        if not 1 <= segments <= 2048:
+            raise ValueError("Segment count must be between 1 and 2048.")
+        source = path.read_text(encoding="utf-8")
+        payload = yaml.safe_load(source)
+        devices = payload.get("devices", []) if isinstance(payload, dict) else []
+        matches = [index for index, device in enumerate(devices)
+                   if device.get("address") == entry.address]
+        if len(matches) != 1:
+            raise ValueError("Save this device to config first; an existing unique entry is required.")
+        # Replace the scalar in the source to preserve comments, inventory notes,
+        # unknown fields, and all other device settings verbatim.
+        root = yaml.compose(source)
+        device_nodes = next(value for key, value in root.value if key.value == "devices")
+        node = device_nodes.value[matches[0]]
+        segment_node = next((value for key, value in node.value if key.value == "segments"), None)
+        if segment_node is not None:
+            updated = (source[:segment_node.start_mark.index] + str(segments)
+                       + source[segment_node.end_mark.index:])
+        elif node.flow_style:
+            offset = node.end_mark.index - 1
+            updated = source[:offset] + f", segments: {segments}" + source[offset:]
+        else:
+            key = node.value[0][0]
+            offset = key.start_mark.index
+            updated = (source[:offset] + f"segments: {segments}\n{' ' * key.start_mark.column}"
+                       + source[offset:])
+        yaml.safe_load(updated)
+        path.write_text(updated, encoding="utf-8")
+
     def upsert_device_config(self, path: Path, config: DeviceConfig) -> None:
         """Create or update a device entry by address."""
 
@@ -415,6 +448,7 @@ class DeviceDiscoveryService:
         spec: DeviceTestSpec,
         *,
         stop_event: threading.Event | None = None,
+        spec_provider: Callable[[], DeviceTestSpec] | None = None,
     ) -> DeviceTestResult:
         """Run a selected-device test, optionally repeating until stopped."""
         if entry.source not in {"lan", "ble"}:
@@ -422,14 +456,15 @@ class DeviceDiscoveryService:
         spec.validate(entry.source)
         stop_event = stop_event or threading.Event()
         if entry.source == "lan":
-            return self._test_lan(entry, spec, stop_event)
-        return self._test_ble(entry, spec, stop_event)
+            return self._test_lan(entry, spec, stop_event, spec_provider)
+        return self._test_ble(entry, spec, stop_event, spec_provider)
 
     def _test_lan(
         self,
         entry: DiscoveredDeviceEntry,
         spec: DeviceTestSpec,
         stop_event: threading.Event,
+        spec_provider: Callable[[], DeviceTestSpec] | None = None,
     ) -> DeviceTestResult:
         segments = max(1, int(spec.segments))
         adapter = self._lan_adapter_factory(
@@ -448,14 +483,20 @@ class DeviceDiscoveryService:
                 adapter.turn_on()
             if hasattr(adapter, "set_brightness"):
                 adapter.set_brightness(max(1, round(float(spec.brightness) * 100)))
-            while not stop_event.is_set():
-                for frame, delay in _lan_test_frames(spec):
-                    if stop_event.is_set():
-                        break
-                    frames_sent += int(bool(adapter.send_frame(frame)))
-                    _bounded_sleep(self._sleep, delay, stop_event)
-                if not spec.repeat:
-                    break
+            for current, frame, delay in _live_test_frames(spec, stop_event, spec_provider):
+                if frame is None:
+                    self._sleep(delay)
+                    continue
+                if current != spec:
+                    current.validate(entry.source)
+                    adapter.config = replace(adapter.config, segments=current.segments,
+                                             brightness=current.brightness)
+                    if hasattr(adapter, "set_brightness"):
+                        adapter.set_brightness(max(1, round(current.brightness * 100)))
+                    spec = current
+                    off = [(0, 0, 0)] * current.segments
+                frames_sent += int(bool(adapter.send_frame(frame)))
+                self._sleep(delay)
         finally:
             if hasattr(adapter, "send_frame"):
                 adapter.send_frame(off)
@@ -468,6 +509,7 @@ class DeviceDiscoveryService:
         entry: DiscoveredDeviceEntry,
         spec: DeviceTestSpec,
         stop_event: threading.Event,
+        spec_provider: Callable[[], DeviceTestSpec] | None = None,
     ) -> DeviceTestResult:
         segments = max(1, int(spec.segments))
         protocol = BleProtocol(spec.protocol)
@@ -485,21 +527,19 @@ class DeviceDiscoveryService:
         adapter.start()
         try:
             self._wait_for_ble_connection(adapter, entry.address)
-            while not stop_event.is_set():
-                if spec.pattern == "solid":
-                    r, g, b = _parse_hex_color(spec.color)
-                    adapter.send_color(r, g, b, brightness)
-                    frames_sent += 1
-                    _bounded_sleep(self._sleep, spec.duration_seconds, stop_event)
+            for current, frame, delay in _live_test_frames(spec, stop_event, spec_provider, ble=True):
+                if frame is None:
+                    self._sleep(delay)
+                    continue
+                current.validate(entry.source)
+                adapter.config = replace(adapter.config, segments=current.segments)
+                brightness = max(5, min(100, round(current.brightness * 100)))
+                if current.pattern == "solid":
+                    adapter.send_color(*frame[0], brightness)
                 else:
-                    for frame, delay in _walk_frames(segments, segments * 0.3 if spec.repeat else spec.duration_seconds):
-                        if stop_event.is_set():
-                            break
-                        adapter.send_segment_colors(frame, brightness)
-                        frames_sent += 1
-                        _bounded_sleep(self._sleep, delay, stop_event)
-                if not spec.repeat:
-                    break
+                    adapter.send_segment_colors(frame, brightness)
+                frames_sent += 1
+                self._sleep(delay)
             adapter.send_color(0, 0, 0, brightness)
         finally:
             adapter.stop()
@@ -670,3 +710,33 @@ def _bounded_sleep(
         step = min(0.1, remaining)
         sleep_fn(step)
         remaining -= step
+
+
+def _live_test_frames(spec, stop_event, spec_provider=None, *, ble=False):
+    """Reset the sequence on edits without disconnecting the selected device."""
+    while not stop_event.is_set():
+        if spec_provider is not None:
+            spec = spec_provider()
+        changed = False
+        frames = ([([_parse_hex_color(spec.color)], spec.duration_seconds)]
+                  if ble and spec.pattern == "solid" else _lan_test_frames(spec))
+        for frame, delay in frames:
+            if stop_event.is_set():
+                return
+            if spec_provider is not None and spec_provider() != spec:
+                changed = True
+                break
+            yield spec, frame, min(0.05, delay)
+            remaining = delay - min(0.05, delay)
+            while remaining > 1e-9 and not stop_event.is_set():
+                if spec_provider is not None and spec_provider() != spec:
+                    changed = True
+                    break
+                # Waits are kept separate from output so a walk keeps its pace.
+                step = min(0.05, remaining)
+                yield spec, None, step
+                remaining -= step
+            if changed:
+                break
+        if not changed and not spec.repeat:
+            return

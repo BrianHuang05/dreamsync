@@ -12,14 +12,17 @@ def test_advanced_popup_updates_stops_restarts_and_closes():
     QtWidgets = pytest.importorskip('PySide6.QtWidgets')
     QtCore = pytest.importorskip('PySide6.QtCore')
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    calls, stopped, errors = [], [], []
+    calls, stopped, errors, saved = [], [], [], []
 
     class Service:
-        def test_device(self, entry, spec, *, stop_event):
+        def test_device(self, entry, spec, *, stop_event, spec_provider):
             assert spec.repeat
-            assert len(calls) == len(stopped), 'Tests must not overlap'
             calls.append(spec)
-            stop_event.wait(5)
+            while not stop_event.wait(0.01):
+                current = spec_provider()
+                if current != spec:
+                    spec = current
+                    calls.append(spec)
             stopped.append(spec)
 
     stage = 0
@@ -42,16 +45,22 @@ def test_advanced_popup_updates_stops_restarts_and_closes():
                 dialog.findChild(QtWidgets.QComboBox, 'deviceTestPatternCombo').setCurrentIndex(1)
                 dialog.findChild(QtWidgets.QLineEdit, 'deviceTestColorEdit').setText('#ff0000')
                 dialog.findChild(QtWidgets.QDoubleSpinBox, 'deviceTestBrightnessSpin').setValue(0.5)
+                dialog.findChild(QtWidgets.QSpinBox, 'deviceTestSegmentsSpin').setValue(8)
                 stage = 2
             elif stage == 2 and len(calls) == 2:
                 assert calls[-1].pattern == 'alternate'
                 assert calls[-1].color == '#ff0000'
                 assert calls[-1].brightness == 0.5
+                assert calls[-1].segments == 8
+                assert not stopped
+                dialog.findChild(QtWidgets.QPushButton, 'deviceTestUpdateConfigButton').click()
+                assert saved == [8]
+                assert dialog.isVisible()
                 stop.click()
                 stage = 3
             elif stage == 3 and start.isEnabled():
                 assert dialog.isVisible()
-                assert len(stopped) == 2
+                assert len(stopped) == 1
                 start.click()
                 stage = 4
             elif stage == 4 and len(calls) == 3:
@@ -67,9 +76,9 @@ def test_advanced_popup_updates_stops_restarts_and_closes():
     show_device_test_dialog(
         QtCore, QtWidgets, None, Service(),
         DiscoveredDeviceEntry(key='test', source='lan', name='Test', address='test'),
-        segments=3, transport='ptreal', protocol='segment',
+        segments=3, transport='ptreal', protocol='segment', save_segments=saved.append,
     )
     timer.stop()
     assert not errors, errors
     assert stage == 5
-    assert len(stopped) == 3
+    assert len(stopped) == 2

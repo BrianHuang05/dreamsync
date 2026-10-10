@@ -487,3 +487,58 @@ def test_advanced_test_repeats_until_cancelled(source, pattern):
         assert len(FakeBleAdapter.instances) == 1
         assert FakeBleAdapter.instances[0].stopped
         assert FakeBleAdapter.instances[0].colors[-1][:3] == (0, 0, 0)
+
+
+@pytest.mark.parametrize('source', ['lan', 'ble'])
+def test_live_edits_reset_walk_and_keep_device_connected(source):
+    import threading
+    from dataclasses import replace
+
+    stop = threading.Event()
+    current = DeviceTestSpec(pattern='solid', repeat=True, segments=3)
+    sleeps = 0
+
+    def sleep(seconds):
+        nonlocal current, sleeps
+        sleeps += 1
+        if sleeps == 1:
+            current = replace(current, pattern='walk', segments=5, brightness=0.5)
+        elif sleeps == 2:
+            stop.set()
+
+    FakeLanAdapter.instances = []
+    FakeBleAdapter.instances = []
+    service = DeviceDiscoveryService(lan_adapter_factory=FakeLanAdapter,
+                                     ble_adapter_factory=FakeBleAdapter, sleep_fn=sleep)
+    service.test_device(
+        DiscoveredDeviceEntry(key='test', source=source, name='Test', address='test'),
+        current, stop_event=stop, spec_provider=lambda: current,
+    )
+    expected = [(255, 0, 0)] + [(0, 0, 0)] * 4
+    if source == 'lan':
+        assert len(FakeLanAdapter.instances) == 1
+        adapter = FakeLanAdapter.instances[0]
+        assert adapter.frames[1] == expected
+        assert adapter.config.brightness == 0.5
+        assert adapter.config.segments == 5
+    else:
+        assert len(FakeBleAdapter.instances) == 1
+        adapter = FakeBleAdapter.instances[0]
+        assert adapter.colors[1] == (tuple(expected), 50)
+        assert adapter.stopped
+
+
+@pytest.mark.parametrize('line', ['    segments: 3 # keep this note\n', ''])
+def test_update_segments_preserves_other_config_text(tmp_path, line):
+    path = tmp_path / 'devices.yaml'
+    source = ('# Inventory notes\ndevices:\n  - address: test\n    name: Lamp\n'
+              + line + '    enabled: false\n    custom_note: keep me\n'
+              + '  - address: other\n    segments: 7\n')
+    path.write_text(source, encoding='utf-8')
+    entry = DiscoveredDeviceEntry(key='test', source='lan', name='Lamp', address='test')
+    DeviceDiscoveryService().update_device_segments(path, entry, 12)
+    updated = path.read_text(encoding='utf-8')
+    if line:
+        assert updated == source.replace('segments: 3', 'segments: 12')
+    else:
+        assert updated == source.replace('- address: test', '- segments: 12\n    address: test')
