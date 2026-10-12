@@ -627,6 +627,21 @@ class LatestBleFrameTests(unittest.IsolatedAsyncioTestCase):
             build_ptreal_brightness_packet(20), build_ble_bulb_color_packet(255, 0, 0),
         ])
 
+    async def test_session_toggle_discards_frame_already_waiting_to_send(self):
+        for reenable in (False, True):
+            def update(adapter):
+                adapter.set_output_enabled(False)
+                if reenable:
+                    adapter.set_output_enabled(True)
+
+                async def finish():
+                    adapter._started = False
+                    raise queue.Empty
+
+                adapter._next_queued_frame = finish
+
+            self.assertEqual(await self.run_updates(update), [])
+
 
 class GoveeBleAdapterLifecycleTests(unittest.TestCase):
     def test_stop_without_start(self) -> None:

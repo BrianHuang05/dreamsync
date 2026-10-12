@@ -14,6 +14,7 @@ class DeviceDiscoveryWidgets:
     scan_ble_devices_button: object
     scan_all_devices_button: object
     identify_device_button: object
+    toggle_session_device_button: object
     confirm_identify_protocol_button: object
     try_next_identify_protocol_button: object
     advanced_test_device_button: object
@@ -199,6 +200,14 @@ def build_device_discovery_panel(qt_modules):
     assignment_actions.addWidget(assign_discovered_device_button)
     assignment_actions.addWidget(save_discovered_config_button)
     assignment_layout.addLayout(assignment_actions)
+    toggle_session_device_button = QtWidgets.QPushButton("Disable for Session")
+    toggle_session_device_button.setObjectName("toggleSessionDeviceButton")
+    toggle_session_device_button.setToolTip(
+        "Stop playback updates to this light, holding its last color. "
+        "Enable it again at any time. Resets when the app closes; config stays unchanged."
+    )
+    toggle_session_device_button.setEnabled(False)
+    assignment_layout.addWidget(toggle_session_device_button)
 
     identify_confirmation_actions = QtWidgets.QHBoxLayout()
     confirm_identify_protocol_button = QtWidgets.QPushButton("Worked — Use This")
@@ -239,6 +248,7 @@ def build_device_discovery_panel(qt_modules):
         scan_ble_devices_button=scan_ble_devices_button,
         scan_all_devices_button=scan_all_devices_button,
         identify_device_button=identify_device_button,
+        toggle_session_device_button=toggle_session_device_button,
         confirm_identify_protocol_button=confirm_identify_protocol_button,
         try_next_identify_protocol_button=try_next_identify_protocol_button,
         advanced_test_device_button=advanced_test_device_button,

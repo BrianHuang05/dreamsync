@@ -121,6 +121,28 @@ def make_router(config, *, verified=True):
     return SimpleNamespace(router=router, events=events, created=created, now=now, available=available)
 
 
+def test_session_toggle_reaches_active_ble_and_survives_transport_switch(config):
+    test = make_router(config)
+    try:
+        test.router.set_output_enabled(False)
+        before = list(test.events)
+        test.router.check_health()
+        assert not test.router.send_frame([(1, 2, 3)])
+        assert test.events == before
+        assert test.router._try_next("test fallback")
+        ble = test.created["ble"]
+        toggles = []
+        ble.set_output_enabled = toggles.append
+        test.router.set_output_enabled(True)
+        assert toggles == [True]
+        assert test.router.send_frame([(1, 2, 3)])
+        test.router.set_output_enabled(False)
+        assert toggles == [True, False]
+        assert not test.router.send_frame([(4, 5, 6)])
+    finally:
+        test.router.close()
+
+
 def test_low_lan_rate_releases_before_ble_and_requires_repeated_recovery_probes(config):
     test = make_router(config)
     try:

@@ -9,6 +9,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
+from functools import wraps
 from typing import Any, Callable
 
 from dreamsync.director import EffectMode, LightingIntent
@@ -462,6 +463,14 @@ def parse_device_spec(spec: str) -> GoveeDeviceSpec:
     return GoveeDeviceSpec(ip=ip, segments=segments, role=role, transport=transport)
 
 
+def _with_output_lock(method):
+    @wraps(method)
+    def synchronized(self, *args, **kwargs):
+        with self._output_lock:
+            return method(self, *args, **kwargs)
+    return synchronized
+
+
 class MultiGoveeLanAdapter:
     """Drives multiple Govee devices simultaneously with per-device roles and renderers.
 
@@ -500,6 +509,31 @@ class MultiGoveeLanAdapter:
         self._frame_trace_counter = 0
         self._frame_trace: deque[dict[str, Any]] = deque(maxlen=120)
         self._dreamview_preflight_complete = False
+        self._output_lock = threading.RLock()
+        self._disabled_devices: set[str] = set()
+
+    @_with_output_lock
+    def set_device_enabled(self, address: str, enabled: bool) -> None:
+        """Hold a light's last color until re-enabled; never alter its config."""
+        if enabled:
+            self._disabled_devices.discard(address)
+        else:
+            self._disabled_devices.add(address)
+        for adapter, *_rest in self.devices:
+            if str(adapter.config.device_ip) == address:
+                setter = getattr(adapter, "set_output_enabled", None)
+                if callable(setter):
+                    setter(enabled)
+        for follower in self._ble_followers:
+            adapter = self._ble_adapter_for(follower)
+            if self._ble_address(adapter) == address:
+                setter = getattr(adapter, "set_output_enabled", None)
+                if callable(setter):
+                    setter(enabled)
+
+    def device_enabled(self, address: str) -> bool:
+        with self._output_lock:
+            return address not in self._disabled_devices
 
     def configure_frame_trace(
         self,
@@ -703,6 +737,9 @@ class MultiGoveeLanAdapter:
             adapter = self._ble_adapter_for(follower)
             snapshot = getattr(adapter, "health_snapshot", lambda: {})()
             health[adapter.config.address] = dict(snapshot)
+        for address in health:
+            if not self.device_enabled(address):
+                health[address] = {**health[address], "status": "disabled", "error": "Disabled for this session."}
         return health
 
     def replace_devices(
@@ -721,6 +758,7 @@ class MultiGoveeLanAdapter:
         """Return the IP/address of every LAN device currently in the list."""
         return [adapter.config.device_ip for adapter, _, _, _, _ in self.devices]
 
+    @_with_output_lock
     def send_frame(
         self, t: float, intent: LightingIntent, beat: bool = False,
         params: dict | None = None,
@@ -736,6 +774,8 @@ class MultiGoveeLanAdapter:
         render_params = self._public_render_params(params)
         diagnostic_devices: list[dict[str, Any]] = []
         for adapter, renderer, role, bs, _placement in self.devices:
+            if not self.device_enabled(str(adapter.config.device_ip)):
+                continue
             device_intent = transform_intent(intent, role, brightness_scale=bs)
             self._apply_render_mode_override(renderer, params)
             address = str(adapter.config.device_ip)
@@ -764,6 +804,8 @@ class MultiGoveeLanAdapter:
         # fixtures. This also makes their submitted RGB available to the GUI
         # mirror instead of leaving the room snapshot LAN-only.
         for follower in self._ble_followers:
+            if not self.device_enabled(self._ble_address(self._ble_adapter_for(follower))):
+                continue
             (
                 follower_adapter,
                 follower_role,
@@ -833,6 +875,7 @@ class MultiGoveeLanAdapter:
         )
         return any_sent
 
+    @_with_output_lock
     def send_spatial_scene(
         self,
         t: float,
@@ -849,6 +892,8 @@ class MultiGoveeLanAdapter:
             raise ValueError("Spatial scene must include GridCell.CENTER.")
 
         for adapter, renderer, role, bs, placement in self.devices:
+            if not self.device_enabled(str(adapter.config.device_ip)):
+                continue
             cell = resolve_grid_cell(placement)
             cell_state = scene.get(cell, fallback_state) if cell is not None else fallback_state
             device_intent = transform_intent(
@@ -884,6 +929,8 @@ class MultiGoveeLanAdapter:
                 any_sent = True
 
         for follower in self._ble_followers:
+            if not self.device_enabled(self._ble_address(self._ble_adapter_for(follower))):
+                continue
             (
                 follower_adapter,
                 follower_role,
@@ -970,6 +1017,7 @@ class MultiGoveeLanAdapter:
         )
         return any_sent
 
+    @_with_output_lock
     def send_continuous_spatial_frame(
         self,
         t: float,
@@ -988,6 +1036,8 @@ class MultiGoveeLanAdapter:
         diagnostic_devices: list[dict[str, Any]] = []
 
         for adapter, renderer, role, bs, placement in self.devices:
+            if not self.device_enabled(str(adapter.config.device_ip)):
+                continue
             device_intent = transform_intent(intent, role, brightness_scale=bs)
             self._apply_render_mode_override(renderer, params)
             address = str(adapter.config.device_ip)
@@ -1024,6 +1074,8 @@ class MultiGoveeLanAdapter:
                 any_sent = True
 
         for follower in self._ble_followers:
+            if not self.device_enabled(self._ble_address(self._ble_adapter_for(follower))):
+                continue
             follower_adapter, follower_role, follower_bs, follower_placement, follower_renderer = self._normalize_ble_follower(follower)
             follower_intent = transform_intent(intent, follower_role, brightness_scale=follower_bs)
             address = self._ble_address(follower_adapter)
@@ -1132,6 +1184,7 @@ class MultiGoveeLanAdapter:
         )
         return any_sent
 
+    @_with_output_lock
     def send_baked_frame(
         self,
         t: float,
@@ -1150,6 +1203,8 @@ class MultiGoveeLanAdapter:
         diagnostic_devices: list[dict[str, Any]] = []
         group_state = self._group_runtime_state(params)
         for adapter, renderer, _role, _bs, placement in self.devices:
+            if not self.device_enabled(str(adapter.config.device_ip)):
+                continue
             address = str(adapter.config.device_ip)
             colors = self._baked_device_colors(
                 address,
@@ -1171,6 +1226,8 @@ class MultiGoveeLanAdapter:
                 any_sent = True
 
         for follower in self._ble_followers:
+            if not self.device_enabled(self._ble_address(self._ble_adapter_for(follower))):
+                continue
             (
                 follower_adapter,
                 _follower_role,

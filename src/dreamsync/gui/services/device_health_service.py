@@ -142,6 +142,12 @@ class DeviceHealthService:
             runtime_health = {}
         for config in configs:
             observation = runtime_health.get(config.address, {})
+            if observation.get("status") == "disabled":
+                entries.append(DeviceHealthEntry(
+                    name=config.name, address=config.address, device_type=str(config.type),
+                    status="disabled", error="Disabled for this session.",
+                ))
+                continue
             if getattr(config, "transport_policy", "fixed") == "auto":
                 entries.append(DeviceHealthEntry(
                     name=config.name, address=config.address,

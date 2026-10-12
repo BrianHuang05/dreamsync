@@ -318,6 +318,10 @@ class PreviewMirrorAdapter:
         }
         return bool(sent or fallback_sent)
 
+    def set_device_enabled(self, address: str, enabled: bool) -> None:
+        self._output_adapter.set_device_enabled(address, enabled)
+        self._preview_adapter.set_device_enabled(address, enabled)
+
     def __getattr__(self, name: str):
         return getattr(self._output_adapter, name)
 

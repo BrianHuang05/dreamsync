@@ -21,6 +21,12 @@ python -m dreamsync gui --config dev/devices-dummy.yaml
 
 If `PySide6` is not installed, the `gui` command exits with a clear dependency message instead of failing deep inside the app.
 
+In **Config**, select a configured light and choose **Disable for Session** to
+stop playback updates to that light, holding its last color. **Enable for Session**
+resumes updates at the current playback position without stopping playback.
+The device and all its settings stay in the config unchanged. Toggles apply
+across track and output-mode changes until the app closes.
+
 ## Device discovery
 
 Find Govee devices on your network:

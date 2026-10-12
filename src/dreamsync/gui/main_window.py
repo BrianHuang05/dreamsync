@@ -1520,7 +1520,9 @@ def create_main_window(
             configuration_issue = entry.assigned and not entry.connected
             identifying = entry.key == discovery_identify_state["key"]
             values = (
-                "Not found (configured)" if configuration_issue else ("Configured" if entry.assigned else "Available"),
+                "Disabled for session" if not session_service.device_enabled(entry.address) else (
+                    "Not found (configured)" if configuration_issue else ("Configured" if entry.assigned else "Available")
+                ),
                 entry.source.upper(),
                 entry.existing_name or entry.name,
                 entry.address,
@@ -1545,11 +1547,21 @@ def create_main_window(
                 0,
             )
             table.selectRow(selected_row)
+        _refresh_session_device_toggle(_current_discovery_entry())
         device_discovery_panel.status_label.setText(status)
         if _is_error_message(status):
             _show_error(status)
 
+    def _refresh_session_device_toggle(entry: object | None) -> None:
+        toggle_button = device_discovery_panel.toggle_session_device_button
+        toggle_button.setEnabled(entry is not None and _discovery_config_for_entry(entry) is not None)
+        toggle_button.setText(
+            "Enable for Session" if entry is not None and not session_service.device_enabled(entry.address)
+            else "Disable for Session"
+        )
+
     def _populate_discovery_form(entry: object | None) -> None:
+        _refresh_session_device_toggle(entry)
         if entry is None:
             device_discovery_panel.identify_device_button.setEnabled(False)
             device_discovery_panel.advanced_test_device_button.setEnabled(False)
@@ -11309,9 +11321,10 @@ def create_main_window(
             except Exception:
                 pass
         counts = snapshot.counts()
+        disabled_summary = f" · {counts['disabled']} disabled" if counts.get("disabled") else ""
         queue_panel.device_health_label.setText(
             f"{counts['online']} online · {counts['degraded']} degraded · "
-            f"{counts['offline']} offline · {counts['unknown']} unknown"
+            f"{counts['offline']} offline · {counts['unknown']} unknown{disabled_summary}"
         )
         detail = "\n".join(
             f"{entry.name} ({entry.device_type}): {entry.status}"
@@ -11323,7 +11336,7 @@ def create_main_window(
         queue_panel.device_health_label.setToolTip(detail)
         summary = (
             f"{counts['online']} healthy · {counts['degraded']} degraded · "
-            f"{counts['offline']} offline · {counts['unknown']} unknown"
+            f"{counts['offline']} offline · {counts['unknown']} unknown{disabled_summary}"
         )
         hardware_health_indicator.setText(
             f"Hardware: {summary}" if hardware_playing else "Hardware: ready"
@@ -11338,6 +11351,12 @@ def create_main_window(
         health_by_address = {entry.address.upper(): entry for entry in snapshot.entries}
         table = device_discovery_panel.devices_table
         for row, entry in enumerate(discovery_entries_state["entries"]):
+            if not session_service.device_enabled(entry.address):
+                item = table.item(row, 0)
+                if item is not None:
+                    item.setText("Disabled for session")
+                    item.setBackground(QtGui.QColor("#E5E7EB"))
+                continue
             health = health_by_address.get(str(entry.address).upper())
             if health is None:
                 continue
@@ -12367,6 +12386,17 @@ def create_main_window(
         )
         main_tab_shortcuts.append(shortcut)
     window._dreamsync_main_tab_shortcuts = main_tab_shortcuts
+    def _toggle_session_device() -> None:
+        entry = _current_discovery_entry()
+        if entry is None or _discovery_config_for_entry(entry) is None:
+            return
+        enabled = not session_service.device_enabled(entry.address)
+        session_service.set_device_enabled(entry.address, enabled)
+        _set_discovery_entries(
+            discovery_entries_state["entries"],
+            status=f"{entry.existing_name or entry.name}: {'enabled' if enabled else 'disabled'} for this session. Config unchanged.",
+        )
+    device_discovery_panel.toggle_session_device_button.clicked.connect(_toggle_session_device)
     device_discovery_panel.add_device_button.clicked.connect(_add_discovery_device)
     device_discovery_panel.scan_lan_devices_button.clicked.connect(lambda: _scan_discovery_devices("lan"))
     device_discovery_panel.scan_ble_devices_button.clicked.connect(lambda: _scan_discovery_devices("ble"))

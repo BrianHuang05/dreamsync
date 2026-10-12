@@ -209,6 +209,15 @@ def test_add_device_scans_identifies_and_adds_lan_and_ble(
     assert (
         saved[0].transport if source == "lan" else saved[0].protocol
     ) == expected_choice
+    toggle = window.findChild(QtWidgets.QPushButton, "toggleSessionDeviceButton")
+    original_config = config_path.read_bytes()
+    assert toggle.isEnabled()
+    toggle.click()
+    assert toggle.text() == "Enable for Session"
+    assert table.item(table.currentRow(), 0).text() == "Disabled for session"
+    toggle.click()
+    assert toggle.text() == "Disable for Session"
+    assert config_path.read_bytes() == original_config
     window.close()
     window.deleteLater()
     QtTest.QTest.qWait(20)

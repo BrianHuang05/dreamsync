@@ -6,6 +6,7 @@ import faulthandler
 import threading
 import time
 import traceback
+from weakref import WeakSet
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -996,6 +997,25 @@ class SessionService:
         self._output_leases = output_leases or OutputLeaseService()
         self._hardware_adapter_key: tuple | None = None
         self._hardware_adapter = None
+        self._disabled_devices: set[str] = set()
+        self._device_toggle_lock = threading.RLock()
+        self._output_adapters = WeakSet()
+
+    def device_enabled(self, address: str) -> bool:
+        with self._device_toggle_lock:
+            return address not in self._disabled_devices
+
+    def set_device_enabled(self, address: str, enabled: bool) -> None:
+        """Apply an app-session override to existing and future outputs."""
+        with self._device_toggle_lock:
+            if enabled:
+                self._disabled_devices.discard(address)
+            else:
+                self._disabled_devices.add(address)
+            for adapter in self._output_adapters:
+                setter = getattr(adapter, "set_device_enabled", None)
+                if callable(setter):
+                    setter(address, enabled)
 
     def bind_output_leases(self, output_leases: OutputLeaseService) -> None:
         """Use the supervisor's lease registry for subsequent session starts."""
@@ -1064,9 +1084,25 @@ class SessionService:
         """Read observations from the active persistent adapter; never probe."""
         adapter = self._hardware_adapter
         snapshot = getattr(adapter, "device_health_snapshot", None)
-        return dict(snapshot()) if callable(snapshot) else {}
+        health = dict(snapshot()) if callable(snapshot) else {}
+        with self._device_toggle_lock:
+            for address in self._disabled_devices:
+                health[address] = {"status": "disabled", "error": "Disabled for this session."}
+        return health
 
     def build_output_adapter(
+        self, config_path: Path | None, **kwargs,
+    ):
+        adapter = self._build_output_adapter(config_path, **kwargs)
+        with self._device_toggle_lock:
+            setter = getattr(adapter, "set_device_enabled", None)
+            if callable(setter):
+                for address in self._disabled_devices:
+                    setter(address, False)
+            self._output_adapters.add(adapter)
+        return adapter
+
+    def _build_output_adapter(
         self,
         config_path: Path | None,
         *,

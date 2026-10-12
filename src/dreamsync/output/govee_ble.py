@@ -347,6 +347,25 @@ class GoveeBleAdapter:
         # Track last payload to avoid redundant writes
         self._last_payload: object | None = None
         self.paused: bool = False
+        self._output_enabled = True
+        self._output_revision = 0
+
+    def set_output_enabled(self, enabled: bool) -> None:
+        """Discard pending colors while retaining the BLE connection."""
+        with self._lock:
+            if self._output_enabled == bool(enabled):
+                return
+            self._output_enabled = bool(enabled)
+            self._output_revision += 1
+            self._last_payload = None
+            try:
+                while True:
+                    item = self._queue.get_nowait()
+                    if item is _SHUTDOWN:
+                        self._queue.put_nowait(item)
+                        break
+            except queue.Empty:
+                pass
 
     @property
     def connected(self) -> bool:
@@ -428,7 +447,7 @@ class GoveeBleAdapter:
         *brightness* is 0-100.  Drops oldest update if queue is full (we only
         care about the latest color).
         """
-        if self.paused:
+        if self.paused or not self._output_enabled:
             return
         payload = (r, g, b, brightness)
         if payload == self._last_payload:
@@ -453,7 +472,7 @@ class GoveeBleAdapter:
         brightness: int = 100,
     ) -> None:
         """Queue a per-segment color update for BLE strip devices."""
-        if self.paused:
+        if self.paused or not self._output_enabled:
             return
         normalized = tuple(
             (int(r) & 0xFF, int(g) & 0xFF, int(b) & 0xFF)
@@ -564,6 +583,7 @@ class GoveeBleAdapter:
                 last_keepalive_at = time.monotonic()
                 next_frame_at = self._state.last_send_at + min_interval
                 while self._started and client.is_connected:
+                    output_revision = self._output_revision
                     try:
                         item = await self._next_queued_frame()
                     except queue.Empty:
@@ -608,6 +628,9 @@ class GoveeBleAdapter:
                         return
                     if not self._started:
                         return
+                    if not self._output_enabled or output_revision != self._output_revision:
+                        self._last_payload = None
+                        continue
                     frame_started = time.monotonic()
 
                     is_segment_frame = (

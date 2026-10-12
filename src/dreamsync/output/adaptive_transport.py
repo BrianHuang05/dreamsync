@@ -72,6 +72,16 @@ class AdaptiveGoveeAdapter(GoveeLanAdapter):
         self._switch_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._monitor = None
+        self._output_enabled = True
+
+    def set_output_enabled(self, enabled):
+        with self._state_lock:
+            self._output_enabled = bool(enabled)
+            self._lan_rate_policy.reset()
+            self._reset_host_window()
+            setter = getattr(self._active, "set_output_enabled", None)
+            if callable(setter):
+                setter(enabled)
 
     def _release_current(self):
         with self._state_lock:
@@ -136,6 +146,9 @@ class AdaptiveGoveeAdapter(GoveeLanAdapter):
                         active.start()
                     with self._state_lock:
                         self._active, self._kind = active, candidate.kind
+                        setter = getattr(active, "set_output_enabled", None)
+                        if callable(setter):
+                            setter(self._output_enabled)
                         if retry_lan and candidate.kind == "lan":
                             self._attempted.discard("ble")
                         self._activated_at = self._clock()
@@ -184,7 +197,7 @@ class AdaptiveGoveeAdapter(GoveeLanAdapter):
     def check_health(self):
         """One passive/identity health check; public for deterministic diagnostics."""
         with self._state_lock:
-            if self.paused:
+            if self.paused or not self._output_enabled:
                 self._lan_rate_policy.reset()
                 self._reset_host_window()
                 self._lan_recovery_checks = 0
@@ -313,7 +326,7 @@ class AdaptiveGoveeAdapter(GoveeLanAdapter):
                 self._active.set_brightness(self._brightness)
 
     def send_frame(self, colors):
-        if self.paused:
+        if self.paused or not self._output_enabled:
             with self._state_lock:
                 self._lan_rate_policy.reset()
                 self._reset_host_window()
