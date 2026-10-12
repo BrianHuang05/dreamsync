@@ -90,3 +90,26 @@ def test_export_baked_show_frames_writes_artifact(tmp_path: Path):
     loaded = BakedFrameArtifact.from_json(output_path)
     assert loaded.summary["frame_count"] == 2
     assert loaded.source_show_hash == result.artifact.source_show_hash
+
+
+def test_baking_keeps_dynamic_colors_under_disabled_segments(tmp_path: Path):
+    show_path = tmp_path / "song.show.json"
+    config_path = tmp_path / "devices.yaml"
+    _write_show(show_path)
+    _write_device_config(config_path)
+    with config_path.open("a", encoding="utf-8") as handle:
+        handle.write("    sections:\n      - {index: 1, x: 0, y: 0, z: 0, enabled: false}\n")
+    from dreamsync.output.auto_detect import load_device_config
+    from dreamsync.output.null_adapter import SimulationMultiAdapter
+
+    artifact = bake_show_frames(show_path, config_path, settings=BakeSettings(fps=1)).artifact
+    node_colors = dict(zip((node.key for node in artifact.nodes), artifact.frames[0].colors))
+    assert node_colors["10.0.0.2#section:1"] != "#ffffff"
+    assert node_colors["10.0.0.2#section:1"] != "#000000"
+    adapter = SimulationMultiAdapter.from_configs(load_device_config(config_path))
+    adapter.send_baked_frame(0, node_colors)
+    assert adapter.preview_snapshot()["node_colors"]["10.0.0.2#section:1"] == "#ffffff"
+    adapter.send_baked_frame(0, node_colors, params={
+        "runtime_control": {"segment_enabled": (("10.0.0.2#section:1", True),)},
+    })
+    assert adapter.preview_snapshot()["node_colors"]["10.0.0.2#section:1"] == node_colors["10.0.0.2#section:1"]

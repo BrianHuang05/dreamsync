@@ -25,12 +25,14 @@ class SpatialController:
     config_path: Path | None = None
     nodes: dict[str, SceneNode] = field(default_factory=dict)
     selected_key: str = ""
+    background_color: str = "#ffffff"
     group_definitions: tuple[GroupDefinition, ...] = ()
     device_groups: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def load(self, path: Path) -> list[SceneNode]:
         self.config_path = path
         self.group_definitions = self.service.load_groups(path)
+        self.background_color = self.service.load_background_color(path)
         entries = self.service.load_scene(path)
         self.device_groups = {}
         for entry in entries:
@@ -53,6 +55,7 @@ class SpatialController:
                 section_index=entry.section_index,
                 section_count=entry.section_count,
                 is_section=entry.is_section,
+                enabled=entry.enabled,
                 groups=entry.groups,
                 exclude_groups=entry.exclude_groups,
                 inherited_groups=entry.inherited_groups,
@@ -192,6 +195,8 @@ class SpatialController:
         self.service.save_scene(
             self.config_path,
             {key: (node.x, node.y, node.z) for key, node in self.nodes.items()},
+            background_color=self.background_color,
+            section_enabled={key: node.enabled for key, node in self.nodes.items() if node.is_section},
             group_definitions=self.group_definitions,
             disable_spacing_warnings=disable_spacing_warnings,
             device_groups=self.device_groups,
@@ -206,6 +211,12 @@ class SpatialController:
                 if node.is_section
             },
         )
+
+    def set_segment_enabled(self, key: str, enabled: bool) -> None:
+        node = self.nodes[key]
+        if not node.is_section:
+            raise ValueError("Select an individual segment")
+        self.nodes[key] = replace(node, enabled=bool(enabled))
 
     def create_group(
         self,

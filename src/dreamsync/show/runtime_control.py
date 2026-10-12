@@ -33,12 +33,16 @@ class RuntimeControlState:
     disabled_groups: tuple[str, ...] = ()
     enabled_groups: tuple[str, ...] = ()
     solo_groups: tuple[str, ...] = ()
+    segment_enabled: tuple[tuple[str, bool], ...] = ()
+    background_color: str = ""
     revision: int = 0
 
     @property
     def active(self) -> bool:
         return any(
             (
+                self.segment_enabled,
+                self.background_color,
                 self.palette_override,
                 self.color_bias,
                 self.render_mode,
@@ -80,6 +84,14 @@ class RuntimeControlBus:
             return self._state
 
     def update(self, **changes: Any) -> RuntimeControlState:
+        if changes.get("background_color"):
+            from dreamsync.output.segment_control import validate_background_color
+            changes["background_color"] = validate_background_color(changes["background_color"])
+        if "segment_enabled" in changes:
+            entries = tuple(changes["segment_enabled"])
+            if any(not isinstance(key, str) or not isinstance(enabled, bool) for key, enabled in entries):
+                raise ValueError("segment_enabled must contain (node key, boolean) pairs")
+            changes["segment_enabled"] = tuple((key, enabled) for key, enabled in entries)
         with self._lock:
             next_state = replace(self._state, **changes, revision=self._state.revision + 1)
             self._state = next_state
@@ -201,6 +213,8 @@ def runtime_control_to_dict(state: RuntimeControlState | None) -> dict[str, Any]
         "disabled_groups": tuple(state.disabled_groups),
         "enabled_groups": tuple(state.enabled_groups),
         "solo_groups": tuple(state.solo_groups),
+        "segment_enabled": tuple(state.segment_enabled),
+        "background_color": state.background_color,
         "revision": state.revision,
         "active": state.active,
     }

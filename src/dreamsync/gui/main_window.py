@@ -777,6 +777,28 @@ def create_main_window(
     spin_grid.addWidget(spatial_y_spin, 1, 1)
     spin_grid.addWidget(spatial_z_spin, 2, 1)
     spatial_editor_layout.addLayout(spin_grid)
+    segment_control_box = QtWidgets.QGroupBox("Segment Lighting")
+    segment_control_layout = QtWidgets.QVBoxLayout(segment_control_box)
+    segment_control_layout.addWidget(QtWidgets.QLabel("Checked: dynamic. Unchecked: background color."))
+    segment_enabled_list = QtWidgets.QListWidget()
+    segment_enabled_list.setObjectName("segmentEnabledList")
+    segment_enabled_list.setMaximumHeight(140)
+    segment_control_layout.addWidget(segment_enabled_list)
+    segment_preset_combo = QtWidgets.QComboBox()
+    segment_preset_combo.setObjectName("segmentPresetCombo")
+    for label, value in (("All dynamic", "all"), ("All background", "none"),
+                         ("Odd segments dynamic", "odd"), ("Even segments dynamic", "even"),
+                         ("First half dynamic", "first"), ("Second half dynamic", "second")):
+        segment_preset_combo.addItem(label, value)
+    segment_control_layout.addWidget(segment_preset_combo)
+    segment_preset_button = QtWidgets.QPushButton("Apply to Selected Strip")
+    segment_preset_button.setObjectName("applySegmentPresetButton")
+    segment_control_layout.addWidget(segment_preset_button)
+    background_set_button = QtWidgets.QPushButton("Background Set: #ffffff")
+    background_set_button.setObjectName("backgroundSetButton")
+    background_set_button.setToolTip("One fallback color for all disabled segments. Save Layout to retain it for future sessions.")
+    segment_control_layout.addWidget(background_set_button)
+    spatial_editor_layout.addWidget(segment_control_box)
     spatial_group_box = QtWidgets.QGroupBox("Groups")
     spatial_group_box.setObjectName("spatialGroupBox")
     spatial_group_layout = QtWidgets.QVBoxLayout(spatial_group_box)
@@ -3343,6 +3365,17 @@ def create_main_window(
         spatial_node_list.clear()
         nodes_snapshot = spatial_controller.snapshot()
         selected_node = spatial_controller.nodes.get(spatial_controller.selected_key)
+        segment_enabled_list.clear()
+        segment_chain = spatial_controller.chain_for_node(spatial_controller.selected_key)
+        for segment_node in segment_chain:
+            item = QtWidgets.QListWidgetItem(f"Segment {segment_node.section_index + 1}")
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, segment_node.key)
+            item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(QtCore.Qt.CheckState.Checked if segment_node.enabled else QtCore.Qt.CheckState.Unchecked)
+            segment_enabled_list.addItem(item)
+        segment_preset_button.setEnabled(bool(segment_chain))
+        segment_preset_combo.setEnabled(bool(segment_chain))
+        background_set_button.setText(f"Background Set: {spatial_controller.background_color}")
         selected_group_id = ""
         selected_group_item = spatial_group_list.currentItem()
         if selected_group_item is not None:
@@ -4182,6 +4215,42 @@ def create_main_window(
             z=base_z + step,
             status=f"Nudged Z depth for {_format_spatial_node_label(node)}.",
         )
+
+    def _apply_segment_runtime() -> None:
+        result = runtime_supervisor.update_runtime_control(
+            segment_enabled=tuple((node.key, node.enabled) for node in spatial_controller.nodes.values() if node.is_section),
+            background_color=spatial_controller.background_color,
+        )
+        _refresh_spatial_controls()
+        prefix = "Segment lighting applied live." if result else "Segment lighting edited."
+        spatial_status_label.setText(f"{prefix} Save Layout to retain these settings for future sessions.")
+
+    def _segment_enabled_changed(item) -> None:
+        if spatial_signal_block["value"]:
+            return
+        key = str(item.data(QtCore.Qt.ItemDataRole.UserRole))
+        spatial_controller.set_segment_enabled(key, item.checkState() == QtCore.Qt.CheckState.Checked)
+        _apply_segment_runtime()
+
+    def _apply_segment_preset() -> None:
+        chain = spatial_controller.chain_for_node(spatial_controller.selected_key)
+        preset = segment_preset_combo.currentData()
+        midpoint = (len(chain) + 1) // 2
+        for index, node in enumerate(chain):
+            enabled = (preset == "all" or (preset == "odd" and index % 2 == 0)
+                       or (preset == "even" and index % 2 == 1)
+                       or (preset == "first" and index < midpoint)
+                       or (preset == "second" and index >= midpoint))
+            spatial_controller.set_segment_enabled(node.key, enabled)
+        _apply_segment_runtime()
+
+    def _set_segment_background() -> None:
+        color = QtWidgets.QColorDialog.getColor(
+            QtGui.QColor(spatial_controller.background_color), window, "Background Set",
+        )
+        if color.isValid():
+            spatial_controller.background_color = color.name()
+            _apply_segment_runtime()
 
     def _save_spatial_scene() -> None:  # pragma: no cover - Qt only
         if config_path is None or not config_path.exists():
@@ -12302,6 +12371,9 @@ def create_main_window(
             break
 
     reload_spatial_button.clicked.connect(lambda: _reload_spatial_scene(status="Spatial config reloaded from disk."))
+    segment_enabled_list.itemChanged.connect(_segment_enabled_changed)
+    segment_preset_button.clicked.connect(_apply_segment_preset)
+    background_set_button.clicked.connect(_set_segment_background)
     save_spatial_button.clicked.connect(_save_spatial_scene)
     add_spatial_group_button.clicked.connect(_add_spatial_group)
     rename_spatial_group_button.clicked.connect(_rename_spatial_group)

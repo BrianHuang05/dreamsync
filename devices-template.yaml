@@ -18,6 +18,10 @@
 #   orientation - "left_to_right" (default) or "right_to_left"
 #   weight      - Relative emphasis weight for spatial mapping (default 1.0)
 
+# Shared fallback for sections with enabled: false (default solid white).
+# In the GUI: Segment Lighting > Background Set. Save Layout persists changes.
+background_color: "#ffffff"
+
 devices:
   # --- LAN devices -----------------------------------------------------------
   # LAN devices use UDP on your local network. Fastest option (~1-5ms latency).
@@ -33,6 +37,11 @@ devices:
     y_position: front
     orientation: left_to_right
     weight: 1.0
+    # Optional per-segment dynamic participation; indices are zero-based.
+    # Unlisted segments remain dynamic. Disabled segments use background_color.
+    # sections:
+    #   - {index: 1, x: -0.5, y: 0, z: 0, enabled: false}
+    #   - {index: 3, x: -0.4, y: 0, z: 0, enabled: false}
 
   # - name: "My DreamView"
   #   address: "10.0.0.101"

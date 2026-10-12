@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 import time
@@ -43,6 +43,15 @@ def bake_show_frames(
     device_config_path = Path(device_config_path)
     timeline = ShowTimeline.from_json(show_path)
     configs = load_device_config(device_config_path)
+    # Segment participation is a playback control. Bake the underlying animation
+    # for every segment so hot-enabling one can recover its current show color.
+    configs = [
+        replace(config, placement=replace(
+            config.placement,
+            sections=tuple(replace(section, enabled=True) for section in config.placement.sections),
+        )) if config.placement is not None else config
+        for config in configs
+    ]
     adapter = SimulationMultiAdapter.from_configs(configs)
     runtime = ShowPlaybackRuntime(timeline, adapter)
     runtime.prepare_spatial_playback()

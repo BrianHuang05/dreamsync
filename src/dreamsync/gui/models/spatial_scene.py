@@ -45,6 +45,7 @@ class SceneNode:
     groups: tuple[str, ...] = ()
     exclude_groups: tuple[str, ...] = ()
     inherited_groups: tuple[str, ...] = ()
+    enabled: bool = True
 
     @property
     def chain_key(self) -> str:

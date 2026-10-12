@@ -84,6 +84,7 @@ class DeviceConfig:
     lan_validated_fps: float | None = None
     ble_validated_fps: float | None = None
     spacing_warnings_disabled: bool = False
+    background_color: str = "#ffffff"
 
 
 @dataclass(frozen=True)
@@ -361,6 +362,8 @@ def load_device_config(path: Path) -> list[DeviceConfig]:
     if not isinstance(devices, list):
         raise ValueError(f"'devices' must be a list in {path}")
 
+    from dreamsync.output.segment_control import validate_background_color
+    background_color = validate_background_color(raw.get("background_color", "#ffffff"))
     group_definitions = parse_group_definitions(raw.get("groups"))
     configs: list[DeviceConfig] = []
     for i, entry in enumerate(devices):
@@ -402,6 +405,7 @@ def load_device_config(path: Path) -> list[DeviceConfig]:
                                     or (entry.get("type", "auto") == "auto"
                                         and not _is_ip_address(entry["address"])) else 5.0)),
             placement=placement,
+            background_color=background_color,
             group_definitions=group_definitions,
             device_id=entry.get("device_id"),
             lan_address=entry.get("lan_address"),
@@ -429,6 +433,7 @@ def save_device_config(path: Path, configs: list[DeviceConfig]) -> None:
     payload: dict[str, object] = {
         "devices": [device_config_to_mapping(cfg) for cfg in configs]
     }
+    payload["background_color"] = configs[0].background_color if configs else "#ffffff"
     if definitions:
         payload = {
             "groups": [definition.to_mapping() for definition in definitions],
@@ -837,6 +842,7 @@ def build_multi_adapter(
     spatial_mapper = SpatialMapper(enabled=spatial_enabled) if spatial_enabled else None
     return MultiGoveeLanAdapter(
         device_triples,
+        background_color=next((d.config.background_color for d in detected), "#ffffff"),
         ble_followers=ble_followers,
         spatial_mapper=spatial_mapper,
         group_definitions=next(

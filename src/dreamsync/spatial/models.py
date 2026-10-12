@@ -415,6 +415,8 @@ def _parse_section_placements(entry: Mapping[str, object]) -> tuple[SectionPlace
         if not isinstance(raw_section, Mapping):
             continue
         index = int(raw_section.get("index", offset))
+        if not isinstance(raw_section.get("enabled", True), bool):
+            raise ValueError(f"sections[{index}].enabled must be a boolean")
         x = _parse_axis_value(raw_section.get("x", 0.0), axis_name="x", aliases=_X_ALIASES)
         y = _parse_axis_value(raw_section.get("y", 0.0), axis_name="y", aliases=_Y_ALIASES)
         z = _parse_axis_value(raw_section.get("z", 0.0), axis_name="z", aliases=_Z_ALIASES)

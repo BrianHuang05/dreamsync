@@ -162,6 +162,42 @@ devices:
 
 Explicit config always overrides defaults. `brightness_scale` stacks multiplicatively with role-based scaling (accent = 0.6x intensity).
 
+### Segment lighting and background color
+
+In the room layout editor, select a strip and use **Segment Lighting**. Checked
+segments follow dynamic lighting; unchecked segments show the shared background
+color. **Background Set** selects that color for all devices (solid white by
+default). Presets select odd/even segments, the first/second half, all, or none.
+Segment numbers in the GUI start at 1; the first half includes the middle segment
+when the count is odd. Halves follow segment order, so their physical left/right
+positions depend on the strip installation.
+
+Edits apply to the active session. **Save Layout** also saves them for future
+sessions. In YAML, set a top-level `background_color: "#ffffff"` and mark selected
+entries in a device's `sections` list with `enabled: false`. Section `index` values
+are zero-based; omitted flags default to true. For example:
+
+```yaml
+background_color: "#ffffff"
+devices:
+  - address: "192.168.1.100"
+    type: lan
+    transport: ptreal
+    segments: 4
+    sections:
+      - {index: 1, x: 0.05, y: 0, z: 0, enabled: false}
+      - {index: 3, x: 0.15, y: 0, z: 0, enabled: false}
+```
+
+This keeps GUI segments 2 and 4 at the background color while 1 and 3 remain
+dynamic. Existing section coordinates and group memberships can be retained.
+The fallback replaces dynamic effects and group gating on disabled segments;
+device master brightness still applies. BLE segment output keeps the fallback
+steady rather than applying music-driven hardware brightness to it. This requires
+segment-capable output (RAZER, PTREAL, or BLE segment protocol); COLORWC and bulb
+protocols cannot independently color segments. Newly baked shows retain the
+underlying animation so re-enabling a segment can resume it during playback.
+
 ### Color profiles
 
 8 built-in color profiles control palette selection and effect pools per mood. Use `--profile` to load one, `--profile-rotation` to cycle through several, or `--auto-palette` for unlimited procedural variety:

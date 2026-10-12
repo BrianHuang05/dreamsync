@@ -388,6 +388,7 @@ class DeviceDiscoveryService:
                         config,
                         placement=placement,
                         group_definitions=existing.group_definitions,
+                        background_color=existing.background_color,
                         device_id=config.device_id or existing.device_id,
                         lan_address=config.lan_address or existing.lan_address,
                         ble_address=config.ble_address or existing.ble_address,

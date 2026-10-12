@@ -334,12 +334,14 @@ class SimulationMultiAdapter(MultiGoveeLanAdapter):
         node_keys: dict[str, list[str]],
         spatial_mapper: SpatialMapper | None = None,
         group_definitions: tuple = (),
+        background_color: str = "#ffffff",
     ) -> None:
         super().__init__(
             devices,
             ble_followers=[],
             spatial_mapper=spatial_mapper,
             group_definitions=group_definitions,
+            background_color=background_color,
         )
         self._frames_sent = 0
         self._node_keys = {key: list(value) for key, value in node_keys.items()}
@@ -404,6 +406,7 @@ class SimulationMultiAdapter(MultiGoveeLanAdapter):
         return cls(
             device_tuples,
             node_keys=node_keys,
+            background_color=getattr(configs[0], "background_color", "#ffffff") if configs else "#ffffff",
             spatial_mapper=mapper,
             group_definitions=group_definitions,
         )

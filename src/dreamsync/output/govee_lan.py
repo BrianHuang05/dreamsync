@@ -476,6 +476,7 @@ class MultiGoveeLanAdapter:
         ble_followers: list | None = None,
         spatial_mapper=None,
         group_definitions: tuple[GroupDefinition, ...] = (),
+        background_color: str = "#ffffff",
     ) -> None:
         # Normalize to 5-tuples:
         # (adapter, renderer, role, brightness_scale, placement)
@@ -485,6 +486,7 @@ class MultiGoveeLanAdapter:
         # list of GoveeBleAdapter instances or tuples carrying follower metadata
         self._ble_followers: list = ble_followers or []
         self._spatial_mapper = spatial_mapper
+        self._background_color = background_color
         self._group_definitions = tuple(group_definitions)
         self._default_disabled_groups = tuple(
             definition.id
@@ -749,6 +751,7 @@ class MultiGoveeLanAdapter:
                 beat=beat,
                 params=device_render_params,
             )
+            colors, _ = self._segment_output(colors, address, _placement, params)
             self._last_output_colors[address] = tuple(colors)
             diagnostic_devices.append({
                 "address": address,
@@ -790,9 +793,12 @@ class MultiGoveeLanAdapter:
                     ),
                     placement=follower_placement,
                 )
-                follower_adapter.send_segment_colors(
-                    follower_colors,
+                follower_colors, segment_brightness = self._segment_output(
+                    follower_colors, address, follower_placement, params,
                     brightness=self._intent_brightness(follower_intent),
+                )
+                follower_adapter.send_segment_colors(
+                    follower_colors, brightness=segment_brightness,
                 )
             else:
                 follower_colors = [self._intent_rgb(follower_intent)]
@@ -871,6 +877,7 @@ class MultiGoveeLanAdapter:
                 cell_state.params,
             )
             address = str(adapter.config.device_ip)
+            colors, _ = self._segment_output(colors, address, placement, cell_state.params)
             self._last_output_colors[address] = tuple(colors)
             diagnostic_devices.append({
                 "address": address,
@@ -926,9 +933,12 @@ class MultiGoveeLanAdapter:
                     follower_placement,
                     cell_state.params,
                 )
-                follower_adapter.send_segment_colors(
-                    follower_colors,
+                follower_colors, segment_brightness = self._segment_output(
+                    follower_colors, address, follower_placement, cell_state.params,
                     brightness=self._intent_brightness(follower_intent),
+                )
+                follower_adapter.send_segment_colors(
+                    follower_colors, brightness=segment_brightness,
                 )
             else:
                 follower_colors = [self._intent_rgb(follower_intent)]
@@ -1011,6 +1021,7 @@ class MultiGoveeLanAdapter:
                 layers=layers,
                 params=params,
             )
+            colors, _ = self._segment_output(colors, address, placement, params)
             self._last_output_colors[address] = tuple(colors)
             diagnostic_devices.append({
                 "address": address,
@@ -1049,9 +1060,12 @@ class MultiGoveeLanAdapter:
                     layers=layers,
                     params=params,
                 )
-                follower_adapter.send_segment_colors(
-                    follower_colors,
+                follower_colors, segment_brightness = self._segment_output(
+                    follower_colors, address, follower_placement, params,
                     brightness=self._intent_brightness(follower_intent),
+                )
+                follower_adapter.send_segment_colors(
+                    follower_colors, brightness=segment_brightness,
                 )
             elif follower_placement is not None:
                 memberships = follower_placement.effective_groups()
@@ -1158,6 +1172,7 @@ class MultiGoveeLanAdapter:
                 fallback_color=fallback_color,
             )
             colors = self._gate_baked_colors(colors, placement, group_state)
+            colors, _ = self._segment_output(colors, address, placement, params)
             self._last_output_colors[address] = tuple(colors)
             diagnostic_devices.append({
                 "address": address,
@@ -1196,9 +1211,12 @@ class MultiGoveeLanAdapter:
                 group_state,
             )
             if follower_renderer is not None:
-                follower_adapter.send_segment_colors(
-                    follower_colors,
+                follower_colors, segment_brightness = self._segment_output(
+                    follower_colors, address, follower_placement, params,
                     brightness=100,
+                )
+                follower_adapter.send_segment_colors(
+                    follower_colors, brightness=segment_brightness,
                 )
             else:
                 follower_adapter.emit(
@@ -1472,6 +1490,13 @@ class MultiGoveeLanAdapter:
             for color in colors
         ]
 
+    def _segment_output(self, colors, address, placement, params, *, brightness=100):
+        from dreamsync.output.segment_control import apply_segment_control
+
+        return apply_segment_control(
+            colors, address, placement, params, self._background_color, brightness=brightness,
+        )
+
     def _section_placements_for(
         self,
         placement: DevicePlacement,
@@ -1494,7 +1519,7 @@ class MultiGoveeLanAdapter:
                 z=section.z,
                 orientation=placement.orientation,
                 weight=section.weight,
-                enabled=section.enabled,
+                enabled=placement.enabled,
                 groups=tuple(
                     sorted(
                         (set(placement.groups) | set(section.groups))

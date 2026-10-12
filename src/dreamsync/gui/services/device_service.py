@@ -32,6 +32,7 @@ class DeviceSceneEntry:
     groups: tuple[str, ...] = ()
     exclude_groups: tuple[str, ...] = ()
     inherited_groups: tuple[str, ...] = ()
+    enabled: bool = True
 
 
 class DeviceService:
@@ -55,6 +56,10 @@ class DeviceService:
 
     def load_groups(self, path: Path) -> tuple[GroupDefinition, ...]:
         return parse_group_definitions(self._load_raw_config(path).get("groups"))
+
+    def load_background_color(self, path: Path) -> str:
+        from dreamsync.output.segment_control import validate_background_color
+        return validate_background_color(self._load_raw_config(path).get("background_color", "#ffffff"))
 
     def _load_raw_config(self, path: Path) -> dict[str, Any]:
         yaml = self._require_yaml()
@@ -132,6 +137,7 @@ class DeviceService:
                             section_count=max(1, segments),
                             protocol=protocol,
                             is_section=True,
+                            enabled=section_entry.get("enabled", True),
                             groups=(
                                 normalize_group_ids(
                                     section_entry.get("groups"),
@@ -174,12 +180,17 @@ class DeviceService:
         section_groups: dict[str, tuple[str, ...]] | None = None,
         section_exclude_groups: dict[str, tuple[str, ...]] | None = None,
         disable_spacing_warnings: set[str] | None = None,
+        section_enabled: dict[str, bool] | None = None,
+        background_color: str | None = None,
     ) -> None:
         yaml = self._require_yaml()
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         devices = data.get("devices", [])
         if not isinstance(devices, list):
             raise ValueError("Device config must contain a top-level devices list")
+        if background_color is not None:
+            from dreamsync.output.segment_control import validate_background_color
+            data["background_color"] = validate_background_color(background_color)
         if group_definitions is not None:
             if group_definitions:
                 data["groups"] = [
@@ -223,6 +234,8 @@ class DeviceService:
                     payload = prior_map.get(index, {})
                     payload.pop("x_position", None)
                     payload.pop("y_position", None)
+                    if section_enabled is not None and section_key in section_enabled:
+                        payload["enabled"] = section_enabled[section_key]
                     payload["index"] = index
                     payload["x"] = float(x)
                     payload["y"] = float(y)
