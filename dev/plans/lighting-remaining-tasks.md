@@ -1,4 +1,9 @@
-# Lighting task assessment — 2026-10-08
+# Lighting task assessment — updated 2026-10-10
+
+Latest user result: precompiled show playback through the Surface GUI passes
+with no notable issues. Next: add a newly purchased device using the GUI, then
+validate simultaneous Queue capture/playback. Use
+`new-device-queue-testing-new-chat-prompt.md` for the current handoff sequence.
 
 ## Implemented
 
@@ -31,10 +36,11 @@ All hardware transports were mocked; no physical handoff is claimed verified.
 
 ## Remaining
 
-1. Validate runtime measurements and the accepted BLE cap during ordinary app
-   playback. Mixed-fleet playback is implemented; this is hardware validation,
-   not another feature to build. Existing LAN strips stay on their verified LAN
-   paths. No further Couch BLE screens are requested.
+1. Precompiled GUI playback has passed the user's functional/visual test.
+   Configure the new device through the GUI and validate its inclusion next;
+   then test simultaneous Queue capture/playback. Numerical host-health results
+   and quantified long-run fleet reliability were not supplied. Existing LAN
+   strips stay on LAN; no further Couch BLE screens are requested.
 2. Automatic handoff/recovery needs hardware validation for any device whose
    alternate route is wanted and validated. Current LAN strips remain fixed:
    no accepted BLE fallback rate exists, and Couch BLE failed at 3 Hz. Automated

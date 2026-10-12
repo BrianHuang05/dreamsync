@@ -28,6 +28,17 @@ from dreamsync.render import RenderMode
 from dreamsync.spatial.models import DevicePlacement, SectionPlacement
 
 
+def test_shipped_device_config_parses_without_mocking_yaml():
+    """Validate the actual config used by the desktop launcher, not a fixture."""
+    path = Path(__file__).resolve().parents[1] / "devices.yaml"
+    configs = load_device_config(path)
+    assert configs
+    assert any(config.type == "lan" for config in configs)
+    ble_configs = [config for config in configs if config.type == "ble"]
+    assert ble_configs
+    assert all(0 < config.max_fps <= 3 for config in ble_configs)
+
+
 # ---------------------------------------------------------------------------
 # _is_ip_address tests
 # ---------------------------------------------------------------------------

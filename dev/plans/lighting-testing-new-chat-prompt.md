@@ -1,5 +1,13 @@
 # Prompt for the next chat
 
+Latest handoff (2026-10-10): precompiled GUI show playback passes with no notable
+issues. The next sequence is adding a newly purchased device through the GUI,
+then simultaneous Queue capture/playback. Use
+`dev/plans/new-device-queue-testing-new-chat-prompt.md` as the current prompt;
+the material below is historical lighting context, not a request to repeat
+passed baseline tests. The Queue launcher's ALSA Loopback prerequisite remains
+unverified after a reported missing endpoint.
+
 Continue DreamSync LAN/BLE reliability and latency testing. Inspect the current
 checkout and relevant source before proposing changes. I run hardware tests
 over SSH on a Surface Pro 6; you work in the Windows repository. I will attach
