@@ -4,9 +4,68 @@ Windows-first Python project for local audio-reactive lighting. Listens to syste
 
 ## Quick start
 
+### Fresh Linux machine (no Python required)
+
+Install Git, a downloader, and the native audio/Qt libraries using your distro's
+package manager. For an Ubuntu/Debian desktop VM:
+
+```bash
+sudo apt update
+sudo apt install git curl ca-certificates libportaudio2 libsndfile1 ffmpeg \
+    libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0
+```
+
+After cloning, run these commands from the repository root:
+
+```bash
+bash scripts/setup.sh
+.venv/bin/python -m dreamsync gui --config dev/devices-dummy.yaml
+```
+
+Setup downloads uv and Python 3.12 locally, creates `.venv`, and installs the
+desktop dependencies. No system Python or `python3-venv` package is needed.
+A desktop session and a VM audio device are needed for the GUI/audio features.
+For actual capture, follow the Linux audio routing instructions below; Python
+setup does not configure PipeWire or ALSA Loopback. Package names may differ
+on other distributions.
+
+### Fresh Windows machine (no Python required)
+
+After installing Git and cloning this repository, open PowerShell in the clone
+and run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup.ps1
+.\.venv\Scripts\python.exe -m dreamsync gui --config dev/devices-dummy.yaml
+```
+
+### How setup works
+
+Cloning alone does not execute installers. The setup scripts download
+[uv](https://docs.astral.sh/uv/), use its managed Python 3.12 (selected in
+`.python-version`), and install DreamSync with GUI, YAML, BLE, and Spotify
+dependencies. Python 3.12 is the bootstrap default; the package's existing
+minimum Python requirement remains unchanged. Downloads require internet access.
+The tools and Python are kept in `.bootstrap/`, and packages in `.venv/`, both
+ignored by Git. No administrator access, global Python, PATH changes, or shell
+activation is required for Python setup (Linux system libraries need your package
+manager). Run setup again after pulling dependency changes.
+
+Setup reuses an existing Python 3.12 `.venv`. If an existing environment is broken
+or uses another version, it stops with instructions to rename that environment
+before retrying; it does not delete it. Do not move `.bootstrap/` independently
+of `.venv/`, because the environment depends on its managed interpreter.
+
+FFmpeg and audio routing drivers such as VB-Cable remain separate prerequisites
+for capture/playback features; see the audio routing instructions below. The
+dummy config lets you open the GUI without physical lights.
+
+### Manual setup (Python already installed)
+
 ```bash
 python -m venv .venv
 . .venv/Scripts/activate
+# On Linux: source .venv/bin/activate
 pip install -e .
 ```
 
