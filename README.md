@@ -234,9 +234,12 @@ Segment numbers in the GUI start at 1; the first half includes the middle segmen
 when the count is odd. Halves follow segment order, so their physical left/right
 positions depend on the strip installation.
 
-The **Groups** list in the same box toggles every member of a group at once
-(**All lights** covers the whole room). A partial check means the group's members
-are mixed. Group and single-light changes share one rule: the newest change wins.
+The separate **Group Lighting (Dynamic / Static)** panel toggles every member of a
+group at once (**All lights** covers the whole room). A partial check means the
+group's members are mixed. It never changes membership; the **Groups (Membership)**
+panel below it defines groups and which lights belong to them, and that is what
+**Save Layout** stores. Group and single-light lighting changes share one rule: the
+newest change wins.
 Unchecking the `bulbs` group and then re-checking one lamp leaves that lamp dynamic;
 unchecking the group again afterwards makes every lamp static.
 

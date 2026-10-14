@@ -793,24 +793,19 @@ def create_main_window(
     spin_grid.addWidget(spatial_y_spin, 1, 1)
     spin_grid.addWidget(spatial_z_spin, 2, 1)
     spatial_editor_layout.addLayout(spin_grid)
-    segment_control_box = QtWidgets.QGroupBox("Light / Segment Lighting")
+    segment_control_box = QtWidgets.QGroupBox("Light / Segment Lighting (Dynamic / Static)")
+    segment_control_box.setObjectName("segmentLightingBox")
     segment_control_layout = QtWidgets.QVBoxLayout(segment_control_box)
-    segment_control_layout.addWidget(QtWidgets.QLabel(
-        "Checked: dynamic. Unchecked: background color. Lasts for this app session only; never saved."
-    ))
+    segment_lighting_hint = QtWidgets.QLabel(
+        "Selected light or strip. Checked: follows the music. Unchecked: shows the static background color. "
+        "Lasts for this app session only; never saved."
+    )
+    segment_lighting_hint.setWordWrap(True)
+    segment_control_layout.addWidget(segment_lighting_hint)
     segment_enabled_list = QtWidgets.QListWidget()
     segment_enabled_list.setObjectName("segmentEnabledList")
     segment_enabled_list.setMaximumHeight(140)
     segment_control_layout.addWidget(segment_enabled_list)
-    segment_control_layout.addWidget(QtWidgets.QLabel("Groups (partial check: mixed members)"))
-    group_enabled_list = QtWidgets.QListWidget()
-    group_enabled_list.setObjectName("groupEnabledList")
-    group_enabled_list.setMaximumHeight(110)
-    group_enabled_list.setToolTip(
-        "Check a group to make every member dynamic; uncheck to set every member to the background color. "
-        "A later change to a single light or another group overrides it."
-    )
-    segment_control_layout.addWidget(group_enabled_list)
     segment_preset_combo = QtWidgets.QComboBox()
     segment_preset_combo.setObjectName("segmentPresetCombo")
     for label, value in (("All dynamic", "all"), ("All background", "none"),
@@ -826,9 +821,34 @@ def create_main_window(
     background_set_button.setToolTip("Room default for static bulbs and segments. Show colors and Live overrides take priority. Save Layout to retain it.")
     segment_control_layout.addWidget(background_set_button)
     spatial_editor_layout.addWidget(segment_control_box)
-    spatial_group_box = QtWidgets.QGroupBox("Groups")
+    group_lighting_box = QtWidgets.QGroupBox("Group Lighting (Dynamic / Static)")
+    group_lighting_box.setObjectName("groupLightingBox")
+    group_lighting_layout = QtWidgets.QVBoxLayout(group_lighting_box)
+    group_lighting_hint = QtWidgets.QLabel(
+        "Sets every member of a group at once. Checked: dynamic. Unchecked: static background color. "
+        "Partial: members are mixed. The newest change wins, whether it was made here or on a single light. "
+        "This never changes which lights belong to a group; use Groups (Membership) below for that."
+    )
+    group_lighting_hint.setWordWrap(True)
+    group_lighting_layout.addWidget(group_lighting_hint)
+    group_enabled_list = QtWidgets.QListWidget()
+    group_enabled_list.setObjectName("groupEnabledList")
+    group_enabled_list.setMaximumHeight(110)
+    group_enabled_list.setToolTip(
+        "Check a group to make every member dynamic; uncheck to set every member to the background color. "
+        "A later change to a single light or another group overrides it. Membership is unaffected."
+    )
+    group_lighting_layout.addWidget(group_enabled_list)
+    spatial_editor_layout.addWidget(group_lighting_box)
+    spatial_group_box = QtWidgets.QGroupBox("Groups (Membership)")
     spatial_group_box.setObjectName("spatialGroupBox")
     spatial_group_layout = QtWidgets.QVBoxLayout(spatial_group_box)
+    spatial_group_hint = QtWidgets.QLabel(
+        "Define groups and choose which lights belong to them. Saved with Save Layout. "
+        "Dynamic/static lighting is controlled in Group Lighting above, not here."
+    )
+    spatial_group_hint.setWordWrap(True)
+    spatial_group_layout.addWidget(spatial_group_hint)
     spatial_group_list = QtWidgets.QListWidget()
     spatial_group_list.setObjectName("spatialGroupList")
     spatial_group_list.setMaximumHeight(110)
@@ -838,6 +858,10 @@ def create_main_window(
     )
     spatial_group_default_enabled_check.setObjectName(
         "spatialGroupDefaultEnabledCheck"
+    )
+    spatial_group_default_enabled_check.setToolTip(
+        "Default on/off for cue group gating, saved in the layout. "
+        "Not the dynamic/static lighting state."
     )
     spatial_group_layout.addWidget(spatial_group_default_enabled_check)
     spatial_group_button_row = QtWidgets.QHBoxLayout()
@@ -858,7 +882,7 @@ def create_main_window(
         "spatialGroupWholeDeviceCheck"
     )
     spatial_group_layout.addWidget(spatial_group_whole_device_check)
-    spatial_group_layout.addWidget(QtWidgets.QLabel("Selected node memberships"))
+    spatial_group_layout.addWidget(QtWidgets.QLabel("Selected node memberships (checked = member)"))
     spatial_membership_list = QtWidgets.QListWidget()
     spatial_membership_list.setObjectName("spatialMembershipList")
     spatial_membership_list.setMaximumHeight(150)

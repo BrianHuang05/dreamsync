@@ -152,6 +152,11 @@ def test_gui_group_toggles_resolve_newest_first_and_persist_nowhere(tmp_path, mo
         assert dict(updates[-1]["segment_enabled"]) == dict.fromkeys(all_keys, True)
 
         groups = window.findChild(QtWidgets.QListWidget, "groupEnabledList")
+        # Lighting toggles live in their own panel, apart from group membership editing.
+        assert window.findChild(QtWidgets.QGroupBox, "groupLightingBox").isAncestorOf(groups)
+        assert not window.findChild(QtWidgets.QGroupBox, "spatialGroupBox").isAncestorOf(groups)
+        membership = window.findChild(QtWidgets.QListWidget, "spatialMembershipList")
+        assert window.findChild(QtWidgets.QGroupBox, "spatialGroupBox").isAncestorOf(membership)
         rows = {groups.item(i).data(QtCore.Qt.ItemDataRole.UserRole): groups.item(i) for i in range(groups.count())}
         assert set(rows) == {"all", "bulbs"}
         rows["bulbs"].setCheckState(QtCore.Qt.CheckState.Unchecked)
