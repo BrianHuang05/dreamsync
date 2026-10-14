@@ -181,8 +181,6 @@ class DeviceService:
         section_groups: dict[str, tuple[str, ...]] | None = None,
         section_exclude_groups: dict[str, tuple[str, ...]] | None = None,
         disable_spacing_warnings: set[str] | None = None,
-        section_enabled: dict[str, bool] | None = None,
-        device_enabled: dict[str, bool] | None = None,
         background_color: str | None = None,
     ) -> None:
         yaml = self._require_yaml()
@@ -236,8 +234,6 @@ class DeviceService:
                     payload = prior_map.get(index, {})
                     payload.pop("x_position", None)
                     payload.pop("y_position", None)
-                    if section_enabled is not None and section_key in section_enabled:
-                        payload["enabled"] = section_enabled[section_key]
                     payload["index"] = index
                     payload["x"] = float(x)
                     payload["y"] = float(y)
@@ -273,8 +269,6 @@ class DeviceService:
 
             if key not in placements:
                 continue
-            if device_enabled is not None and key in device_enabled:
-                entry["enabled"] = device_enabled[key]
             x, y, z = placements[key]
             entry.pop("x_position", None)
             entry.pop("y_position", None)

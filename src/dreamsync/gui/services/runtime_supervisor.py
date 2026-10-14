@@ -435,7 +435,10 @@ class RuntimeSupervisor:
         self._pipeline_factory = pipeline_factory
         self._audio_device_service = audio_device_service or AudioDeviceService()
         self._pipeline: PipelineCoordinator | None = None
-        self._output_handle: SessionHandle | None = None
+        # Runtime control that outlives any single session (static/dynamic
+        # lights, room color). Re-applied to every new output session.
+        self._persistent_runtime_control: dict[str, Any] = {}
+        self._output_handle_value: SessionHandle | None = None
         self._preview_handle: SessionHandle | None = None
         self._pipeline_current_item_id: str | None = None
         self._queue_playback_enabled = False
@@ -1351,6 +1354,40 @@ class RuntimeSupervisor:
 
     def preview_session(self):
         return self._session_for_handle(self._preview_handle)
+
+    @property
+    def _output_handle(self) -> SessionHandle | None:
+        return self._output_handle_value
+
+    @_output_handle.setter
+    def _output_handle(self, handle: SessionHandle | None) -> None:
+        self._output_handle_value = handle
+        if handle is not None:
+            self._apply_persistent_runtime_control(handle)
+
+    def _apply_persistent_runtime_control(self, handle: SessionHandle) -> None:
+        if not self._persistent_runtime_control:
+            return
+        session = self._session_for_handle(handle)
+        if session is None or not hasattr(session, "update_runtime_control"):
+            return
+        try:
+            session.update_runtime_control(**self._persistent_runtime_control)
+        except Exception as exc:  # pragma: no cover - defensive
+            self._record_event(f"Could not apply session lighting state: {exc}")
+
+    @property
+    def persistent_runtime_control(self) -> dict[str, Any]:
+        return dict(self._persistent_runtime_control)
+
+    def set_persistent_runtime_control(self, **changes: Any) -> dict[str, Any]:
+        """Remember *changes* for every later session and apply them now.
+
+        This is app-session state only: it is never written to the device
+        config or a Show, and it is forgotten when the application exits.
+        """
+        self._persistent_runtime_control.update(changes)
+        return self.update_runtime_control(**changes)
 
     def update_runtime_control(self, **changes: Any) -> dict[str, Any]:
         session = self.active_session()

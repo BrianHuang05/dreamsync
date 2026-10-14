@@ -470,7 +470,6 @@ devices:
   x: -0.8
   y: -0.3
   z: -0.65
-  enabled: false
 - name: Front Right Lamp
   address: 192.0.2.22
   type: lan
@@ -481,7 +480,6 @@ devices:
   x: 0.8
   y: -0.3
   z: -0.65
-  enabled: false
 - name: Rear Left Lamp
   address: 192.0.2.23
   type: lan

@@ -66,7 +66,7 @@ def test_bulbs_hot_switch_between_static_and_dynamic(path, ble):
     assert send({"runtime_control": {"segment_enabled": (("bulb", False),)}}) == (18, 52, 86)
 
 
-def test_bulb_static_mode_roundtrips_and_simulation_matches(tmp_path):
+def test_bulb_static_mode_is_session_only_and_simulation_matches(tmp_path):
     path = tmp_path / "devices.yaml"
     path.write_text("devices:\n- {name: Lamp, address: bulb, type: ble, protocol: bulb, segments: 1, x: 0, y: 0}\n")
     controller = SpatialController(DeviceService())
@@ -74,11 +74,13 @@ def test_bulb_static_mode_roundtrips_and_simulation_matches(tmp_path):
     controller.set_segment_enabled("bulb", False)
     controller.background_color = "#123456"
     controller.save()
+    assert "enabled" not in path.read_text(encoding="utf-8")
     save_device_config(path, load_device_config(path))
+    assert load_device_config(path)[0].placement.enabled is True
     controller.load(path)
-    assert not controller.nodes["bulb"].enabled
+    assert controller.nodes["bulb"].enabled
     output = SimulationMultiAdapter.from_configs(load_device_config(path))
-    output.send_baked_frame(0, {"bulb": "#ff0000"})
+    output.send_baked_frame(0, {"bulb": "#ff0000"}, params={"runtime_control": {"segment_enabled": (("bulb", False),)}})
     assert output.preview_snapshot()["node_colors"]["bulb"] == "#123456"
 
 

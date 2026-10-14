@@ -15,6 +15,7 @@ from dreamsync.effects import EFFECTS, PALETTES
 from dreamsync.gui.controllers.palette_controller import PaletteController
 from dreamsync.gui.controllers.queue_controller import QueueController
 from dreamsync.gui.controllers.show_patch_controller import ShowPatchController
+from dreamsync.gui.controllers.lighting_participation import LightingParticipation
 from dreamsync.gui.controllers.spatial_controller import SpatialController
 from dreamsync.gui.models.capture_settings import CaptureSettings
 from dreamsync.gui.models.palette_state import PaletteEditorState
@@ -552,6 +553,19 @@ def create_main_window(
     persisted_settings_state = {"value": settings}
 
     spatial_controller = SpatialController(device_service)
+    # Static/dynamic participation lives for this app session only. It is
+    # re-applied to every new playback session and never saved anywhere.
+    lighting_participation = LightingParticipation()
+
+    def _sync_lighting_participation() -> dict:
+        resolved = lighting_participation.resolve(spatial_controller.memberships())
+        spatial_controller.apply_enabled(resolved)
+        if not resolved:
+            return {}
+        return runtime_supervisor.set_persistent_runtime_control(
+            segment_enabled=tuple(resolved.items()),
+            room_background_color=spatial_controller.background_color,
+        )
     palette_controller = PaletteController(profile_service)
     queue_controller = QueueController(queue_service)
     show_patch_controller = ShowPatchController(show_patch_store)
@@ -650,7 +664,9 @@ def create_main_window(
 
     if config_path and config_path.exists():
         scene_entries = device_service.load_scene(config_path)
-        nodes = spatial_controller.load(config_path)
+        spatial_controller.load(config_path)
+        _sync_lighting_participation()
+        nodes = spatial_controller.snapshot()
     else:
         scene_entries = []
         nodes = []
@@ -779,11 +795,22 @@ def create_main_window(
     spatial_editor_layout.addLayout(spin_grid)
     segment_control_box = QtWidgets.QGroupBox("Light / Segment Lighting")
     segment_control_layout = QtWidgets.QVBoxLayout(segment_control_box)
-    segment_control_layout.addWidget(QtWidgets.QLabel("Checked: dynamic. Unchecked: background color."))
+    segment_control_layout.addWidget(QtWidgets.QLabel(
+        "Checked: dynamic. Unchecked: background color. Lasts for this app session only; never saved."
+    ))
     segment_enabled_list = QtWidgets.QListWidget()
     segment_enabled_list.setObjectName("segmentEnabledList")
     segment_enabled_list.setMaximumHeight(140)
     segment_control_layout.addWidget(segment_enabled_list)
+    segment_control_layout.addWidget(QtWidgets.QLabel("Groups (partial check: mixed members)"))
+    group_enabled_list = QtWidgets.QListWidget()
+    group_enabled_list.setObjectName("groupEnabledList")
+    group_enabled_list.setMaximumHeight(110)
+    group_enabled_list.setToolTip(
+        "Check a group to make every member dynamic; uncheck to set every member to the background color. "
+        "A later change to a single light or another group overrides it."
+    )
+    segment_control_layout.addWidget(group_enabled_list)
     segment_preset_combo = QtWidgets.QComboBox()
     segment_preset_combo.setObjectName("segmentPresetCombo")
     for label, value in (("All dynamic", "all"), ("All background", "none"),
@@ -3378,6 +3405,25 @@ def create_main_window(
         segment_preset_button.setEnabled(bool(segment_chain))
         segment_preset_combo.setEnabled(bool(segment_chain))
         background_set_button.setText(f"Background Set: {spatial_controller.background_color}")
+        group_enabled_list.clear()
+        memberships = spatial_controller.memberships()
+        resolved = {key: node.enabled for key, node in spatial_controller.nodes.items()}
+        group_rows = [("all", "All lights")] + [
+            (definition.id, definition.name) for definition in spatial_controller.group_definitions
+        ]
+        for group_id, group_name in group_rows:
+            state = lighting_participation.group_state(group_id, memberships, resolved)
+            if state == "empty":
+                continue
+            item = QtWidgets.QListWidgetItem(group_name)
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, group_id)
+            item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(
+                QtCore.Qt.CheckState.Checked if state == "dynamic"
+                else QtCore.Qt.CheckState.Unchecked if state == "static"
+                else QtCore.Qt.CheckState.PartiallyChecked
+            )
+            group_enabled_list.addItem(item)
         selected_group_id = ""
         selected_group_item = spatial_group_list.currentItem()
         if selected_group_item is not None:
@@ -4109,6 +4155,7 @@ def create_main_window(
         entries = device_service.load_scene(config_path)
         spatial_entries_state["entries"] = entries
         spatial_controller.load(config_path)
+        _sync_lighting_participation()
         _refresh_raw_visualizer_origins()
         spatial_summary_label.setText(_format_spatial_summary(entries, config_path))
         spatial_details.setPlainText(_format_spatial_details(entries))
@@ -4219,19 +4266,26 @@ def create_main_window(
         )
 
     def _apply_segment_runtime() -> None:
-        result = runtime_supervisor.update_runtime_control(
-            segment_enabled=tuple((node.key, node.enabled) for node in spatial_controller.nodes.values()),
-            room_background_color=spatial_controller.background_color,
-        )
+        result = _sync_lighting_participation()
         _refresh_spatial_controls()
-        prefix = "Lighting applied live." if result else "Lighting edited."
-        spatial_status_label.setText(f"{prefix} Save Layout to retain these settings for future sessions.")
+        prefix = "Lighting applied live." if result else "Lighting set for the next playback."
+        spatial_status_label.setText(
+            f"{prefix} Static/dynamic choices last for this app session across Shows and are never saved. "
+            "Save Layout retains only the room background color."
+        )
 
     def _segment_enabled_changed(item) -> None:
         if spatial_signal_block["value"]:
             return
         key = str(item.data(QtCore.Qt.ItemDataRole.UserRole))
-        spatial_controller.set_segment_enabled(key, item.checkState() == QtCore.Qt.CheckState.Checked)
+        lighting_participation.set_node(key, item.checkState() == QtCore.Qt.CheckState.Checked)
+        _apply_segment_runtime()
+
+    def _group_enabled_changed(item) -> None:
+        if spatial_signal_block["value"]:
+            return
+        group_id = str(item.data(QtCore.Qt.ItemDataRole.UserRole))
+        lighting_participation.set_group(group_id, item.checkState() == QtCore.Qt.CheckState.Checked)
         _apply_segment_runtime()
 
     def _apply_segment_preset() -> None:
@@ -4243,7 +4297,7 @@ def create_main_window(
                        or (preset == "even" and index % 2 == 1)
                        or (preset == "first" and index < midpoint)
                        or (preset == "second" and index >= midpoint))
-            spatial_controller.set_segment_enabled(node.key, enabled)
+            lighting_participation.set_node(node.key, enabled)
         _apply_segment_runtime()
 
     def _set_segment_background() -> None:
@@ -12419,6 +12473,7 @@ def create_main_window(
 
     reload_spatial_button.clicked.connect(lambda: _reload_spatial_scene(status="Spatial config reloaded from disk."))
     segment_enabled_list.itemChanged.connect(_segment_enabled_changed)
+    group_enabled_list.itemChanged.connect(_group_enabled_changed)
     segment_preset_button.clicked.connect(_apply_segment_preset)
     background_set_button.clicked.connect(_set_segment_background)
     queue_panel.show_background_button.clicked.connect(lambda: _set_show_background())

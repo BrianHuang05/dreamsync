@@ -234,10 +234,18 @@ Segment numbers in the GUI start at 1; the first half includes the middle segmen
 when the count is odd. Halves follow segment order, so their physical left/right
 positions depend on the strip installation.
 
-Edits apply to the active session. **Save Layout** also saves them for future
-sessions. In YAML, set a top-level `background_color: "#ffffff"` and mark selected
-entries in a device's `sections` list with `enabled: false`. Section `index` values
-are zero-based; omitted flags default to true. For example:
+The **Groups** list in the same box toggles every member of a group at once
+(**All lights** covers the whole room). A partial check means the group's members
+are mixed. Group and single-light changes share one rule: the newest change wins.
+Unchecking the `bulbs` group and then re-checking one lamp leaves that lamp dynamic;
+unchecking the group again afterwards makes every lamp static.
+
+Static/dynamic choices are application-session state. They apply to every Show and
+Live session started afterwards in the same run of the app, but they are not written
+to the device config by **Save Layout** and never to a Show file. Each launch starts
+with every light dynamic. **Save Layout** retains only the room background color.
+In YAML, set a top-level `background_color: "#ffffff"`. Section `index` values are
+zero-based. For example:
 
 ```yaml
 background_color: "#ffffff"
@@ -247,21 +255,18 @@ devices:
     transport: ptreal
     segments: 4
     sections:
-      - {index: 1, x: 0.05, y: 0, z: 0, enabled: false}
-      - {index: 3, x: 0.15, y: 0, z: 0, enabled: false}
+      - {index: 1, x: 0.05, y: 0, z: 0}
+      - {index: 3, x: 0.15, y: 0, z: 0}
 ```
 
-This keeps GUI segments 2 and 4 at the background color while 1 and 3 remain
-dynamic. Existing section coordinates and group memberships can be retained.
-The fallback replaces dynamic effects and group gating on disabled segments;
-device master brightness still applies. BLE segment output keeps the fallback
-steady rather than applying music-driven hardware brightness to it. This requires
+Hand-written `enabled: false` flags on device entries or sections are still honored
+by the CLI, but the GUI overrides them with its session state as soon as it loads.
+The fallback replaces dynamic effects and group gating on static lights; device
+master brightness still applies. BLE segment output keeps the fallback steady rather
+than applying music-driven hardware brightness to it. Per-segment control requires
 segment-capable output (RAZER, PTREAL, or BLE segment protocol); COLORWC and bulb
 protocols cannot independently color segments. Newly baked shows retain the
-underlying animation so re-enabling a segment can resume it during playback.
-
-For a single bulb, `enabled: false` goes on the device entry itself. **Save Layout**
-retains its static/dynamic setting. Hot changes do not write the config until saved.
+underlying animation so re-enabling a light can resume it during playback.
 
 In **Shows**, choose **Static Color** above the track list and click **Save Show**.
 That color is saved with the Show and applies to all its tracks. **Use Room Default**
@@ -273,8 +278,8 @@ Dynamic lights keep following the music. Live overrides never edit the saved Sho
 For spatial testing, `dev/devices-dummy.yaml` contains four valid strips: a straight
 front-wall strip, a vertical tower, a rear U bend, and an L-shaped desk strip, plus
 six individual bulbs at different heights and depths. Every strip link is one
-0.05 cardinal step, including bends. The two front lamps start static. Use this
-placeholder-address config with **Simulation** output.
+0.05 cardinal step, including bends. Use this placeholder-address config with
+**Simulation** output.
 
 ### Color profiles
 

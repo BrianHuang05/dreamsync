@@ -87,24 +87,25 @@ devices:
 """, encoding="utf-8")
 
 
-def test_editor_and_device_config_roundtrip_and_preview(tmp_path):
+def test_editor_save_keeps_room_color_but_never_writes_participation(tmp_path):
     path = tmp_path / "devices.yaml"
     write_config(path)
     controller = SpatialController(DeviceService())
     controller.load(path)
     assert controller.background_color == "#123456"
-    assert not controller.nodes["strip#section:1"].enabled
     controller.set_segment_enabled("strip#section:0", False)
     controller.set_segment_enabled("strip#section:1", True)
     controller.background_color = "#abcdef"
     controller.save()
-    configs = load_device_config(path)
-    save_device_config(path, configs)
-    controller.load(path)
-    assert controller.background_color == "#abcdef"
-    assert [n.enabled for n in controller.snapshot()] == [False, True]
+    saved = path.read_text(encoding="utf-8")
+    assert "#abcdef" in saved
+    # Static/dynamic choices are app-session state: Save Layout leaves the file's flags untouched.
+    assert [s.enabled for s in load_device_config(path)[0].placement.sections] == [True, False]
+    # Participation pushed by the GUI overrides whatever the config says, in every output path.
     adapter = SimulationMultiAdapter.from_configs(load_device_config(path))
-    adapter.send_baked_frame(0, {"strip": "#ff0000"})
+    adapter.send_baked_frame(0, {"strip": "#ff0000"}, params={"runtime_control": {
+        "segment_enabled": (("strip#section:0", False), ("strip#section:1", True)),
+    }})
     assert adapter.preview_snapshot()["node_colors"] == {"strip#section:0": "#abcdef", "strip#section:1": "#ff0000"}
 
 
@@ -125,8 +126,11 @@ def test_gui_segment_controls_apply_live_and_save(tmp_path, monkeypatch):
     write_config(path)
     window = create_main_window(require_qt(), GuiSettings(), config_path=path)
     try:
+        # Every app session starts fully dynamic, even if the config file carries enabled flags.
+        assert dict(updates[-1]["segment_enabled"]) == {"strip#section:0": True, "strip#section:1": True}
         listing = window.findChild(QtWidgets.QListWidget, "segmentEnabledList")
         assert listing.count() == 2
+        assert listing.item(1).checkState() == QtCore.Qt.CheckState.Checked
         listing.item(0).setCheckState(QtCore.Qt.CheckState.Unchecked)
         assert dict(updates[-1]["segment_enabled"])["strip#section:0"] is False
         combo = window.findChild(QtWidgets.QComboBox, "segmentPresetCombo")
@@ -140,7 +144,7 @@ def test_gui_segment_controls_apply_live_and_save(tmp_path, monkeypatch):
         app.processEvents()
         configs = load_device_config(path)
         assert configs[0].background_color == "#aabbcc"
-        assert [s.enabled for s in configs[0].placement.sections] == [False, True]
+        assert [s.enabled for s in configs[0].placement.sections] == [True, False]
     finally:
         window.close()
 

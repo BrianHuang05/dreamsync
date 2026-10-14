@@ -196,8 +196,6 @@ class SpatialController:
             self.config_path,
             {key: (node.x, node.y, node.z) for key, node in self.nodes.items()},
             background_color=self.background_color,
-            section_enabled={key: node.enabled for key, node in self.nodes.items() if node.is_section},
-            device_enabled={key: node.enabled for key, node in self.nodes.items() if not node.is_section},
             group_definitions=self.group_definitions,
             disable_spacing_warnings=disable_spacing_warnings,
             device_groups=self.device_groups,
@@ -216,6 +214,17 @@ class SpatialController:
     def set_segment_enabled(self, key: str, enabled: bool) -> None:
         node = self.nodes[key]
         self.nodes[key] = replace(node, enabled=bool(enabled))
+
+    def memberships(self) -> dict[str, frozenset[str]]:
+        """Node key -> effective group IDs, for participation resolution."""
+        return {key: node.effective_groups for key, node in self.nodes.items()}
+
+    def apply_enabled(self, resolved: dict[str, bool]) -> None:
+        """Display session participation; never persisted by save()."""
+        for key, enabled in resolved.items():
+            node = self.nodes.get(key)
+            if node is not None and node.enabled != bool(enabled):
+                self.nodes[key] = replace(node, enabled=bool(enabled))
 
     def create_group(
         self,
