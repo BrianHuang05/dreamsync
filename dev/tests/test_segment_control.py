@@ -134,7 +134,7 @@ def test_gui_segment_controls_apply_live_and_save(tmp_path, monkeypatch):
         window.findChild(QtWidgets.QPushButton, "applySegmentPresetButton").click()
         assert dict(updates[-1]["segment_enabled"]) == {"strip#section:0": False, "strip#section:1": True}
         window.findChild(QtWidgets.QPushButton, "backgroundSetButton").click()
-        assert updates[-1]["background_color"] == "#aabbcc"
+        assert updates[-1]["room_background_color"] == "#aabbcc"
         save = next(b for b in window.findChildren(QtWidgets.QPushButton) if b.text() == "Save Layout")
         save.click()
         app.processEvents()

@@ -157,6 +157,16 @@ class ShowService:
     def new_show(self, name: str = "Untitled Show") -> Show:
         return Show(name=name, tracks=(), metadata={})
 
+    def set_background_color(self, show: Show, color: str = "") -> Show:
+        """Set the shared static-light color, or inherit the room default."""
+        from dreamsync.output.segment_control import validate_background_color
+        metadata = dict(show.metadata)
+        if color:
+            metadata["background_color"] = validate_background_color(color)
+        else:
+            metadata.pop("background_color", None)
+        return replace(show, metadata=metadata)
+
     def load_show(self, path: Path) -> Show:
         """Load a multi-track Show or upgrade a legacy one-track timeline."""
         return Show.from_json(path)

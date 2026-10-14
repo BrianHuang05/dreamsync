@@ -7,7 +7,7 @@ import socket
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Callable
 
@@ -815,7 +815,10 @@ class MultiGoveeLanAdapter:
                         bpm=follower_intent.bpm,
                         color=follower_intent.color,
                     )
-                follower_adapter.emit(t, follower_intent)
+                follower_colors = self._emit_bulb(
+                    follower_adapter, t, follower_intent, follower_colors,
+                    address, follower_placement, params,
+                )
             self._last_output_colors[address] = tuple(follower_colors)
             diagnostic_devices.append({
                 "address": address,
@@ -955,7 +958,10 @@ class MultiGoveeLanAdapter:
                         bpm=follower_intent.bpm,
                         color=follower_intent.color,
                     )
-                follower_adapter.emit(t, follower_intent)
+                follower_colors = self._emit_bulb(
+                    follower_adapter, t, follower_intent, follower_colors,
+                    address, follower_placement, cell_state.params,
+                )
             self._last_output_colors[address] = tuple(follower_colors)
             diagnostic_devices.append({
                 "address": address,
@@ -1079,7 +1085,7 @@ class MultiGoveeLanAdapter:
                     and group_state.contribution_enabled(base_selector)
                     and group_state.node_enabled(memberships)
                 )
-                sample = self._spatial_mapper.sample_point(spatial_t, follower_placement, follower_intent, spec)
+                sample = self._spatial_mapper.sample_point(spatial_t, replace(follower_placement, enabled=True), follower_intent, spec)
                 layer_samples = self._layer_samples(
                     t=spatial_t,
                     placement=follower_placement,
@@ -1116,11 +1122,17 @@ class MultiGoveeLanAdapter:
                     )
                 ]
                 follower_colors = [self._intent_rgb(follower_intent)]
-                follower_adapter.emit(t, follower_intent)
+                follower_colors = self._emit_bulb(
+                    follower_adapter, t, follower_intent, follower_colors,
+                    address, follower_placement, params,
+                )
             else:
                 pre_spatial_follower_colors = [self._intent_rgb(follower_intent)]
                 follower_colors = list(pre_spatial_follower_colors)
-                follower_adapter.emit(t, follower_intent)
+                follower_colors = self._emit_bulb(
+                    follower_adapter, t, follower_intent, follower_colors,
+                    address, follower_placement, params,
+                )
             address = self._ble_address(follower_adapter)
             self._last_output_colors[address] = tuple(follower_colors)
             diagnostic_devices.append({
@@ -1219,8 +1231,8 @@ class MultiGoveeLanAdapter:
                     follower_colors, brightness=segment_brightness,
                 )
             else:
-                follower_adapter.emit(
-                    t,
+                follower_colors = self._emit_bulb(
+                    follower_adapter, t,
                     LightingIntent(
                         mode=EffectMode.AMBIENT,
                         intensity=1.0,
@@ -1228,6 +1240,7 @@ class MultiGoveeLanAdapter:
                         bpm=120.0,
                         color=self._rgb_hex(follower_colors[0]),
                     ),
+                    follower_colors, address, follower_placement, params,
                 )
             self._last_output_colors[address] = tuple(follower_colors)
             diagnostic_devices.append({
@@ -1427,6 +1440,10 @@ class MultiGoveeLanAdapter:
         if placement is None or self._spatial_mapper is None:
             return colors
 
+        # Static bulb gating happens at final output, so hot re-enabling
+        # can restore dynamics even when the saved placement is static.
+        if not placement.sections:
+            placement = replace(placement, enabled=True)
         group_state = self._group_runtime_state(params)
         base_selector = self._group_selector(params)
 
@@ -1489,6 +1506,16 @@ class MultiGoveeLanAdapter:
             )
             for color in colors
         ]
+
+    def _emit_bulb(self, adapter, t, intent, colors, address, placement, params):
+        final_colors, brightness = self._segment_output(
+            colors, address, placement, params, brightness=self._intent_brightness(intent),
+        )
+        if final_colors is colors:
+            adapter.emit(t, intent)
+        else:
+            adapter.send_color(*final_colors[0], brightness=brightness)
+        return final_colors
 
     def _segment_output(self, colors, address, placement, params, *, brightness=100):
         from dreamsync.output.segment_control import apply_segment_control

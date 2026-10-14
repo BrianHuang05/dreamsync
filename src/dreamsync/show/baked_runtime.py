@@ -19,6 +19,7 @@ class BakedFramePlaybackRuntime:
         multi_adapter,
         *,
         control_state_getter=None,
+        background_color: str = "",
     ) -> None:
         self._artifact = artifact
         self._multi_adapter = multi_adapter
@@ -28,6 +29,7 @@ class BakedFramePlaybackRuntime:
         self._lookup_total_seconds = 0.0
         self._lookup_max_seconds = 0.0
         self._control_state_getter = control_state_getter
+        self._background_color = background_color
 
     @property
     def stats(self) -> dict[str, Any]:
@@ -79,11 +81,11 @@ class BakedFramePlaybackRuntime:
             node.key: color
             for node, color in zip(self._artifact.nodes, frame.colors)
         }
-        params = None
+        params = {"show_background_color": self._background_color} if self._background_color else None
         if self._control_state_getter is not None:
             state = self._control_state_getter()
             if state is not None:
-                params = {"runtime_control": runtime_control_to_dict(state)}
+                params = {**(params or {}), "runtime_control": runtime_control_to_dict(state)}
         sent = bool(
             send_baked_frame(t, node_colors, params=params)
             if params is not None

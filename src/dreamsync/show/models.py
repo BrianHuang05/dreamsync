@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import bisect
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 
@@ -210,6 +210,17 @@ class Show:
     def __post_init__(self) -> None:
         if not str(self.name).strip():
             raise ValueError("Show.name must not be empty")
+        if self.metadata.get("background_color"):
+            from dreamsync.output.segment_control import validate_background_color
+            validate_background_color(self.metadata["background_color"])
+
+    def timeline_for_track(self, index: int) -> ShowTimeline | None:
+        """Apply shared Show settings without changing its embedded Track."""
+        timeline = self.tracks[index].timeline
+        color = self.metadata.get("background_color")
+        if timeline is None or not color:
+            return timeline
+        return replace(timeline, metadata={**timeline.metadata, "background_color": color})
 
     @property
     def is_fully_compiled(self) -> bool:

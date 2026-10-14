@@ -233,6 +233,11 @@ class QueuePanelWidgets:
     recent_saved_list: object
     show_tracks_list: object
     show_name_edit: object
+    show_background_button: object
+    show_background_reset_button: object
+    live_background_button: object
+    live_background_reset_button: object
+    live_background_status_label: object
     shows_splitter: object
     shows_left_panel: object
     show_audio_label: object
@@ -585,6 +590,19 @@ def build_queue_panel(qt_modules):
     live_learning_toolbar.setVisible(False)
     queue_layout.addWidget(live_learning_toolbar)
     queue_layout.addWidget(playlist_label)
+    background_row = QtWidgets.QHBoxLayout()
+    live_background_button = QtWidgets.QPushButton("Override Static Color…")
+    live_background_button.setObjectName("liveBackgroundColorButton")
+    live_background_button.setToolTip("Temporarily set one color for all static bulbs and strip segments.")
+    live_background_reset_button = QtWidgets.QPushButton("Use Show / Room Color")
+    live_background_reset_button.setObjectName("resetLiveBackgroundColorButton")
+    live_background_status_label = QtWidgets.QLabel("Static color: show / room default")
+    live_background_status_label.setObjectName("liveBackgroundStatusLabel")
+    background_row.addWidget(live_background_button)
+    background_row.addWidget(live_background_reset_button)
+    background_row.addWidget(live_background_status_label)
+    background_row.addStretch(1)
+    queue_layout.addLayout(background_row)
 
     playback_info_group = QtWidgets.QGroupBox("Playback Status")
     playback_info_group.setObjectName("playbackStatusGroup")
@@ -2940,6 +2958,15 @@ def build_queue_panel(qt_modules):
     show_name_edit.setObjectName("showNameEdit")
     show_name_edit.setPlaceholderText("Show name")
     show_tracks_layout.addWidget(show_name_edit)
+    show_background_row = QtWidgets.QHBoxLayout()
+    show_background_button = QtWidgets.QPushButton("Static Color: Room Default")
+    show_background_button.setObjectName("showBackgroundColorButton")
+    show_background_button.setToolTip("One background color for static bulbs and segments throughout this Show. Saved with Save Show.")
+    show_background_reset_button = QtWidgets.QPushButton("Use Room Default")
+    show_background_reset_button.setObjectName("resetShowBackgroundColorButton")
+    show_background_row.addWidget(show_background_button)
+    show_background_row.addWidget(show_background_reset_button)
+    show_tracks_layout.addLayout(show_background_row)
     show_tracks_list = QtWidgets.QListWidget()
     show_tracks_list.setObjectName("showTracksList")
     show_tracks_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
@@ -3450,6 +3477,11 @@ def build_queue_panel(qt_modules):
         recent_saved_list=recent_saved_list,
         show_tracks_list=show_tracks_list,
         show_name_edit=show_name_edit,
+        show_background_button=show_background_button,
+        show_background_reset_button=show_background_reset_button,
+        live_background_button=live_background_button,
+        live_background_reset_button=live_background_reset_button,
+        live_background_status_label=live_background_status_label,
         shows_splitter=shows_splitter,
         shows_left_panel=shows_left_panel,
         show_audio_label=show_audio_label,

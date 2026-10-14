@@ -1425,12 +1425,12 @@ class SessionService:
         if pending:
             raise ValueError("Compile every Track before playing this Show: " + ", ".join(pending))
         tracks: list[tuple[Path, ShowTimeline]] = []
-        for track in show.tracks:
+        for index, track in enumerate(show.tracks):
             audio_path = Path(track.audio_path)
             if not audio_path.is_file():
                 raise FileNotFoundError(f"Audio Track not found: {audio_path}")
             assert track.timeline is not None
-            tracks.append((audio_path, track.timeline))
+            tracks.append((audio_path, show.timeline_for_track(index)))
 
         stop_event = threading.Event()
         session_ref: list[Any] = [None]

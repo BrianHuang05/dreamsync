@@ -113,3 +113,20 @@ def test_baking_keeps_dynamic_colors_under_disabled_segments(tmp_path: Path):
         "runtime_control": {"segment_enabled": (("10.0.0.2#section:1", True),)},
     })
     assert adapter.preview_snapshot()["node_colors"]["10.0.0.2#section:1"] == node_colors["10.0.0.2#section:1"]
+
+
+def test_baking_keeps_animation_under_static_bulbs(tmp_path):
+    from dreamsync.output.auto_detect import load_device_config
+    from dreamsync.output.null_adapter import SimulationMultiAdapter
+    show_path = tmp_path / "song.show.json"
+    config_path = tmp_path / "bulbs.yaml"
+    _write_show(show_path)
+    config_path.write_text("devices:\n- {name: Bulb, address: bulb, type: lan, segments: 1, enabled: false}\n")
+    artifact = bake_show_frames(show_path, config_path, settings=BakeSettings(fps=1)).artifact
+    colors = dict(zip((node.key for node in artifact.nodes), artifact.frames[0].colors))
+    assert colors["bulb"] == "#ff0000"
+    adapter = SimulationMultiAdapter.from_configs(load_device_config(config_path))
+    adapter.send_baked_frame(0, colors)
+    assert adapter.preview_snapshot()["node_colors"]["bulb"] == "#ffffff"
+    adapter.send_baked_frame(0, colors, params={"runtime_control": {"segment_enabled": (("bulb", True),)}})
+    assert adapter.preview_snapshot()["node_colors"]["bulb"] == "#ff0000"

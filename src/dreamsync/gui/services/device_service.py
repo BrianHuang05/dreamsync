@@ -165,6 +165,7 @@ class DeviceService:
                     z=base_z,
                     physical_name=name,
                     protocol=protocol,
+                    enabled=placement.enabled if placement else True,
                     groups=placement.groups if placement else (),
                 )
             )
@@ -181,6 +182,7 @@ class DeviceService:
         section_exclude_groups: dict[str, tuple[str, ...]] | None = None,
         disable_spacing_warnings: set[str] | None = None,
         section_enabled: dict[str, bool] | None = None,
+        device_enabled: dict[str, bool] | None = None,
         background_color: str | None = None,
     ) -> None:
         yaml = self._require_yaml()
@@ -271,6 +273,8 @@ class DeviceService:
 
             if key not in placements:
                 continue
+            if device_enabled is not None and key in device_enabled:
+                entry["enabled"] = device_enabled[key]
             x, y, z = placements[key]
             entry.pop("x_position", None)
             entry.pop("y_position", None)

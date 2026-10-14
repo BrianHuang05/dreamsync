@@ -777,7 +777,7 @@ def create_main_window(
     spin_grid.addWidget(spatial_y_spin, 1, 1)
     spin_grid.addWidget(spatial_z_spin, 2, 1)
     spatial_editor_layout.addLayout(spin_grid)
-    segment_control_box = QtWidgets.QGroupBox("Segment Lighting")
+    segment_control_box = QtWidgets.QGroupBox("Light / Segment Lighting")
     segment_control_layout = QtWidgets.QVBoxLayout(segment_control_box)
     segment_control_layout.addWidget(QtWidgets.QLabel("Checked: dynamic. Unchecked: background color."))
     segment_enabled_list = QtWidgets.QListWidget()
@@ -796,7 +796,7 @@ def create_main_window(
     segment_control_layout.addWidget(segment_preset_button)
     background_set_button = QtWidgets.QPushButton("Background Set: #ffffff")
     background_set_button.setObjectName("backgroundSetButton")
-    background_set_button.setToolTip("One fallback color for all disabled segments. Save Layout to retain it for future sessions.")
+    background_set_button.setToolTip("Room default for static bulbs and segments. Show colors and Live overrides take priority. Save Layout to retain it.")
     segment_control_layout.addWidget(background_set_button)
     spatial_editor_layout.addWidget(segment_control_box)
     spatial_group_box = QtWidgets.QGroupBox("Groups")
@@ -3367,8 +3367,10 @@ def create_main_window(
         selected_node = spatial_controller.nodes.get(spatial_controller.selected_key)
         segment_enabled_list.clear()
         segment_chain = spatial_controller.chain_for_node(spatial_controller.selected_key)
-        for segment_node in segment_chain:
-            item = QtWidgets.QListWidgetItem(f"Segment {segment_node.section_index + 1}")
+        lighting_nodes = segment_chain or ([selected_node] if selected_node is not None else [])
+        for segment_node in lighting_nodes:
+            label = f"Segment {segment_node.section_index + 1}" if segment_node.is_section else segment_node.label
+            item = QtWidgets.QListWidgetItem(label)
             item.setData(QtCore.Qt.ItemDataRole.UserRole, segment_node.key)
             item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(QtCore.Qt.CheckState.Checked if segment_node.enabled else QtCore.Qt.CheckState.Unchecked)
@@ -4218,11 +4220,11 @@ def create_main_window(
 
     def _apply_segment_runtime() -> None:
         result = runtime_supervisor.update_runtime_control(
-            segment_enabled=tuple((node.key, node.enabled) for node in spatial_controller.nodes.values() if node.is_section),
-            background_color=spatial_controller.background_color,
+            segment_enabled=tuple((node.key, node.enabled) for node in spatial_controller.nodes.values()),
+            room_background_color=spatial_controller.background_color,
         )
         _refresh_spatial_controls()
-        prefix = "Segment lighting applied live." if result else "Segment lighting edited."
+        prefix = "Lighting applied live." if result else "Lighting edited."
         spatial_status_label.setText(f"{prefix} Save Layout to retain these settings for future sessions.")
 
     def _segment_enabled_changed(item) -> None:
@@ -4251,6 +4253,42 @@ def create_main_window(
         if color.isValid():
             spatial_controller.background_color = color.name()
             _apply_segment_runtime()
+
+    def _set_show_background(*, reset: bool = False) -> None:
+        if not _current_show_is_editable():
+            return
+        show = _current_show()
+        color = ""
+        if not reset:
+            selected = QtWidgets.QColorDialog.getColor(
+                QtGui.QColor(show.metadata.get("background_color") or spatial_controller.background_color),
+                window, "Show Static Color",
+            )
+            if not selected.isValid():
+                return
+            color = selected.name()
+        show_editor_state["show"] = show_service.set_background_color(show, color)
+        queue_panel.show_background_button.setText(f"Static Color: {color or 'Room Default'}")
+        queue_panel.show_editor_status_label.setText("Static color changed for this Show. Save Show to keep it.")
+
+    def _set_live_background(*, reset: bool = False) -> None:
+        state = runtime_supervisor.runtime_control_snapshot()
+        color = ""
+        if not reset:
+            selected = QtWidgets.QColorDialog.getColor(
+                QtGui.QColor(state.get("background_color") or spatial_controller.background_color),
+                window, "Live Static Color Override",
+            )
+            if not selected.isValid():
+                return
+            color = selected.name()
+        result = runtime_supervisor.update_runtime_control(background_color=color)
+        if not result:
+            queue_panel.live_background_status_label.setText("Start playback or Live mode to override the static color.")
+            return
+        queue_panel.live_background_status_label.setText(
+            f"Static color override: {color}" if color else "Static color: show / room default"
+        )
 
     def _save_spatial_scene() -> None:  # pragma: no cover - Qt only
         if config_path is None or not config_path.exists():
@@ -5921,6 +5959,8 @@ def create_main_window(
 
     def _render_show_tracks() -> None:
         show = _current_show()
+        background = show.metadata.get("background_color") or "Room Default"
+        queue_panel.show_background_button.setText(f"Static Color: {background}")
         current_index = show_editor_state.get("track_index")
         list_widget = queue_panel.show_tracks_list
         name_blocker = QtCore.QSignalBlocker(queue_panel.show_name_edit)
@@ -5990,6 +6030,8 @@ def create_main_window(
         )
         for control in (
             queue_panel.show_name_edit,
+            queue_panel.show_background_button,
+            queue_panel.show_background_reset_button,
             queue_panel.show_bpm_spin,
             queue_panel.show_time_signature_combo,
             queue_panel.show_duration_spin,
@@ -8797,6 +8839,11 @@ def create_main_window(
         _apply_capture_settings_to_form(runtime_state.capture_settings)
         _apply_reactive_settings_to_form(runtime_state.reactive_settings)
         runtime_control = runtime_supervisor.runtime_control_snapshot()
+        live_background = runtime_control.get("background_color")
+        queue_panel.live_background_status_label.setText(
+            f"Static color override: {live_background}" if live_background
+            else "Static color: show / room default"
+        )
         active_override = "active" if runtime_control.get("active") else "inactive"
         queue_panel.runtime_control_status_label.setText(
             f"Live overrides are {active_override}. "
@@ -10615,7 +10662,7 @@ def create_main_window(
             _render_queue_state(queue_controller.state)
             return
 
-        timeline = track.timeline
+        timeline = show.timeline_for_track(0)
         if timeline is None:
             queue_controller.set_status("The selected compiled track has no timeline data.")
             _render_queue_state(queue_controller.state)
@@ -10992,7 +11039,7 @@ def create_main_window(
                         )
                     return runtime_supervisor.start_timeline_show(
                         Path(track.audio_path),
-                        track.timeline,
+                        show.timeline_for_track(show_editor_state["track_index"]),
                         show_path=show_editor_state["path"],
                         config_path=config_path,
                         start_seconds=start_seconds,
@@ -12374,6 +12421,10 @@ def create_main_window(
     segment_enabled_list.itemChanged.connect(_segment_enabled_changed)
     segment_preset_button.clicked.connect(_apply_segment_preset)
     background_set_button.clicked.connect(_set_segment_background)
+    queue_panel.show_background_button.clicked.connect(lambda: _set_show_background())
+    queue_panel.show_background_reset_button.clicked.connect(lambda: _set_show_background(reset=True))
+    queue_panel.live_background_button.clicked.connect(lambda: _set_live_background())
+    queue_panel.live_background_reset_button.clicked.connect(lambda: _set_live_background(reset=True))
     save_spatial_button.clicked.connect(_save_spatial_scene)
     add_spatial_group_button.clicked.connect(_add_spatial_group)
     rename_spatial_group_button.clicked.connect(_rename_spatial_group)

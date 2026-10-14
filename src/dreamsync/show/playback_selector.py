@@ -104,6 +104,7 @@ def choose_show_playback_runtime(
             artifact,
             multi_adapter,
             control_state_getter=control_state_getter,
+            background_color=str(timeline.metadata.get("background_color") or ""),
         ),
         playback_mode_used="baked",
         baked_validation=validation,

@@ -29,13 +29,17 @@ def apply_segment_control(
     runtime = (params or {}).get("runtime_control") or {}
     overrides = dict(runtime.get("segment_enabled", ()))
     defaults = {s.index: s.enabled for s in placement.sections} if placement else {}
+    device_enabled = overrides.get(address, placement.enabled if placement else True)
     disabled = {
         i for i in range(len(colors))
-        if not overrides.get(f"{address}#section:{i}", defaults.get(i, True))
+        if not overrides.get(f"{address}#section:{i}", defaults.get(i, device_enabled))
     }
     if not disabled:
         return colors, brightness
-    color = validate_background_color(runtime.get("background_color") or background_color)
+    color = validate_background_color(
+        runtime.get("background_color") or (params or {}).get("show_background_color")
+        or runtime.get("room_background_color") or background_color
+    )
     rgb = tuple(int(color[i:i + 2], 16) for i in (1, 3, 5))
     factor = brightness / 100.0
     return [

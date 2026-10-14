@@ -223,12 +223,13 @@ devices:
 
 Explicit config always overrides defaults. `brightness_scale` stacks multiplicatively with role-based scaling (accent = 0.6x intensity).
 
-### Segment lighting and background color
+### Static bulbs, segments, and background color
 
-In the room layout editor, select a strip and use **Segment Lighting**. Checked
-segments follow dynamic lighting; unchecked segments show the shared background
-color. **Background Set** selects that color for all devices (solid white by
-default). Presets select odd/even segments, the first/second half, all, or none.
+In the room layout editor, select a bulb or strip and use **Light / Segment Lighting**.
+Checked lights follow dynamic lighting; unchecked lights show the shared static
+background color. Toggle either way during playback without restarting it.
+**Background Set** selects the room default (white unless configured otherwise).
+Strip presets select odd/even segments, the first/second half, all, or none.
 Segment numbers in the GUI start at 1; the first half includes the middle segment
 when the count is odd. Halves follow segment order, so their physical left/right
 positions depend on the strip installation.
@@ -258,6 +259,22 @@ steady rather than applying music-driven hardware brightness to it. This require
 segment-capable output (RAZER, PTREAL, or BLE segment protocol); COLORWC and bulb
 protocols cannot independently color segments. Newly baked shows retain the
 underlying animation so re-enabling a segment can resume it during playback.
+
+For a single bulb, `enabled: false` goes on the device entry itself. **Save Layout**
+retains its static/dynamic setting. Hot changes do not write the config until saved.
+
+In **Shows**, choose **Static Color** above the track list and click **Save Show**.
+That color is saved with the Show and applies to all its tracks. **Use Room Default**
+removes the Show's color. In **Live**, **Override Static Color…** changes the shared
+static color for the active session; **Use Show / Room Color** clears only this
+color override. Priority is Live override, then saved Show color, then room default.
+Dynamic lights keep following the music. Live overrides never edit the saved Show.
+
+For spatial testing, `dev/devices-dummy.yaml` contains four valid strips: a straight
+front-wall strip, a vertical tower, a rear U bend, and an L-shaped desk strip, plus
+six individual bulbs at different heights and depths. Every strip link is one
+0.05 cardinal step, including bends. The two front lamps start static. Use this
+placeholder-address config with **Simulation** output.
 
 ### Color profiles
 

@@ -63,6 +63,24 @@ def test_frame_at_uses_nearest_frame():
     assert runtime.frame_at(10.0).t == 1.0
 
 
+def test_baked_runtime_retains_show_background_after_clearing_live_override():
+    from dreamsync.show.runtime_control import RuntimeControlBus
+    from types import SimpleNamespace
+    calls = []
+    adapter = SimpleNamespace(send_baked_frame=lambda t, colors, **kw: calls.append(kw) or True)
+    bus = RuntimeControlBus()
+    runtime = BakedFramePlaybackRuntime(
+        _artifact(), adapter, control_state_getter=bus.snapshot, background_color="#123456",
+    )
+    bus.update(background_color="#abcdef")
+    runtime.tick(0)
+    assert calls[-1]["params"]["runtime_control"]["background_color"] == "#abcdef"
+    bus.clear()
+    runtime.tick(.5)
+    assert calls[-1]["params"]["show_background_color"] == "#123456"
+    assert calls[-1]["params"]["runtime_control"]["background_color"] == ""
+
+
 def test_tick_sends_node_color_map_to_adapter():
     adapter = _Adapter()
     runtime = BakedFramePlaybackRuntime(_artifact(), adapter)

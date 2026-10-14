@@ -112,6 +112,8 @@ class ShowPlaybackRuntime:
 
         # Render + send
         runtime_params = dict(effective_cue.params)
+        if self._timeline.metadata.get("background_color"):
+            runtime_params["show_background_color"] = self._timeline.metadata["background_color"]
         runtime_params["_render_mode"] = effective_cue.render_mode
         runtime_params["_spatial_palette"] = effective_cue.color_palette
         runtime_params["_spatial_t"] = max(0.0, t - effective_cue.t)

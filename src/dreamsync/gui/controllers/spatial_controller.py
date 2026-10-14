@@ -197,6 +197,7 @@ class SpatialController:
             {key: (node.x, node.y, node.z) for key, node in self.nodes.items()},
             background_color=self.background_color,
             section_enabled={key: node.enabled for key, node in self.nodes.items() if node.is_section},
+            device_enabled={key: node.enabled for key, node in self.nodes.items() if not node.is_section},
             group_definitions=self.group_definitions,
             disable_spacing_warnings=disable_spacing_warnings,
             device_groups=self.device_groups,
@@ -214,8 +215,6 @@ class SpatialController:
 
     def set_segment_enabled(self, key: str, enabled: bool) -> None:
         node = self.nodes[key]
-        if not node.is_section:
-            raise ValueError("Select an individual segment")
         self.nodes[key] = replace(node, enabled=bool(enabled))
 
     def create_group(

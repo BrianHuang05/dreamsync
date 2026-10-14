@@ -1,71 +1,528 @@
+# Simulation room: 4 strips and 6 individual bulbs. Addresses are placeholders.
+# x: left/right; y: floor/ceiling; z: front/back. Adjacent strip sections
+# are exactly 0.05 apart on one axis, including the L and U corners.
+# Front lamps start static; toggle any bulb or segment in Spatial.
+background_color: '#ffcc88'
 devices:
-- name: Dummy Strip
-  address: 192.168.255.254
+- name: Front Wall - Straight
+  address: 192.0.2.11
   type: lan
-  segments: 15
+  segments: 25
   transport: ptreal
   role: primary
+  x: 0.0
+  y: 0.65
+  z: -0.8
   sections:
   - index: 0
-    x: 0.0
-    y: 0.0
-    z: 0.0
+    x: -0.6
+    y: 0.65
+    z: -0.8
   - index: 1
-    x: 0.11785714285714281
-    y: 0.0
-    z: 0.0
+    x: -0.55
+    y: 0.65
+    z: -0.8
   - index: 2
-    x: -0.18571428571428564
-    y: 0.0
-    z: 0.0
+    x: -0.5
+    y: 0.65
+    z: -0.8
   - index: 3
-    x: -0.2892857142857142
-    y: 0.0
-    z: 0.0
+    x: -0.45
+    y: 0.65
+    z: -0.8
   - index: 4
-    x: 0.4785714285714285
-    y: 0.0
-    z: 0.0
+    x: -0.4
+    y: 0.65
+    z: -0.8
   - index: 5
-    x: 0.7285714285714289
-    y: 0.0
-    z: 0.556919642857143
+    x: -0.35
+    y: 0.65
+    z: -0.8
   - index: 6
-    x: -0.46785714285714275
-    y: 0.0
-    z: 0.0
+    x: -0.3
+    y: 0.65
+    z: -0.8
   - index: 7
-    x: 0.20357142857142851
-    y: 0.0
-    z: -0.5686383928571429
+    x: -0.25
+    y: 0.65
+    z: -0.8
   - index: 8
-    x: 1.0
-    y: 0.0
-    z: 0.0
+    x: -0.2
+    y: 0.65
+    z: -0.8
   - index: 9
-    x: -0.5499999999999997
-    y: -0.3625000000000001
-    z: 0.0
+    x: -0.15
+    y: 0.65
+    z: -0.8
   - index: 10
-    x: -0.7464285714285708
-    y: -0.5541666666666667
-    z: -0.7103794642857144
+    x: -0.1
+    y: 0.65
+    z: -0.8
   - index: 11
-    x: 0.3857142857142856
-    y: 0.36666666666666664
-    z: -0.0078125
+    x: -0.05
+    y: 0.65
+    z: -0.8
   - index: 12
-    x: -1.0
-    y: -0.6041666666666666
-    z: 0.6595982142857142
+    x: 0.0
+    y: 0.65
+    z: -0.8
   - index: 13
-    x: -0.41428571428571426
-    y: 0.5125
-    z: 0.0
+    x: 0.05
+    y: 0.65
+    z: -0.8
   - index: 14
-    x: 0.8892857142857136
-    y: 0.5208333333333334
-    z: 0.0
-  x: 0.010000000000000035
-  y: -0.008055555555555564
-  z: -0.004687500000000008
+    x: 0.1
+    y: 0.65
+    z: -0.8
+  - index: 15
+    x: 0.15
+    y: 0.65
+    z: -0.8
+  - index: 16
+    x: 0.2
+    y: 0.65
+    z: -0.8
+  - index: 17
+    x: 0.25
+    y: 0.65
+    z: -0.8
+  - index: 18
+    x: 0.3
+    y: 0.65
+    z: -0.8
+  - index: 19
+    x: 0.35
+    y: 0.65
+    z: -0.8
+  - index: 20
+    x: 0.4
+    y: 0.65
+    z: -0.8
+  - index: 21
+    x: 0.45
+    y: 0.65
+    z: -0.8
+  - index: 22
+    x: 0.5
+    y: 0.65
+    z: -0.8
+  - index: 23
+    x: 0.55
+    y: 0.65
+    z: -0.8
+  - index: 24
+    x: 0.6
+    y: 0.65
+    z: -0.8
+- name: Left Tower - Vertical
+  address: 192.0.2.12
+  type: lan
+  segments: 17
+  transport: ptreal
+  role: primary
+  x: -0.8
+  y: 0.0
+  z: 0.2
+  sections:
+  - index: 0
+    x: -0.8
+    y: -0.4
+    z: 0.2
+  - index: 1
+    x: -0.8
+    y: -0.35
+    z: 0.2
+  - index: 2
+    x: -0.8
+    y: -0.3
+    z: 0.2
+  - index: 3
+    x: -0.8
+    y: -0.25
+    z: 0.2
+  - index: 4
+    x: -0.8
+    y: -0.2
+    z: 0.2
+  - index: 5
+    x: -0.8
+    y: -0.15
+    z: 0.2
+  - index: 6
+    x: -0.8
+    y: -0.1
+    z: 0.2
+  - index: 7
+    x: -0.8
+    y: -0.05
+    z: 0.2
+  - index: 8
+    x: -0.8
+    y: 0.0
+    z: 0.2
+  - index: 9
+    x: -0.8
+    y: 0.05
+    z: 0.2
+  - index: 10
+    x: -0.8
+    y: 0.1
+    z: 0.2
+  - index: 11
+    x: -0.8
+    y: 0.15
+    z: 0.2
+  - index: 12
+    x: -0.8
+    y: 0.2
+    z: 0.2
+  - index: 13
+    x: -0.8
+    y: 0.25
+    z: 0.2
+  - index: 14
+    x: -0.8
+    y: 0.3
+    z: 0.2
+  - index: 15
+    x: -0.8
+    y: 0.35
+    z: 0.2
+  - index: 16
+    x: -0.8
+    y: 0.4
+    z: 0.2
+- name: Rear Shelf - U Bend
+  address: 192.0.2.13
+  type: lan
+  segments: 37
+  transport: ptreal
+  role: primary
+  x: 0.0743
+  y: 0.65
+  z: 0.4581
+  sections:
+  - index: 0
+    x: -0.4
+    y: 0.65
+    z: 0.6
+  - index: 1
+    x: -0.35
+    y: 0.65
+    z: 0.6
+  - index: 2
+    x: -0.3
+    y: 0.65
+    z: 0.6
+  - index: 3
+    x: -0.25
+    y: 0.65
+    z: 0.6
+  - index: 4
+    x: -0.2
+    y: 0.65
+    z: 0.6
+  - index: 5
+    x: -0.15
+    y: 0.65
+    z: 0.6
+  - index: 6
+    x: -0.1
+    y: 0.65
+    z: 0.6
+  - index: 7
+    x: -0.05
+    y: 0.65
+    z: 0.6
+  - index: 8
+    x: 0.0
+    y: 0.65
+    z: 0.6
+  - index: 9
+    x: 0.05
+    y: 0.65
+    z: 0.6
+  - index: 10
+    x: 0.1
+    y: 0.65
+    z: 0.6
+  - index: 11
+    x: 0.15
+    y: 0.65
+    z: 0.6
+  - index: 12
+    x: 0.2
+    y: 0.65
+    z: 0.6
+  - index: 13
+    x: 0.25
+    y: 0.65
+    z: 0.6
+  - index: 14
+    x: 0.3
+    y: 0.65
+    z: 0.6
+  - index: 15
+    x: 0.35
+    y: 0.65
+    z: 0.6
+  - index: 16
+    x: 0.4
+    y: 0.65
+    z: 0.6
+  - index: 17
+    x: 0.4
+    y: 0.65
+    z: 0.55
+  - index: 18
+    x: 0.4
+    y: 0.65
+    z: 0.5
+  - index: 19
+    x: 0.4
+    y: 0.65
+    z: 0.45
+  - index: 20
+    x: 0.4
+    y: 0.65
+    z: 0.4
+  - index: 21
+    x: 0.4
+    y: 0.65
+    z: 0.35
+  - index: 22
+    x: 0.4
+    y: 0.65
+    z: 0.3
+  - index: 23
+    x: 0.35
+    y: 0.65
+    z: 0.3
+  - index: 24
+    x: 0.3
+    y: 0.65
+    z: 0.3
+  - index: 25
+    x: 0.25
+    y: 0.65
+    z: 0.3
+  - index: 26
+    x: 0.2
+    y: 0.65
+    z: 0.3
+  - index: 27
+    x: 0.15
+    y: 0.65
+    z: 0.3
+  - index: 28
+    x: 0.1
+    y: 0.65
+    z: 0.3
+  - index: 29
+    x: 0.05
+    y: 0.65
+    z: 0.3
+  - index: 30
+    x: 0.0
+    y: 0.65
+    z: 0.3
+  - index: 31
+    x: -0.05
+    y: 0.65
+    z: 0.3
+  - index: 32
+    x: -0.1
+    y: 0.65
+    z: 0.3
+  - index: 33
+    x: -0.15
+    y: 0.65
+    z: 0.3
+  - index: 34
+    x: -0.2
+    y: 0.65
+    z: 0.3
+  - index: 35
+    x: -0.25
+    y: 0.65
+    z: 0.3
+  - index: 36
+    x: -0.3
+    y: 0.65
+    z: 0.3
+- name: Desk Edge - L Bend
+  address: 192.0.2.14
+  type: lan
+  segments: 25
+  transport: ptreal
+  role: primary
+  x: -0.056
+  y: -0.444
+  z: -0.2
+  sections:
+  - index: 0
+    x: -0.5
+    y: -0.6
+    z: -0.2
+  - index: 1
+    x: -0.45
+    y: -0.6
+    z: -0.2
+  - index: 2
+    x: -0.4
+    y: -0.6
+    z: -0.2
+  - index: 3
+    x: -0.35
+    y: -0.6
+    z: -0.2
+  - index: 4
+    x: -0.3
+    y: -0.6
+    z: -0.2
+  - index: 5
+    x: -0.25
+    y: -0.6
+    z: -0.2
+  - index: 6
+    x: -0.2
+    y: -0.6
+    z: -0.2
+  - index: 7
+    x: -0.15
+    y: -0.6
+    z: -0.2
+  - index: 8
+    x: -0.1
+    y: -0.6
+    z: -0.2
+  - index: 9
+    x: -0.05
+    y: -0.6
+    z: -0.2
+  - index: 10
+    x: 0.0
+    y: -0.6
+    z: -0.2
+  - index: 11
+    x: 0.05
+    y: -0.6
+    z: -0.2
+  - index: 12
+    x: 0.1
+    y: -0.6
+    z: -0.2
+  - index: 13
+    x: 0.1
+    y: -0.55
+    z: -0.2
+  - index: 14
+    x: 0.1
+    y: -0.5
+    z: -0.2
+  - index: 15
+    x: 0.1
+    y: -0.45
+    z: -0.2
+  - index: 16
+    x: 0.1
+    y: -0.4
+    z: -0.2
+  - index: 17
+    x: 0.1
+    y: -0.35
+    z: -0.2
+  - index: 18
+    x: 0.1
+    y: -0.3
+    z: -0.2
+  - index: 19
+    x: 0.1
+    y: -0.25
+    z: -0.2
+  - index: 20
+    x: 0.1
+    y: -0.2
+    z: -0.2
+  - index: 21
+    x: 0.1
+    y: -0.15
+    z: -0.2
+  - index: 22
+    x: 0.1
+    y: -0.1
+    z: -0.2
+  - index: 23
+    x: 0.1
+    y: -0.05
+    z: -0.2
+  - index: 24
+    x: 0.1
+    y: 0.0
+    z: -0.2
+- name: Front Left Lamp
+  address: 192.0.2.21
+  type: lan
+  segments: 1
+  transport: colorwc
+  protocol: bulb
+  role: accent
+  x: -0.8
+  y: -0.3
+  z: -0.65
+  enabled: false
+- name: Front Right Lamp
+  address: 192.0.2.22
+  type: lan
+  segments: 1
+  transport: colorwc
+  protocol: bulb
+  role: accent
+  x: 0.8
+  y: -0.3
+  z: -0.65
+  enabled: false
+- name: Rear Left Lamp
+  address: 192.0.2.23
+  type: lan
+  segments: 1
+  transport: colorwc
+  protocol: bulb
+  role: accent
+  x: -0.75
+  y: 0.1
+  z: 0.75
+  enabled: true
+- name: Rear Right Lamp
+  address: 192.0.2.24
+  type: lan
+  segments: 1
+  transport: colorwc
+  protocol: bulb
+  role: accent
+  x: 0.75
+  y: 0.1
+  z: 0.75
+  enabled: true
+- name: Ceiling Bulb
+  address: 02:00:00:00:00:05
+  type: ble
+  segments: 1
+  transport: colorwc
+  protocol: bulb
+  role: accent
+  x: 0.0
+  y: 0.9
+  z: 0.0
+  enabled: true
+- name: Floor Lamp
+  address: 02:00:00:00:00:06
+  type: ble
+  segments: 1
+  transport: colorwc
+  protocol: bulb
+  role: accent
+  x: 0.65
+  y: -0.8
+  z: 0.1
+  enabled: true

@@ -245,8 +245,8 @@ def parse_device_placement(entry: Mapping[str, object]) -> DevicePlacement | Non
     has_z_numeric = "z" in entry
 
     groups = normalize_group_ids(entry.get("groups"), field_name="groups")
-    has_group_metadata = "groups" in entry
-    if not any((has_x_alias, has_y_alias, has_z_alias, has_x_numeric, has_y_numeric, has_z_numeric)) and not sections and not has_group_metadata:
+    has_placement_metadata = "groups" in entry or "enabled" in entry
+    if not any((has_x_alias, has_y_alias, has_z_alias, has_x_numeric, has_y_numeric, has_z_numeric)) and not sections and not has_placement_metadata:
         return None
 
     if has_x_alias and has_x_numeric:
@@ -300,6 +300,8 @@ def parse_device_placement(entry: Mapping[str, object]) -> DevicePlacement | Non
     if weight <= 0.0:
         raise ValueError("weight must be > 0")
 
+    if not isinstance(entry.get("enabled", True), bool):
+        raise ValueError("enabled must be a boolean")
     enabled = bool(entry.get("enabled", True))
 
     return DevicePlacement(

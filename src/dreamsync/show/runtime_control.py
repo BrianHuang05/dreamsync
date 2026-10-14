@@ -35,6 +35,7 @@ class RuntimeControlState:
     solo_groups: tuple[str, ...] = ()
     segment_enabled: tuple[tuple[str, bool], ...] = ()
     background_color: str = ""
+    room_background_color: str = ""
     revision: int = 0
 
     @property
@@ -43,6 +44,7 @@ class RuntimeControlState:
             (
                 self.segment_enabled,
                 self.background_color,
+                self.room_background_color,
                 self.palette_override,
                 self.color_bias,
                 self.render_mode,
@@ -84,6 +86,9 @@ class RuntimeControlBus:
             return self._state
 
     def update(self, **changes: Any) -> RuntimeControlState:
+        if changes.get("room_background_color"):
+            from dreamsync.output.segment_control import validate_background_color
+            changes["room_background_color"] = validate_background_color(changes["room_background_color"])
         if changes.get("background_color"):
             from dreamsync.output.segment_control import validate_background_color
             changes["background_color"] = validate_background_color(changes["background_color"])
@@ -215,6 +220,7 @@ def runtime_control_to_dict(state: RuntimeControlState | None) -> dict[str, Any]
         "solo_groups": tuple(state.solo_groups),
         "segment_enabled": tuple(state.segment_enabled),
         "background_color": state.background_color,
+        "room_background_color": state.room_background_color,
         "revision": state.revision,
         "active": state.active,
     }

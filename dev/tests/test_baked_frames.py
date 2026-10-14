@@ -103,7 +103,7 @@ def test_validation_detects_changed_fps(tmp_path: Path):
 def test_validation_detects_engine_version_change(tmp_path: Path):
     artifact = _artifact(tmp_path)
     engine = dict(artifact.engine)
-    engine["renderer_version"] = 2
+    engine["renderer_version"] += 1
     validation = validate_baked_frame_artifact(
         artifact,
         source_show_hash=artifact.source_show_hash,
