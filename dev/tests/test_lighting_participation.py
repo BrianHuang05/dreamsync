@@ -194,3 +194,47 @@ def test_gui_group_toggles_resolve_newest_first_and_persist_nowhere(tmp_path, mo
         assert Show.from_json(show_path).metadata == {}
     finally:
         window.close()
+
+
+def test_controls_reach_the_bus_before_the_session_object_exists(tmp_path):
+    """Sessions are built on their worker thread, so the handle's bus must be the target."""
+    from dreamsync.gui.services.session_service import SessionService
+    from dreamsync.show.runtime_control import RuntimeControlBus
+
+    class _LateHandle(_Handle):
+        def __init__(self, bus) -> None:
+            super().__init__(None)
+            self.runtime_control = bus
+
+    class _LateService(SessionService):
+        def __init__(self) -> None:
+            super().__init__()
+            self.handles = []
+
+        def start_compiled_show_session(self, show, **kwargs):
+            handle = _LateHandle(self._new_runtime_control_bus())
+            self.handles.append(handle)
+            return handle
+
+    service = _LateService()
+    supervisor = RuntimeSupervisor(session_service=service, pipeline_factory=lambda: None)
+    show = Show("Set", (ShowTrack(str(tmp_path / "one.mp3")),), {})
+
+    supervisor.set_persistent_runtime_control(segment_enabled=(("bulb", False),))
+    assert service.runtime_control_defaults == {"segment_enabled": (("bulb", False),)}
+    supervisor.start_compiled_show(show)
+    bus = service.handles[-1].runtime_control
+    assert bus.snapshot().segment_enabled == (("bulb", False),)
+    assert supervisor.runtime_control_snapshot()["segment_enabled"] == (("bulb", False),)
+
+    # A toggle made while the session object is still absent is not lost.
+    assert supervisor.active_session() is None
+    result = supervisor.update_runtime_control(segment_enabled=(("bulb", True),))
+    assert result["segment_enabled"] == (("bulb", True),)
+    assert bus.snapshot().segment_enabled == (("bulb", True),)
+
+    # Once the worker publishes the session, it shares the same bus.
+    service.handles[-1].session_ref[0] = _Session()
+    supervisor.update_runtime_control(background_color="#010203")
+    assert bus.snapshot().background_color == "#010203"
+    assert isinstance(service._new_runtime_control_bus(), RuntimeControlBus)

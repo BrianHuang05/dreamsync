@@ -29,6 +29,7 @@ from dreamsync.gui.services.output_lease_service import (
     QUEUE_AUDIO_OWNER,
 )
 from dreamsync.show.models import Show, ShowTimeline
+from dreamsync.show.runtime_control import runtime_control_to_dict
 from dreamsync.show_pipeline_worker import ShowPipelineWorker
 from dreamsync.spotify.learned_live_session import SpotifyLearnedLiveSession
 from dreamsync.spotify.learned_track import LearnedTrackStore
@@ -1368,13 +1369,26 @@ class RuntimeSupervisor:
     def _apply_persistent_runtime_control(self, handle: SessionHandle) -> None:
         if not self._persistent_runtime_control:
             return
-        session = self._session_for_handle(handle)
-        if session is None or not hasattr(session, "update_runtime_control"):
-            return
         try:
-            session.update_runtime_control(**self._persistent_runtime_control)
+            self._update_handle_runtime_control(handle, self._persistent_runtime_control)
         except Exception as exc:  # pragma: no cover - defensive
             self._record_event(f"Could not apply session lighting state: {exc}")
+
+    def _update_handle_runtime_control(
+        self, handle: SessionHandle | None, changes: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Write *changes* to the handle's bus, or its session as a fallback.
+
+        The session object only appears once the worker thread has started, so
+        the bus attached to the handle is the reliable target.
+        """
+        bus = getattr(handle, "runtime_control", None)
+        if bus is not None:
+            return runtime_control_to_dict(bus.update(**changes))
+        session = self._session_for_handle(handle)
+        if session is not None and hasattr(session, "update_runtime_control"):
+            return session.update_runtime_control(**changes)
+        return {}
 
     @property
     def persistent_runtime_control(self) -> dict[str, Any]:
@@ -1387,15 +1401,16 @@ class RuntimeSupervisor:
         config or a Show, and it is forgotten when the application exits.
         """
         self._persistent_runtime_control.update(changes)
+        seed = getattr(self._session_service, "set_runtime_control_defaults", None)
+        if callable(seed):
+            seed(**changes)
         return self.update_runtime_control(**changes)
 
     def update_runtime_control(self, **changes: Any) -> dict[str, Any]:
-        session = self.active_session()
-        if session is not None and hasattr(session, "update_runtime_control"):
-            result = session.update_runtime_control(**changes)
+        result = self._update_handle_runtime_control(self._output_handle, changes)
+        if result:
             self._record_event("Runtime control updated.")
-            return result
-        return {}
+        return result
 
     def update_raw_visualizer_palette_control(
         self,
@@ -1431,6 +1446,9 @@ class RuntimeSupervisor:
         return {}
 
     def runtime_control_snapshot(self) -> dict[str, Any]:
+        bus = getattr(self._output_handle, "runtime_control", None)
+        if bus is not None:
+            return runtime_control_to_dict(bus.snapshot())
         session = self.active_session()
         if session is not None and hasattr(session, "runtime_control_snapshot"):
             return session.runtime_control_snapshot()

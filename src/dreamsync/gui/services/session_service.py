@@ -67,6 +67,9 @@ class SessionHandle:
     session_ref: list[Any] = field(default_factory=lambda: [None])
     summary: dict[str, Any] | None = None
     error: BaseException | None = None
+    # The session object is created on the worker thread, so the bus is the
+    # only reliable control target in the moments after start.
+    runtime_control: RuntimeControlBus | None = None
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -994,6 +997,7 @@ class SessionService:
 
     def __init__(self, *, output_leases: OutputLeaseService | None = None) -> None:
         self._output_leases = output_leases or OutputLeaseService()
+        self._runtime_control_defaults: dict[str, Any] = {}
         self._hardware_adapter_key: tuple | None = None
         self._hardware_adapter = None
 
@@ -1191,7 +1195,8 @@ class SessionService:
             thread=threading.Thread(),
             session_ref=session_ref,
         )
-        runtime_control = RuntimeControlBus()
+        runtime_control = self._new_runtime_control_bus()
+        handle.runtime_control = runtime_control
 
         def _runner() -> None:
             try:
@@ -1252,9 +1257,10 @@ class SessionService:
         )
         if timeline_resolver is not None:
             timeline = timeline_resolver(audio_path, timeline)
-        runtime_control = RuntimeControlBus()
+        runtime_control = self._new_runtime_control_bus()
         handle = SessionHandle(
             mode=mode,
+            runtime_control=runtime_control,
             stop_event=stop_event,
             thread=threading.Thread(),
             session_ref=session_ref,
@@ -1406,6 +1412,20 @@ class SessionService:
             baked_playback_mode=baked_playback_mode,
         )
 
+    @property
+    def runtime_control_defaults(self) -> dict[str, Any]:
+        return dict(self._runtime_control_defaults)
+
+    def set_runtime_control_defaults(self, **changes: Any) -> None:
+        """Seed every later session's runtime control (app-session state only)."""
+        self._runtime_control_defaults.update(changes)
+
+    def _new_runtime_control_bus(self) -> RuntimeControlBus:
+        bus = RuntimeControlBus()
+        if self._runtime_control_defaults:
+            bus.update(**self._runtime_control_defaults)
+        return bus
+
     def start_compiled_show_session(
         self,
         show: Show,
@@ -1439,9 +1459,10 @@ class SessionService:
             simulation_only=simulation_only,
             fallback_to_simulation=fallback_to_simulation,
         )
-        runtime_control = RuntimeControlBus()
+        runtime_control = self._new_runtime_control_bus()
         handle = SessionHandle(
             mode="saved_show",
+            runtime_control=runtime_control,
             stop_event=stop_event,
             thread=threading.Thread(),
             session_ref=session_ref,
@@ -1537,7 +1558,7 @@ class SessionService:
             mirror=mirror,
             brightness=master_brightness,
         )
-        runtime_control = RuntimeControlBus()
+        runtime_control = self._new_runtime_control_bus()
         resolved_profile = profile
         profile_rotation = None
         profile_chain = None
@@ -1599,6 +1620,7 @@ class SessionService:
                     f"'{resolved_profile.name}'."
                 ) from exc
         handle = SessionHandle(
+            runtime_control=runtime_control,
             mode="reactive_live",
             stop_event=stop_event,
             thread=threading.Thread(),
