@@ -11,11 +11,13 @@ python="$repo_root/.venv/bin/python"
 
 # Never replace an existing environment or silently switch its interpreter.
 if [[ -e .venv ]]; then
-    if [[ ! -x "$python" ]] || ! "$python" -c "import sys; sys.exit(0 if '.'.join(map(str, sys.version_info[:2])) == '$version' else 1)"; then
-        echo "The existing .venv must be a working Python $version environment. Rename it, then rerun setup." >&2
+    if [[ ! -x "$python" ]] || ! "$python" --version; then
+        echo 'The existing .venv is broken. Rename it, then rerun setup.' >&2
         exit 1
     fi
 fi
+# The install below enforces requires-python from pyproject.toml for existing
+# environments. .python-version selects the interpreter only for fresh installs.
 
 export UV_UNMANAGED_INSTALL="$bootstrap/bin"
 export UV_PYTHON_INSTALL_DIR="$bootstrap/python"

@@ -27,9 +27,11 @@ try {
         if (-not (Test-Path $python)) {
             throw 'The existing .venv is incomplete. Rename it, then rerun setup.'
         }
-        & $python -c "import sys; sys.exit(0 if '.'.join(map(str, sys.version_info[:2])) == '$version' else 1)"
+        # pip install below enforces pyproject.toml's requires-python. The
+        # .python-version default applies only when creating a new environment.
+        & $python --version
         if ($LASTEXITCODE -ne 0) {
-            throw "The existing .venv must use Python $version. Rename it, then rerun setup."
+            throw 'The existing .venv is broken. Rename it, then rerun setup.'
         }
     }
 

@@ -51,9 +51,11 @@ ignored by Git. No administrator access, global Python, PATH changes, or shell
 activation is required for Python setup (Linux system libraries need your package
 manager). Run setup again after pulling dependency changes.
 
-Setup reuses an existing Python 3.12 `.venv`. If an existing environment is broken
-or uses another version, it stops with instructions to rename that environment
-before retrying; it does not delete it. Do not move `.bootstrap/` independently
+Setup reuses an existing working `.venv`; it does not require that environment to
+use Python 3.12. Installation checks the supported Python versions declared in
+`pyproject.toml` (currently 3.10.12 or newer). If an existing environment is broken,
+setup stops with instructions to rename it before retrying; it does not delete it.
+Do not move `.bootstrap/` independently
 of `.venv/`, because the environment depends on its managed interpreter.
 
 FFmpeg and audio routing drivers such as VB-Cable remain separate prerequisites
