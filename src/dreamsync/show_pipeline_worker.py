@@ -10,8 +10,12 @@ import json
 import os
 import shutil
 import threading
-from concurrent.futures import Future, ThreadPoolExecutor
+import logging
+import time
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from pathlib import Path
+
+from dreamsync.pipeline_process import PipelineProcesses, analyze_track, compile_track
 
 from dreamsync.capture.eligibility import (
     CaptureEligibilityValidator,
@@ -20,13 +24,17 @@ from dreamsync.capture.eligibility import (
 )
 from dreamsync.spotify.learned_track import LearnedTrackStore, Mp3RetentionPolicy
 
+logger = logging.getLogger(__name__)
+
 
 class ShowPipelineWorker:
-    """Analyze + compile MP3s in a thread pool as they arrive from capture.
+    """Coordinate isolated analysis/compile jobs as MP3s arrive from capture.
 
     Plug ``on_segment_saved`` into ``CaptureOrchestrator`` as the callback.
     Compiled (mp3_path, timeline) pairs are pushed to *ready_queue* for
     the ``ShowPlaybackConsumer``.
+    Threads manage callbacks and cache/retention policy; CPU work runs in spawned
+    processes by default. ``isolate_processing=False`` supports in-process tests.
     """
 
     def __init__(
@@ -44,11 +52,15 @@ class ShowPipelineWorker:
         eligibility_validator: CaptureEligibilityValidator | None = None,
         audio_root: Path | str | None = None,
         analysis_root: Path | str | None = None,
+        isolate_processing: bool = True,
     ) -> None:
         self._cache = cache
         self._profile = profile
         self._sample_rate = sample_rate
         self._debug = debug
+        self._processes = PipelineProcesses() if isolate_processing else None
+        self._stopping = threading.Event()
+        self._last_timing: dict = {}
         self._ready_queue = ready_queue or queue.Queue()
         self._state_callback = state_callback
         self._learned_live = bool(learned_live)
@@ -79,8 +91,10 @@ class ShowPipelineWorker:
 
     def on_segment_saved(self, mp3_path: str, metadata: dict) -> None:
         """CaptureOrchestrator callback — submits analyze+compile to pool."""
-        future = self._executor.submit(self._process, Path(mp3_path), metadata)
         with self._lock:
+            if self._stopping.is_set():
+                return
+            future = self._executor.submit(self._process, Path(mp3_path), metadata, time.perf_counter())
             self._futures.append(future)
 
     @property
@@ -97,21 +111,31 @@ class ShowPipelineWorker:
                 "processed": self._processed,
                 "errors": len(self._errors),
                 "pending": sum(1 for f in self._futures if not f.done()),
+                "last_timing": dict(self._last_timing),
             }
 
     def shutdown(self) -> None:
+        with self._lock:
+            self._stopping.set()
+        if self._processes is not None:
+            self._processes.shutdown()
         self._executor.shutdown(wait=False, cancel_futures=True)
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
-    def _process(self, mp3_path: Path, metadata: dict) -> None:
+    def _process(self, mp3_path: Path, metadata: dict, submitted_at: float | None = None) -> None:
         from .analyzer.analyze import analyze_song
         from .cache import cached_compile_show, path_based_track_id, spotify_track_cache_id
 
         state_path = mp3_path
+        started_at = time.perf_counter()
+        analysis_seconds = 0.0
+        compile_seconds = 0.0
         try:
+            if self._stopping.is_set():
+                raise CancelledError()
             candidate = self._candidate_from_metadata(mp3_path, metadata)
             if self._learned_live:
                 eligibility = self._eligibility_validator.validate(candidate)
@@ -136,7 +160,14 @@ class ShowPipelineWorker:
             )
             if structure is None:
                 self._emit_state(state_path, "analyzing")
-                structure = analyze_song(mp3_path, sample_rate=self._sample_rate)
+                stage_start = time.perf_counter()
+                if self._processes is None:
+                    structure = analyze_song(mp3_path, sample_rate=self._sample_rate)
+                else:
+                    structure = self._processes.run(analyze_track, mp3_path, self._sample_rate)
+                analysis_seconds = time.perf_counter() - stage_start
+                if self._stopping.is_set():
+                    raise CancelledError()
                 if self._learned_live:
                     assert self._learned_store is not None
                     self._learned_store.write_analysis(candidate.track_id, structure)
@@ -145,16 +176,28 @@ class ShowPipelineWorker:
                 spotify_track_cache_id(candidate.track_id)
                 if self._learned_live else path_based_track_id(mp3_path)
             )
-            timeline, _from_cache = cached_compile_show(
-                structure, self._profile, cache=self._cache, track_id=track_id
-            )
+            stage_start = time.perf_counter()
+            if self._processes is None:
+                timeline, _from_cache = cached_compile_show(
+                    structure, self._profile, cache=self._cache, track_id=track_id
+                )
+            else:
+                timeline, _from_cache = self._processes.run(
+                    compile_track, structure, self._profile, self._cache.cache_dir, track_id,
+                )
+            compile_seconds = time.perf_counter() - stage_start
+            if self._stopping.is_set():
+                raise CancelledError()
             if self._cache.get(track_id, self._profile) is None:
                 raise RuntimeError("Compiled show failed reload validation")
             if self._learned_live:
                 assert self._learned_store is not None
                 self._learned_store.publish_manifest(candidate, self._profile)
                 self._apply_retention(mp3_path)
-            self._ready_queue.put((mp3_path, timeline))
+            with self._lock:
+                if self._stopping.is_set():
+                    raise CancelledError()
+                self._ready_queue.put((mp3_path, timeline))
             self._emit_state(
                 state_path, "learned" if self._learned_live else "ready", timeline=timeline
             )
@@ -165,15 +208,35 @@ class ShowPipelineWorker:
                     f"[pipeline] Ready: {mp3_path.name} "
                     f"({len(timeline.cues)} cues)"
                 )
+        except CancelledError:
+            return
         except Exception as exc:
             with self._lock:
                 self._errors.append((mp3_path, str(exc)))
             self._emit_state(state_path, "failed", error=exc)
             if self._debug:
                 print(f"[pipeline] Failed: {mp3_path.name}: {exc}")
+        finally:
+            timing = {
+                "path": str(state_path),
+                "queue_seconds": max(0.0, started_at - (submitted_at or started_at)),
+                "analysis_seconds": analysis_seconds,
+                "compile_seconds": compile_seconds,
+                "total_seconds": time.perf_counter() - started_at,
+            }
+            with self._lock:
+                self._last_timing = timing
+            message = (
+                f"[pipeline] Timing: {state_path.name}: "
+                f"queued={timing['queue_seconds']:.2f}s analysis={analysis_seconds:.2f}s "
+                f"compile={compile_seconds:.2f}s total={timing['total_seconds']:.2f}s"
+            )
+            logger.info(message)
+            if self._debug:
+                print(message)
 
     def _emit_state(self, mp3_path: Path, state: str, *, timeline=None, error: Exception | None = None) -> None:
-        if self._state_callback is None:
+        if self._state_callback is None or self._stopping.is_set():
             return
         self._state_callback(mp3_path, state, timeline=timeline, error=error)
 

@@ -121,20 +121,30 @@ def _compute_mfcc(
 def _compute_chroma(
     mag: np.ndarray,
     freqs: np.ndarray,
+    mapping: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> tuple[float, ...]:
     """Compute 12 chroma bins from a magnitude spectrum."""
-    chroma_bins = np.zeros(12, dtype=np.float64)
-    for i in range(len(freqs)):
-        f = freqs[i]
-        if f < 20.0:
-            continue
-        pitch_class = int(round(12.0 * np.log2(f / 440.0))) % 12
-        chroma_bins[pitch_class] += mag[i]
+    indices, pitch_classes = mapping if mapping is not None else _chroma_mapping(freqs)
+    chroma_bins = np.bincount(pitch_classes, weights=mag[indices], minlength=12)
 
     mx = chroma_bins.max()
     if mx > 1e-10:
         chroma_bins /= mx
     return tuple(float(c) for c in chroma_bins)
+
+
+def _chroma_mapping(freqs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Compute the invariant FFT-bin mapping once per extraction.
+
+    Keep the original scalar rounding at semitone boundaries; bincount then
+    accumulates magnitudes in the same bin order without a Python frame loop.
+    """
+    indices = np.flatnonzero(freqs >= 20.0)
+    classes = np.array(
+        [int(round(12.0 * np.log2(freqs[i] / 440.0))) % 12 for i in indices],
+        dtype=np.intp,
+    )
+    return indices, classes
 
 
 class OfflineFeaturePipeline:
@@ -188,6 +198,7 @@ class OfflineFeaturePipeline:
         # Pre-compute mel filterbank and DCT matrix for MFCC/chroma
         mel_fb = _mel_filterbank(n_mels=40, n_fft=frame_size, sr=sr)
         dct_mat = _dct_matrix(n_mfcc=13, n_mels=40)
+        chroma_mapping = _chroma_mapping(freqs)
 
         # Instantiate fresh analysis objects
         bpm_estimator = LiveBpmEstimator(sample_rate=sr, hop_size=hop_size)
@@ -273,7 +284,7 @@ class OfflineFeaturePipeline:
 
             # MFCC and chroma from magnitude spectrum
             mfcc = _compute_mfcc(sf.mag, mel_fb, dct_mat)
-            chroma = _compute_chroma(sf.mag, freqs)
+            chroma = _compute_chroma(sf.mag, freqs, chroma_mapping)
 
             rows.append(FeatureRow(
                 t=stream_t,

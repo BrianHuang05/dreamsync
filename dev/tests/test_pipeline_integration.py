@@ -41,7 +41,7 @@ def _fake_timeline(duration: float = 1.0):
 def _make_worker(ready_queue, max_workers=1, debug=False):
     cache = MagicMock()
     return ShowPipelineWorker(
-        cache=cache,
+        isolate_processing=False, cache=cache,
         profile=None,
         sample_rate=44100,
         max_workers=max_workers,

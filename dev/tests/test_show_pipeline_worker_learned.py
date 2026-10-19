@@ -52,7 +52,7 @@ def test_verified_learned_compile_deletes_source_only_after_publish(tmp_path):
     cache = ShowCache(tmp_path / "cache")
     mp3 = source(tmp_path)
     worker = ShowPipelineWorker(
-        cache, learned_live=True,
+        cache, isolate_processing=False, learned_live=True,
         retention_policy="delete_after_verified_compile",
     )
 
@@ -75,7 +75,7 @@ def test_compile_failure_retains_recoverable_source_and_analysis(tmp_path):
     cache = ShowCache(tmp_path / "cache")
     mp3 = source(tmp_path)
     worker = ShowPipelineWorker(
-        cache, learned_live=True,
+        cache, isolate_processing=False, learned_live=True,
         retention_policy="delete_after_verified_compile",
     )
     with patch("dreamsync.analyzer.analyze.analyze_song", return_value=structure()), patch(
@@ -92,7 +92,7 @@ def test_existing_analysis_is_reused_when_show_is_not_compiled(tmp_path):
     cache = ShowCache(tmp_path / "cache")
     mp3 = source(tmp_path)
     LearnedTrackStore(cache).write_analysis("abc", structure())
-    worker = ShowPipelineWorker(cache, learned_live=True)
+    worker = ShowPipelineWorker(cache, isolate_processing=False, learned_live=True)
 
     def compile_and_store(saved_structure, profile, *, cache, track_id):
         assert saved_structure.duration == 10.0
@@ -119,7 +119,7 @@ def test_verified_temp_capture_is_promoted_to_audio_library(tmp_path):
     audio_root = tmp_path / "audio"
     analysis_root = tmp_path / "analysis"
     worker = ShowPipelineWorker(
-        cache,
+        cache, isolate_processing=False,
         learned_live=True,
         retention_policy="keep_all",
         audio_root=audio_root,
@@ -152,7 +152,7 @@ def test_keep_recent_never_deletes_unrelated_replay_audio(tmp_path):
     unrelated = tmp_path / "compiled-replay.mp3"
     unrelated.write_bytes(b"audio" * 1024)
     worker = ShowPipelineWorker(
-        cache, learned_live=True, retention_policy="keep_recent",
+        cache, isolate_processing=False, learned_live=True, retention_policy="keep_recent",
         retained_mp3_limit=0,
     )
 

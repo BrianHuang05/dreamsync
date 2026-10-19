@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -305,9 +306,22 @@ class ShowCache:
 
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        tmp_path = path.with_suffix(".tmp")
-        tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        os.replace(tmp_path, path)
+        # Parallel worker processes may compile the same cache key. Each writer
+        # must own its temporary file; readers only ever see a complete result.
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, suffix=".tmp", delete=False,
+        ) as handle:
+            tmp_path = Path(handle.name)
+            try:
+                json.dump(data, handle, indent=2)
+            except BaseException:
+                handle.close()
+                tmp_path.unlink(missing_ok=True)
+                raise
+        try:
+            os.replace(tmp_path, path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------

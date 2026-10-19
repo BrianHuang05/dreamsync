@@ -9,6 +9,35 @@ from dreamsync.analyzer.features import FeatureRow, OfflineFeaturePipeline
 from dreamsync.live import EQ_BAND_NAMES, _prepare_bass_window, _spectral_features
 
 
+@pytest.mark.parametrize("sample_rate,n_fft", [(44100, 2048), (48000, 4096), (16000, 512)])
+def test_cached_chroma_matches_original_scalar_algorithm(sample_rate, n_fft):
+    from dreamsync.analyzer.features import _chroma_mapping, _compute_chroma
+    freqs = np.fft.rfftfreq(n_fft, 1 / sample_rate)
+    mapping = _chroma_mapping(freqs)
+    rng = np.random.default_rng(18)
+    for mag in (np.zeros(len(freqs)), rng.random(len(freqs)),
+                rng.random(len(freqs)).astype(np.float32)):
+        expected = np.zeros(12)
+        for i, frequency in enumerate(freqs):
+            if frequency >= 20:
+                expected[int(round(12 * np.log2(frequency / 440))) % 12] += mag[i]
+        if expected.max() > 1e-10:
+            expected /= expected.max()
+        np.testing.assert_array_equal(_compute_chroma(mag, freqs, mapping), expected)
+        np.testing.assert_array_equal(_compute_chroma(mag, freqs), expected)
+
+
+def test_chroma_preserves_semitone_boundary_rounding():
+    from dreamsync.analyzer.features import _chroma_mapping, _compute_chroma
+    freqs = np.r_[0., 19., 20., 440 * 2 ** ((np.arange(-40, 40) + 0.5) / 12)]
+    mag = np.arange(len(freqs), dtype=float)
+    expected = np.zeros(12)
+    for i, frequency in enumerate(freqs):
+        if frequency >= 20:
+            expected[int(round(12 * np.log2(frequency / 440))) % 12] += mag[i]
+    expected /= expected.max()
+    np.testing.assert_array_equal(_compute_chroma(mag, freqs, _chroma_mapping(freqs)), expected)
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

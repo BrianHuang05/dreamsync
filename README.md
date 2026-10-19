@@ -507,6 +507,21 @@ Queue audio route and uses the same saved browser/Spotify source settings:
 ./dev/scripts/start_linux_spotify_queue.sh
 ```
 
+Captured Queue tracks are analyzed and compiled in separate worker processes,
+keeping CPU-heavy Python work out of the GUI, capture, and playback interpreter.
+Each child limits native NumPy/SciPy math to one thread; Queue can prepare two
+tracks at once, and Learned Live prepares one. The Queue pipeline reports
+per-track queue wait, analysis, and compilation times in debug logs. Install
+updated dependencies after pulling this change (`bash scripts/setup.sh`). For a
+repeatable, audio-device-free performance check, run:
+
+```bash
+.venv/bin/python dev/scripts/benchmark_analysis_contention.py --seconds 10 --repeats 2
+```
+
+The benchmark compares the previous and optimized analyzer under synthetic
+playback load. Actual throughput still depends on the host and song length.
+
 Use `--physical-sink NAME` to override the saved physical sink. The Queue
 launcher rejects `--playback-device`; select the physical sink by name instead.
 Direct CLI playback without a Linux `PULSE_SINK` route still supports numeric

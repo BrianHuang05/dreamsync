@@ -36,7 +36,7 @@ def _fake_timeline():
 def _make_worker(ready_queue=None, max_workers=2, debug=False):
     cache = MagicMock()
     return ShowPipelineWorker(
-        cache=cache,
+        isolate_processing=False, cache=cache,
         profile=None,
         sample_rate=44100,
         max_workers=max_workers,
@@ -85,7 +85,7 @@ class TestShowPipelineWorker:
         mock_compile.return_value = (timeline, False)
         states = []
         worker = ShowPipelineWorker(
-            cache=MagicMock(),
+            isolate_processing=False, cache=MagicMock(),
             ready_queue=queue.Queue(),
             state_callback=lambda path, state, **kwargs: states.append((Path(path), state, kwargs)),
         )
