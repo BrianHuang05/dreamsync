@@ -1506,6 +1506,15 @@ def create_main_window(
         def complete(self, kind: str, entries: list[object], warning: str, error: str) -> None:
             _finish_discovery_scan(kind, entries, warning, error)
 
+        @QtCore.Slot()
+        def finished(self) -> None:
+            # Keep Python wrappers alive until the native worker has fully exited.
+            # A contextless finished lambda can release them on the worker thread.
+            thread = discovery_scan_state["thread"]
+            if thread is not None:
+                thread.wait()
+            discovery_scan_state.update({"thread": None, "worker": None})
+
     discovery_scan_receiver = _DiscoveryScanReceiver(window)
 
     class _DiscoveryIdentifyWorker(QtCore.QObject):  # pragma: no cover - Qt only
@@ -1537,6 +1546,13 @@ def create_main_window(
         @QtCore.Slot(object, str)
         def complete(self, entry: object, error: str) -> None:
             _finish_discovery_identify(entry, error)
+
+        @QtCore.Slot()
+        def finished(self) -> None:
+            thread = discovery_identify_state["thread"]
+            if thread is not None:
+                thread.wait()
+            discovery_identify_state.update({"thread": None, "worker": None})
 
     discovery_identify_receiver = _DiscoveryIdentifyReceiver(window)
 
@@ -1669,8 +1685,22 @@ def create_main_window(
             if connection_type == "ble"
             else "BLE protocol applies only to Bluetooth devices."
         )
-        device_discovery_panel.identify_device_button.setEnabled(bool(entry.connected))
-        device_discovery_panel.advanced_test_device_button.setEnabled(bool(entry.connected))
+        # Discovery is advisory: configured devices can still accept direct
+        # commands when multicast/BLE discovery misses them (including in WSL).
+        device_discovery_panel.identify_device_button.setEnabled(
+            discovery_identify_state["key"] is None
+        )
+        device_discovery_panel.advanced_test_device_button.setEnabled(True)
+        discovery_note = (
+            "This device was not found during the last scan; a direct connection will be attempted. "
+            if not entry.connected else ""
+        )
+        device_discovery_panel.identify_device_button.setToolTip(
+            discovery_note + "Flash the selected device blue and test its protocol (I)."
+        )
+        device_discovery_panel.advanced_test_device_button.setToolTip(
+            discovery_note + "Open color, segment-pattern, and latency calibration tests."
+        )
         device_discovery_panel.assign_discovered_device_button.setEnabled(True)
         if entry.assigned:
             device_discovery_panel.assign_discovered_device_button.setText("Update Config Entry")
@@ -1769,10 +1799,8 @@ def create_main_window(
         worker.completed.connect(discovery_scan_receiver.complete)
         worker.completed.connect(thread.quit)
         thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(discovery_scan_receiver.finished)
         thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(
-            lambda: discovery_scan_state.update({"thread": None, "worker": None})
-        )
         discovery_scan_state.update({"thread": thread, "worker": worker})
         thread.start()
 
@@ -1857,10 +1885,8 @@ def create_main_window(
         worker.completed.connect(discovery_identify_receiver.complete)
         worker.completed.connect(thread.quit)
         thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(discovery_identify_receiver.finished)
         thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(
-            lambda: discovery_identify_state.update({"thread": None, "worker": None})
-        )
         discovery_identify_state.update({"thread": thread, "worker": worker})
         thread.start()
 

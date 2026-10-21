@@ -70,6 +70,93 @@ def _wait_until(QtTest, predicate, *, attempts: int = 100) -> None:
     raise AssertionError("Timed out waiting for the GUI discovery worker.")
 
 
+@pytest.mark.parametrize("source,address", [("lan", "192.168.1.77"), ("ble", "D7:01:86:46:44:59")])
+def test_configured_device_missing_from_scan_can_identify_and_open_advanced_test(tmp_path, source, address):
+    """A missing discovery reply must not prevent direct device diagnostics."""
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    QtCore = pytest.importorskip("PySide6.QtCore")
+    QtTest = pytest.importorskip("PySide6.QtTest")
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    path = tmp_path / "devices.yaml"
+    path.write_text(
+        f"devices:\n  - name: Test Light\n    type: {source}\n    address: '{address}'\n"
+        "    segments: 3\n    lighting_advance_ms: 70\n", encoding="utf-8",
+    )
+
+    class Service(_FakeDiscoveryService):
+        def scan_lan(self, timeout=5.0):
+            return []
+
+        def scan_ble(self, timeout=10.0):
+            return []
+
+        def probe_configured_lan(self, entries):
+            return list(entries)
+
+        def test_device(self, entry, spec, *, stop_event, spec_provider):
+            tested.append((entry.address, spec.segments))
+            stop_event.wait(3)
+
+    tested = []
+    service = Service()
+    window = create_main_window(require_qt(), GuiSettings(), config_path=path, discovery_service=service)
+    window.show()
+    app.processEvents()
+    table = window.findChild(QtWidgets.QTableWidget, "discoveredDevicesTable")
+    scan = window.findChild(QtWidgets.QPushButton, "scanAllDevicesButton")
+    identify = window.findChild(QtWidgets.QPushButton, "identifyDeviceButton")
+    advanced = window.findChild(QtWidgets.QPushButton, "advancedTestDeviceButton")
+    timer = QtCore.QTimer(window)
+    watchdog = QtCore.QTimer(window)
+    watchdog.setSingleShot(True)
+    watchdog.timeout.connect(
+        lambda: app.activeModalWidget().reject() if app.activeModalWidget() else None
+    )
+    errors, opened = [], []
+
+    def exercise_dialog():
+        dialog = app.activeModalWidget()
+        if dialog is None:
+            return
+        try:
+            assert dialog.objectName() == "advancedDeviceTestDialog"
+            if not opened:
+                opened.append(True)
+                assert dialog.findChild(QtWidgets.QDoubleSpinBox, "deviceLightingAdvanceSpin").value() == 70
+                dialog.findChild(QtWidgets.QPushButton, "deviceTestStartButton").click()
+            elif tested:
+                dialog.reject()
+        except BaseException as exc:
+            errors.append(exc)
+            dialog.reject()
+
+    try:
+        scan.click()
+        _wait_until(QtTest, lambda: scan.isEnabled() and table.rowCount() == 1)
+        table.selectRow(0)
+        app.processEvents()
+        assert "Not found" in table.item(0, 0).text()
+        assert identify.isEnabled(), "Configured devices must support a direct identify attempt"
+        assert advanced.isEnabled(), "Advanced Test must open without a discovery reply"
+        identify.click()
+        _wait_until(QtTest, lambda: bool(service.identified) and identify.isEnabled())
+        assert service.identified[-1].address == address
+        window.findChild(QtWidgets.QPushButton, "confirmIdentifyProtocolButton").click()
+        timer.timeout.connect(exercise_dialog)
+        timer.start(20)
+        watchdog.start(3000)
+        advanced.click()
+        assert opened, "Clicking Advanced Test must open the real modal dialog"
+        assert not errors, errors
+        assert tested == [(address, 3)]
+    finally:
+        timer.stop()
+        watchdog.stop()
+        window.close()
+        window.deleteLater()
+        QtTest.QTest.qWait(50)
+
+
 @pytest.mark.parametrize(
     ("source", "address"),
     [
