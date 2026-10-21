@@ -579,10 +579,13 @@ class DeviceDiscoveryService:
             raise RuntimeError(
                 f"Could not open DreamSync's configured audio output for the calibration tone: {exc}"
             ) from exc
-        count = int(sample_rate * 0.12)
+        # Make the calibration cue easy to hear on normal speaker levels while
+        # retaining a brief attack/release to avoid clicks.
+        count = int(sample_rate * 0.5)
         phase = 2.0 * np.pi * 880.0 * np.arange(count) / sample_rate
-        envelope = np.minimum(1.0, np.minimum(np.arange(count) / 220.0, (count - np.arange(count)) / 220.0))
-        tone = (0.15 * np.sin(phase) * envelope).astype(np.float32)
+        ramp = max(1, int(sample_rate * 0.01))
+        envelope = np.minimum(1.0, np.minimum(np.arange(count) / ramp, (count - np.arange(count)) / ramp))
+        tone = (0.8 * np.sin(phase) * envelope).astype(np.float32)
         return stream, tone
 
     @staticmethod
