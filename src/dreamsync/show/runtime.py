@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 import threading
 import time
 from pathlib import Path
+
 from typing import Any
 
 from dreamsync.director import EffectMode, LightingIntent
@@ -12,6 +14,7 @@ from dreamsync.output.roles import adapt_render_mode, DeviceType
 from dreamsync.render import RenderMode
 from dreamsync.show.runtime_control import RuntimeControlState, apply_runtime_control_to_cue
 from dreamsync.show.models import ShowCue, ShowTimeline
+from dreamsync.show.timing import lighting_position
 
 # Mapping from ShowCue.render_mode → (EffectMode, RenderMode)
 _MODE_MAP: dict[str, tuple[EffectMode, RenderMode]] = {
@@ -44,7 +47,8 @@ class ShowPlaybackRuntime:
         self._current_source_cue: ShowCue | None = None
         self._color_index: int = 0
         self._prev_color_index: int = 0
-        self._beat_fired: bool = False
+        self._last_tick: float | None = None
+        self._pending_beat = False
         self._color_cycle_mode = color_cycle_mode
 
         # Fade state
@@ -54,7 +58,7 @@ class ShowPlaybackRuntime:
 
         # Color blend state
         self._color_blend_start_t: float = 0.0
-        self._color_blend_duration: float = 2 * (60.0 / timeline.bpm)  # blend over 2 beats
+        self._color_blend_duration: float = 0.0  # rhythmic cues cut; ambient cues can opt into blending
 
         # Beat tolerance: 30% of beat interval, capped at 40ms
         if beat_tolerance is not None:
@@ -86,29 +90,25 @@ class ShowPlaybackRuntime:
             self._current_source_cue = cue
         self._current_cue = effective_cue
 
-        # Build LightingIntent
-        intent = self._build_intent(effective_cue, t)
-
-        # Check beat and downbeat grids
-        beat = self._timeline.is_beat(t, tolerance=self._beat_tolerance)
-        downbeat = self._timeline.is_downbeat(t, tolerance=self._beat_tolerance)
-
-        # Determine if color should cycle based on mode
-        if self._color_cycle_mode == "beat":
-            should_cycle = beat and not self._beat_fired
-            cycle_reset = not beat
-        else:  # "downbeat" (default)
-            should_cycle = downbeat and not self._beat_fired
-            cycle_reset = not downbeat
-
+        # Crossings survive slow render ticks and fire each beat only once.
+        previous = self._last_tick
+        if previous is None or t < previous:
+            previous = t - self._beat_tolerance - 1e-9
+            self._pending_beat = False
+        beat = bisect_right(self._timeline.beat_times, t) > bisect_right(self._timeline.beat_times, previous)
+        downbeat = bisect_right(self._timeline.downbeat_times, t) > bisect_right(self._timeline.downbeat_times, previous)
+        self._last_tick = t
+        self._pending_beat = self._pending_beat or beat
+        should_cycle = beat if self._color_cycle_mode == "beat" else downbeat
         if should_cycle:
             self._prev_color_index = self._color_index
             self._color_index = (self._color_index + 1) % len(effective_cue.color_palette)
             self._color_blend_start_t = t
-            self._beat_fired = True
             self._beats_hit += 1
-        elif cycle_reset:
-            self._beat_fired = False
+        self._color_blend_duration = max(0.0, float(effective_cue.params.get(
+            "color_blend_beats", 2.0 if effective_cue.render_mode in {"breathe", "gradient"} else 0.0
+        ))) * 60.0 / self._timeline.bpm
+        intent = self._build_intent(effective_cue, t)
 
         # Render + send
         runtime_params = dict(effective_cue.params)
@@ -120,8 +120,9 @@ class ShowPlaybackRuntime:
         prepared_key = None if getattr(control_state, "active", False) else self._prepared_spatial_keys.get(id(cue))
         if prepared_key is not None:
             runtime_params["_prepared_spatial_key"] = prepared_key
-        sent = self._multi_adapter.send_frame(t, intent, beat=beat, params=runtime_params)
+        sent = self._multi_adapter.send_frame(t, intent, beat=self._pending_beat, params=runtime_params)
         if sent:
+            self._pending_beat = False
             self._frames_sent += 1
         return sent
 
@@ -329,7 +330,7 @@ def run_show_playback(
             if stop_event is not None and stop_event.is_set():
                 break
             t = player.position_seconds
-            runtime.tick(t)
+            runtime.tick(lighting_position(t, timeline))
 
             if debug and runtime.current_cue is not last_cue:
                 cue = runtime.current_cue

@@ -145,6 +145,11 @@ class TreatmentSelector:
             instrument_routes = self._resolve_instrument_routes(mood)
             if instrument_routes:
                 params["instrument_routes"] = instrument_routes
+        if render_mode == "pulse":
+            mood_config = self._profile.moods.get(mood) if self._profile else None
+            mood_params = mood_config.params if mood_config else {}
+            if "pulse_decay" not in mood_params:
+                params["pulse_decay"] = 10.0
         self._apply_generated_palette_layer(
             effect_name=effect_name,
             render_mode=render_mode,
@@ -316,6 +321,13 @@ class TreatmentSelector:
     ) -> None:
         """Attach spatial direction/area metadata for auto-generated show cues."""
         if self._has_explicit_spatial_metadata(params):
+            return
+
+        if render_mode == "pulse" or effect_name == "drop_blast":
+            # Percussive sections hit together; profiles can opt into travel.
+            params.update(spatial_preset="flash_all", spatial_delay_ms=0.0)
+            params.setdefault("pulse_decay", 10.0)
+            params.setdefault("color_blend_beats", 0.0)
             return
 
         preset = self._pick_spatial_preset(effect_name=effect_name, render_mode=render_mode)

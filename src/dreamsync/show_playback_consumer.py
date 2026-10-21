@@ -7,6 +7,8 @@ import threading
 import time
 from pathlib import Path
 
+from dreamsync.show.timing import lighting_position
+
 
 class ShowPlaybackConsumer:
     """Dequeue ready shows and play audio + drive lights.
@@ -88,7 +90,7 @@ class ShowPlaybackConsumer:
         player.play()
         try:
             while not stop_event.is_set() and not player.finished:
-                runtime.tick(player.position_seconds)
+                runtime.tick(lighting_position(player.position_seconds, timeline))
                 time.sleep(0.005)
         finally:
             player.stop()

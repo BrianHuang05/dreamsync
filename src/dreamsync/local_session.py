@@ -10,6 +10,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+from dreamsync.show.timing import lighting_position
 from typing import TYPE_CHECKING, Any, Callable
 
 from dreamsync.analyzer.analyze import analyze_song
@@ -17,6 +19,7 @@ from dreamsync.analyzer.models import SongStructure
 from dreamsync.cache import ShowCache, cached_compile_show, path_based_track_id
 from dreamsync.playlist import PlaylistManager
 from dreamsync.show.models import ShowTimeline
+from dreamsync.show.timing import lighting_position
 from dreamsync.show.player import AudioPlayer
 from dreamsync.show.runtime import ShowPlaybackRuntime
 from dreamsync.show.runtime_control import RuntimeControlBus, runtime_control_to_dict
@@ -192,7 +195,7 @@ class LocalShowSession:
 
                 with self._status_lock:
                     self._playback_state = "playing"
-                t = player.position_seconds
+                t = lighting_position(player.position_seconds, timeline)
                 sent = runtime.tick(t)
                 if sent:
                     frames_sent += 1
@@ -985,7 +988,7 @@ class LocalPlaylistSession:
 
                 with self._status_lock:
                     self._playback_state = "playing"
-                t = player.position_seconds
+                t = lighting_position(player.position_seconds, timeline)
                 runtime.tick(t)
                 time.sleep(0.005)
         finally:

@@ -33,6 +33,7 @@ SpatialPreset = Literal[
     "wave_bottom_to_top",
     "wave_front_to_back",
     "wave_back_to_front",
+    "flash_all",
     "flash_top_only",
     "flash_floor_only",
     "blend_left_to_right",
@@ -140,6 +141,11 @@ SPATIAL_PRESETS: dict[str, dict[str, object]] = {
         "spatial_width": 0.28,
         "spatial_blend": "smoothstep",
         "spatial_delay_ms": 115.0,
+    },
+    "flash_all": {
+        "layer_category": "static",
+        "spatial_mode": "wash",
+        "spatial_delay_ms": 0.0,
     },
     "flash_top_only": {
         "layer_category": "static",

@@ -377,8 +377,12 @@ The audio path is: App -> CABLE Input -> CABLE Output -> FFmpeg capture -> Dream
 
 ### Audio routing setup (Linux PipeWire)
 
-Linux has two distinct routes. **Live Learning** keeps the existing
-physical-backed PipeWire capture route, so source audio is immediately audible.
+Linux has two playback modes. **Live Learning** routes the source application
+into DreamSync's capture sink. DreamSync owns a low-latency stereo PCM bridge
+from that source to the configured physical speakers, while recording and
+Reactive effects read the same source. The bridge stays running when lighting
+switches between Reactive and a learned show; stopping Live Learning closes it.
+The Linux PulseAudio utilities `parec` and `pacat` must be installed.
 **Spotify Queue** instead requires an ALSA Loopback (`snd-aloop`) playback and
 capture pair: Spotify plays into the Loopback playback endpoint, DreamSync
 records its paired capture endpoint, and only the later compiled Queue replay
@@ -413,8 +417,13 @@ On its first run it uses the current default physical sink, then remembers that 
 ./dev/scripts/setup_linux_pipewire_capture.sh live-learning alsa_output.REPLACE_WITH_PHYSICAL_SINK
 ```
 
-Then route the desired application to **DreamSync Live Capture** in
-`pavucontrol` and run capture with `--capture-source dreamsync_live_capture.monitor`.
+Use the launcher below to route the browser or Spotify automatically. Start
+**Spotify Live — Learning** in the app to hear the pass-through. When switching
+from Queue, Live Learning automatically reuses the launcher's capture source
+for recording and effects and opens the configured speaker output; no monitor
+selection in `pavucontrol` is needed. Returning to Queue closes pass-through.
+Restart the launcher once after updating from the old combined-sink setup so
+it replaces that directly audible route with the app-owned capture sink.
 
 For daily desktop startup, save **Config → Audio routing** once, then run
 the command below. Choose the audio route and source, physical PipeWire sink,
@@ -1339,3 +1348,19 @@ DROP:    drop_blast (1.0)
 
 ### Optional
 - `bleak>=0.21` — BLE support (`pip install dreamsync-music-sync[ble]`)
+
+### Compiled-show synchronization and attack
+
+Compiled playback uses the audio player's DAC clock plus a lighting delivery
+advance. The initial advance is **80 ms**, an estimate rather than a measured
+hardware latency. Set `DREAMSYNC_LIGHTING_LATENCY_MS` before launching to calibrate
+your room: increase it if lights lag, decrease it if lights lead; zero disables
+the advance and negative values delay lights. Show metadata can also specify
+`lighting_latency_ms`; the environment takes precedence. Accepted range is
+-2000 to 2000 ms. This applies to both baked and runtime-rendered audio playback.
+
+Generated percussion now uses simultaneous room flashes and faster pulse decay;
+phrase-level pulse changes cut instead of fading. Explicit spatial profile
+choices remain available. Rhythmic colors cut on the downbeat, while breathe
+and gradient cues retain blending; `color_blend_beats` overrides that behavior.
+Old compiler cache entries recompile on use, and old baked frames are invalidated.

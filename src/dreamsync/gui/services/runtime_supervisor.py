@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 import queue
 import threading
 import time
@@ -27,6 +29,7 @@ from dreamsync.gui.services.session_service import SessionHandle, SessionService
 from dreamsync.gui.services.output_lease_service import (
     OutputLeaseService,
     QUEUE_AUDIO_OWNER,
+    LIVE_AUDIO_OWNER,
 )
 from dreamsync.show.models import Show, ShowTimeline
 from dreamsync.show.runtime_control import runtime_control_to_dict
@@ -458,6 +461,7 @@ class RuntimeSupervisor:
         self._capture_settings = CaptureSettings()
         self._reactive_settings = ReactiveSettings()
         self._learned_live_settings = LearnedLiveSettings()
+        self._live_audio_route = None
         self._learned_live_handle: SessionHandle | None = None
         self._learned_live_session: SpotifyLearnedLiveSession | None = None
         self._learned_store: LearnedTrackStore | None = None
@@ -980,7 +984,14 @@ class RuntimeSupervisor:
         self._record_event(self._status_message)
         return handle
 
-    def start_spotify_learned_live(
+    def start_spotify_learned_live(self, watcher, **kwargs) -> SessionHandle:
+        try:
+            return self._start_spotify_learned_live(watcher, **kwargs)
+        except BaseException:
+            self.stop_spotify_learned_live()
+            raise
+
+    def _start_spotify_learned_live(
         self,
         watcher,
         *,
@@ -993,6 +1004,28 @@ class RuntimeSupervisor:
         """Start cache-first Spotify output plus background learning capture."""
         self.stop_spotify_learned_live()
         settings = self._learned_live_settings
+        if sys.platform.startswith("linux") and (
+            (os.environ.get("PULSE_SOURCE") and os.environ.get("PULSE_SINK"))
+            or not self._simulation_only(simulation_only)
+        ):
+            from dreamsync.audio.live_route import LiveAudioRoute
+            from dreamsync.audio.system_input import pulse_source_device_id
+
+            source = os.environ.get("PULSE_SOURCE") or settings.capture_device_pattern
+            sink = os.environ.get("PULSE_SINK", "")
+            route = LiveAudioRoute(source, sink)
+            self._output_leases.acquire_audio(owner=LIVE_AUDIO_OWNER, mode="spotify_learned_live")
+            try:
+                route.start()
+            except BaseException:
+                self._output_leases.release_audio(owner=LIVE_AUDIO_OWNER)
+                raise
+            self._live_audio_route = route
+            settings = replace(settings, capture_device_pattern=source)
+            self._routing_state = replace(
+                self._routing_state,
+                selected_live_input_device_id=pulse_source_device_id(source),
+            )
         capture_root = capture_dir or Path(self._capture_settings.temp_capture_root)
         audio_root = Path(self._capture_settings.captured_audio_root)
         analysis_root = Path(self._capture_settings.analysis_root)
@@ -1121,9 +1154,15 @@ class RuntimeSupervisor:
         if handle is not None:
             handle.stop()
             handle.wait(timeout=5.0)
-        self._stop_output_handle()
-        if self._pipeline is not None and self._pipeline.running:
-            self._pipeline.stop()
+        try:
+            self._stop_output_handle()
+            if self._pipeline is not None and self._pipeline.running:
+                self._pipeline.stop()
+        finally:
+            if self._live_audio_route is not None:
+                self._live_audio_route.stop()
+                self._live_audio_route = None
+            self._output_leases.release_audio(owner=LIVE_AUDIO_OWNER)
 
     def start_capture_pipeline(
         self,
@@ -1206,6 +1245,8 @@ class RuntimeSupervisor:
         simulation_only: bool | None = None,
     ) -> bool:
         """Explicitly play one ready capture as a Queue-owned item."""
+        if self._learned_live_handle is not None:
+            self.stop_spotify_learned_live()
 
         self._saved_show_path = ""
         self._reactive_effect_mode = ""
@@ -1243,6 +1284,8 @@ class RuntimeSupervisor:
         self._saved_show_path = ""
         self._reactive_effect_mode = ""
         self._stop_output_handle()
+        if self._learned_live_handle is not None:
+            self.stop_spotify_learned_live()
         self._queue_playback_enabled = True
         self._queue_playback_config_path = config_path
         self._queue_playback_simulation_only = simulation_only
@@ -1520,6 +1563,18 @@ class RuntimeSupervisor:
         return None
 
     def poll(self) -> RuntimeModeState:
+        if self._live_audio_route is not None:
+            try:
+                self._live_audio_route.check()
+            except RuntimeError as exc:
+                self.stop_spotify_learned_live()
+                self._error_message = str(exc)
+                self._record_event(str(exc))
+        if self._learned_live_handle is not None and not self._learned_live_handle.running:
+            error = self._learned_live_handle.error
+            self.stop_spotify_learned_live()
+            if error is not None:
+                self._error_message = str(error)
         self._reap_finished_preview()
         self._reap_finished_output()
         if self._queue_playback_enabled and self._output_handle is None:
@@ -1559,6 +1614,8 @@ class RuntimeSupervisor:
         )
         device_status = str(active_snapshot.get("device_status", "")) if active_snapshot else ""
         audio_output = str(active_snapshot.get("audio_output", "")) if active_snapshot else ""
+        if self._live_audio_route is not None:
+            audio_output = f"Live pass-through: {self._live_audio_route.source} -> {self._live_audio_route.sink}"
         input_device = str(active_snapshot.get("input_device", self._selected_input_label())) if active_snapshot else self._selected_input_label()
         simulation_target = "captured preview" if self._preview_handle is not None else ""
         pipeline_state = "idle"
@@ -1764,6 +1821,11 @@ class RuntimeSupervisor:
             self._queue_playback_simulation_only = None
         if self._output_handle is not None:
             self._output_handle.stop()
+            wait = getattr(self._output_handle, "wait", None)
+            if callable(wait):
+                wait(timeout=5.0)
+                if self._output_handle.running:
+                    raise RuntimeError("Previous output did not stop; cannot switch audio ownership")
             self._output_handle = None
         if self._pipeline_current_item_id and self._pipeline is not None:
             self._pipeline.mark_ready(self._pipeline_current_item_id)
@@ -1799,7 +1861,7 @@ class RuntimeSupervisor:
             raise
 
     def _release_output_leases(self) -> None:
-        self._output_leases.release_audio()
+        self._output_leases.release_audio(owner=QUEUE_AUDIO_OWNER)
         self._output_leases.release_lighting()
 
     def _simulation_only(self, override: bool | None = None) -> bool:

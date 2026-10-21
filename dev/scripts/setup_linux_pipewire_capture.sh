@@ -161,8 +161,8 @@ done < <(pactl list modules short)
 
 if [[ "$mode" == "live-learning" ]]; then
     browser_sink="dreamsync_live_capture"
-    pactl load-module module-combine-sink \
-        sink_name="$browser_sink" sinks="$physical_sink" rate=48000 channels=2 \
+    pactl load-module module-null-sink \
+        sink_name="$browser_sink" rate=48000 channels=2 \
         sink_properties=device.description=DreamSync_Live_Capture >/dev/null
 else
     require_alsa_loopback

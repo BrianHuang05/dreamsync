@@ -39,7 +39,7 @@ _EQ_ROUTE_DEFAULTS: dict[tuple[str, str], dict[str, object]] = {
         "when": "enter",
         "color_bias": "#ff5033",
         "render_mode": "pulse",
-        "spatial_preset": "ripple_from_center",
+        "spatial_preset": "flash_all",
         "intensity_boost": 0.15,
     },
     ("sub", "dominant"): {
@@ -79,7 +79,7 @@ _EQ_ROUTE_DEFAULTS: dict[tuple[str, str], dict[str, object]] = {
         "when": "drop",
         "color_bias": "#ffb24d",
         "render_mode": "pulse",
-        "spatial_preset": "ripple_from_center",
+        "spatial_preset": "flash_all",
         "intensity_boost": 0.18,
     },
     ("presence", "dominant"): {
@@ -122,7 +122,7 @@ _INSTRUMENT_ROUTE_DEFAULTS: dict[tuple[str, str], dict[str, object]] = {
         "when": "dominant",
         "color_bias": "#ff5a36",
         "render_mode": "pulse",
-        "spatial_preset": "ripple_from_center",
+        "spatial_preset": "flash_all",
         "confidence_min": 0.45,
         "intensity_boost": 0.12,
     },
@@ -131,7 +131,7 @@ _INSTRUMENT_ROUTE_DEFAULTS: dict[tuple[str, str], dict[str, object]] = {
         "when": "enter",
         "color_bias": "#ff5a36",
         "render_mode": "pulse",
-        "spatial_preset": "ripple_from_center",
+        "spatial_preset": "flash_all",
         "confidence_min": 0.45,
         "intensity_boost": 0.18,
     },
@@ -195,7 +195,7 @@ _INSTRUMENT_ROUTE_DEFAULTS: dict[tuple[str, str], dict[str, object]] = {
         "when": "present",
         "color_bias": "#ffd07a",
         "render_mode": "pulse",
-        "spatial_preset": "ripple_from_center",
+        "spatial_preset": "flash_all",
         "pan_follow": 0.10,
         "width_scale": 1.08,
         "confidence_min": 0.48,
@@ -447,8 +447,8 @@ class TimelineAssembler:
             intensity=round(intensity, 4),
             speed=speed,
             params=params,
-            transition="fade",
-            transition_beats=2,
+            transition="cut" if render_mode == "pulse" else "fade",
+            transition_beats=0 if render_mode == "pulse" else 2,
         )
 
     def _resolve_active_eq_routes(

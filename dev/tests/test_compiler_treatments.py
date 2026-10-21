@@ -535,8 +535,8 @@ def test_scroll_effect_gets_directional_spatial_preset():
         assert t.params["spatial_extent"] in _AREA_EXTENTS
 
 
-def test_pulse_effect_gets_ripple_or_flash_spatial_family():
-    """Pulse-like generated sections choose from ripple/flash spatial variants."""
+def test_pulse_effect_hits_whole_room_without_spatial_delay():
+    """Generated percussion hits together with a fast decay."""
     profile = _make_profile(
         moods={
             "chill": MoodProfileConfig(palettes=("warm",)),
@@ -553,11 +553,9 @@ def test_pulse_effect_gets_ripple_or_flash_spatial_family():
     t = sel.select("groove", "verse", 120.0)
 
     assert t.render_mode == "pulse"
-    assert t.params["spatial_preset"] in {
-        "ripple_from_center",
-        "flash_top_only",
-        "flash_floor_only",
-    }
+    assert t.params["spatial_preset"] == "flash_all"
+    assert t.params["spatial_delay_ms"] == 0
+    assert t.params["pulse_decay"] == 10.0
 
 
 def test_gradient_effect_uses_selected_palette_for_gradient_colors():

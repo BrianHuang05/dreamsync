@@ -7,10 +7,11 @@ from dataclasses import dataclass
 
 
 QUEUE_AUDIO_OWNER = "queue"
+LIVE_AUDIO_OWNER = "live_passthrough"
 
 
 class AudioOutputInvariantError(RuntimeError):
-    """Raised when a non-Queue component attempts audible output."""
+    """Raised when an unauthorized or competing component requests audio output."""
 
 
 @dataclass(frozen=True)
@@ -29,7 +30,7 @@ class AudioLeaseSnapshot:
 
 
 class OutputLeaseService:
-    """Keep lighting ownership separate from Queue-only audio ownership."""
+    """Keep lighting ownership separate from Queue and live pass-through audio."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -69,9 +70,9 @@ class OutputLeaseService:
         requested_owner = str(owner or "").strip()
         requested_mode = str(mode or requested_owner or "idle")
         with self._lock:
-            if requested_owner != QUEUE_AUDIO_OWNER:
+            if requested_owner not in {QUEUE_AUDIO_OWNER, LIVE_AUDIO_OWNER}:
                 message = (
-                    "DreamSync audible output is Queue-only; "
+                    "File playback is Queue-only; only the Live Learning pass-through may also own audio; "
                     f"{requested_owner or 'unknown'!r} requested it for {requested_mode!r}."
                 )
                 self._record_audio_violation(message)
@@ -85,7 +86,7 @@ class OutputLeaseService:
                 self._record_audio_violation(message)
                 raise AudioOutputInvariantError(message)
             self._audio = AudioLeaseSnapshot(
-                owner=QUEUE_AUDIO_OWNER,
+                owner=requested_owner,
                 mode=requested_mode,
                 violation_count=current.violation_count,
                 last_violation=current.last_violation,

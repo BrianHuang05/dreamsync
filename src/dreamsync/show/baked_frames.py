@@ -11,7 +11,7 @@ from typing import Any
 SCHEMA_VERSION = 1
 ARTIFACT_KIND = "dreamsync_baked_frames"
 SPATIAL_ENGINE_VERSION = 2
-RENDERER_VERSION = 2
+RENDERER_VERSION = 3
 
 
 @dataclass(frozen=True)

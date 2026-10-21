@@ -9,6 +9,7 @@ import traceback
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+
 from typing import Any
 
 from dreamsync.capture.writer import check_ffmpeg
@@ -26,6 +27,7 @@ from dreamsync.profile_chain import ChainConfig, ProfileChain
 from dreamsync.profile_generator import generate_profile_set
 from dreamsync.render import RenderMode
 from dreamsync.show.models import Show, ShowTimeline
+from dreamsync.show.timing import lighting_position
 from dreamsync.show.player import AudioPlayer
 from dreamsync.show.playback_selector import choose_show_playback_runtime
 from dreamsync.show.runtime_control import RuntimeControlBus, runtime_control_to_dict
@@ -299,10 +301,10 @@ class TimelinePlaybackSession:
                     time.sleep(min(0.01, max(0.001, next_frame_at - loop_now)))
                     continue
                 self._set_playback_state("playing")
-                tick_position = player.position_seconds
+                tick_position = lighting_position(player.position_seconds, self._timeline)
                 if runtime.tick(tick_position):
                     frames_sent += 1
-                next_frame_at = time.monotonic() + frame_interval
+                next_frame_at = max(loop_now, next_frame_at) + frame_interval
                 time.sleep(0.005)
         finally:
             runtime_stats = runtime.stats if runtime is not None and hasattr(runtime, "stats") else {}
@@ -422,7 +424,7 @@ class TimelinePlaybackSession:
                 continue
             if fps_value > 0:
                 fps_values.append(fps_value)
-        target_fps = min(fps_values) if fps_values else 30.0
+        target_fps = max(fps_values) if fps_values else 30.0
         target_fps = max(1.0, min(60.0, target_fps))
         return 1.0 / target_fps
 

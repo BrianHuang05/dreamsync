@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 SHOW_SCHEMA_VERSION = 1
-COMPILER_COMPATIBILITY_VERSION = 1
+COMPILER_COMPATIBILITY_VERSION = 2
 
 # ---------------------------------------------------------------------------
 # D4.1 — Profile Fingerprint
@@ -168,7 +168,10 @@ class ShowCache:
         path = self._find_entry_path(track_id, fp)
         if path is None:
             return None
-        return self._read_timeline(path)
+        timeline = self._read_timeline(path)
+        if timeline is not None and timeline.metadata.get("_compiler_version") != COMPILER_COMPATIBILITY_VERSION:
+            return None
+        return timeline
 
     def put(self, track_id: str, timeline: ShowTimeline, profile: ProfileConfig | None = None) -> Path:
         fp = profile_fingerprint(profile)
