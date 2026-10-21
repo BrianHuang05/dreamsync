@@ -451,6 +451,7 @@ class DeviceDiscoveryService:
         self, entry: DiscoveredDeviceEntry, spec: DeviceTestSpec, *,
         advance_ms: float, stop_event: threading.Event,
         tone_device_id: int | None = None,
+        tone_volume: float = 0.8,
         on_status: Callable[[str], None] | None = None,
     ) -> None:
         """Play one short test flash against a tone at the selected timing offset."""
@@ -468,7 +469,7 @@ class DeviceDiscoveryService:
             try:
                 adapter.turn_on()
                 adapter.set_brightness(max(1, round(spec.brightness * 100)))
-                tone_stream, tone = self._open_calibration_tone(tone_device_id)
+                tone_stream, tone = self._open_calibration_tone(tone_device_id, tone_volume)
                 try:
                     report_status("Tone output ready. Playing tone and light flash…")
                     tone_at = time.monotonic() + 0.25 + max(0.0, advance)
@@ -495,7 +496,7 @@ class DeviceDiscoveryService:
             adapter.start()
             try:
                 self._wait_for_ble_connection(adapter, entry.address)
-                tone_stream, tone = self._open_calibration_tone(tone_device_id)
+                tone_stream, tone = self._open_calibration_tone(tone_device_id, tone_volume)
                 try:
                     report_status("Tone output ready. Playing tone and light flash…")
                     tone_at = time.monotonic() + 0.25 + max(0.0, advance)
@@ -555,7 +556,7 @@ class DeviceDiscoveryService:
             stop_event.wait(min(0.02, target_time - time.monotonic()))
 
     @staticmethod
-    def _open_calibration_tone(device_id: int | None = None):
+    def _open_calibration_tone(device_id: int | None = None, volume: float = 0.8):
         import numpy as np
         import sounddevice as sd
 
@@ -583,9 +584,8 @@ class DeviceDiscoveryService:
         # retaining a brief attack/release to avoid clicks.
         count = int(sample_rate * 0.5)
         phase = 2.0 * np.pi * 880.0 * np.arange(count) / sample_rate
-        ramp = max(1, int(sample_rate * 0.01))
-        envelope = np.minimum(1.0, np.minimum(np.arange(count) / ramp, (count - np.arange(count)) / ramp))
-        tone = (0.8 * np.sin(phase) * envelope).astype(np.float32)
+        amplitude = max(0.1, min(1.0, float(volume)))
+        tone = (amplitude * np.sin(phase)).astype(np.float32)
         return stream, tone
 
     @staticmethod

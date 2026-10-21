@@ -50,6 +50,20 @@ def show_device_test_dialog(
     advance.setSuffix(" ms")
     advance.setValue(float(lighting_advance_ms))
     layout.addRow("Light advance", advance)
+    tone_volume = 0.8
+    tone_volume_label = QtWidgets.QLabel("80%")
+    tone_volume_label.setObjectName("deviceCalibrationToneVolumeLabel")
+    tone_volume_down = QtWidgets.QPushButton("−")
+    tone_volume_down.setObjectName("deviceCalibrationToneVolumeDownButton")
+    tone_volume_down.setToolTip("Decrease calibration tone volume")
+    tone_volume_up = QtWidgets.QPushButton("+")
+    tone_volume_up.setObjectName("deviceCalibrationToneVolumeUpButton")
+    tone_volume_up.setToolTip("Increase calibration tone volume")
+    tone_volume_row = QtWidgets.QHBoxLayout()
+    tone_volume_row.addWidget(tone_volume_down)
+    tone_volume_row.addWidget(tone_volume_label)
+    tone_volume_row.addWidget(tone_volume_up)
+    layout.addRow("Tone volume", tone_volume_row)
     sync_button = QtWidgets.QPushButton("Play Tone + Flash")
     sync_button.setObjectName("deviceCalibrationButton")
     sync_button.setToolTip("Hear a short tone and compare it with this device's flash")
@@ -131,11 +145,23 @@ def show_device_test_dialog(
         )
         state["thread"].start()
 
+    def adjust_tone_volume(delta):
+        nonlocal tone_volume
+        tone_volume = max(0.1, min(1.0, round(tone_volume + delta, 1)))
+        tone_volume_label.setText(f"{tone_volume:.0%}")
+        tone_volume_down.setEnabled(tone_volume > 0.1)
+        tone_volume_up.setEnabled(tone_volume < 1.0)
+
+    tone_volume_down.setEnabled(False)
+    tone_volume_down.clicked.connect(lambda: adjust_tone_volume(-0.1))
+    tone_volume_up.clicked.connect(lambda: adjust_tone_volume(0.1))
+
     def _run_calibration(spec, advance_ms):
         try:
             service.calibrate_device(
                 entry, spec, advance_ms=advance_ms, stop_event=stop_event,
                 tone_device_id=tone_device_id,
+                tone_volume=tone_volume,
                 on_status=lambda message: state.__setitem__("calibration_message", message),
             )
         except Exception as exc:
