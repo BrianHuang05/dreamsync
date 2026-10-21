@@ -114,6 +114,13 @@ def show_device_test_dialog(
             return
         state["error"] = ""
         stop_event.clear()
+        initial_status = (
+            "Connecting to the light over Bluetooth…"
+            if entry.source == "ble" else "Preparing the light…"
+        )
+        state["calibration_message"] = initial_status
+        calibration_status.setText(initial_status)
+        sync_button.setEnabled(False)
         spec = DeviceTestSpec(
             color=color.text().strip(), pattern="solid", brightness=brightness.value(),
             segments=segment_count.value(), transport=transport, protocol=protocol,
@@ -123,12 +130,13 @@ def show_device_test_dialog(
             target=lambda: _run_calibration(spec, advance_ms), daemon=True,
         )
         state["thread"].start()
-        calibration_status.setText("Preparing synchronized tone and flash...")
 
     def _run_calibration(spec, advance_ms):
         try:
             service.calibrate_device(
-                entry, spec, advance_ms=advance_ms, stop_event=stop_event, tone_device_id=tone_device_id,
+                entry, spec, advance_ms=advance_ms, stop_event=stop_event,
+                tone_device_id=tone_device_id,
+                on_status=lambda message: state.__setitem__("calibration_message", message),
             )
         except Exception as exc:
             state["error"] = str(exc).strip() or type(exc).__name__
@@ -177,6 +185,7 @@ def show_device_test_dialog(
     def poll_test():
         thread = state["thread"]
         if thread is not None:
+            calibration_status.setText(state.get("calibration_message", "Preparing the test…"))
             if thread.is_alive():
                 return
             thread.join()
@@ -191,6 +200,7 @@ def show_device_test_dialog(
                 "Calibration test failed: " + state["error"] if state["error"]
                 else "Flash and tone test finished. Nudge the advance and repeat until they align."
             )
+            sync_button.setEnabled(True)
         if state["closing"] is not None:
             QtWidgets.QDialog.done(dialog, state["closing"])
             return

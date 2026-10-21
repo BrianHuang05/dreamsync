@@ -451,11 +451,14 @@ class DeviceDiscoveryService:
         self, entry: DiscoveredDeviceEntry, spec: DeviceTestSpec, *,
         advance_ms: float, stop_event: threading.Event,
         tone_device_id: int | None = None,
+        on_status: Callable[[str], None] | None = None,
     ) -> None:
         """Play one short test flash against a tone at the selected timing offset."""
         spec.validate(entry.source)
         advance = max(-2000.0, min(2000.0, float(advance_ms))) / 1000.0
+        report_status = on_status or (lambda _message: None)
         if entry.source == "lan":
+            report_status("Preparing the light…")
             adapter = self._lan_adapter_factory(GoveeLanConfig(
                 device_ip=entry.address, segments=max(1, spec.segments), fps=20,
                 brightness=float(spec.brightness), transport=TransportMode(spec.transport),
@@ -465,18 +468,24 @@ class DeviceDiscoveryService:
             try:
                 adapter.turn_on()
                 adapter.set_brightness(max(1, round(spec.brightness * 100)))
-                tone_at = time.monotonic() + 2.25 + max(0.0, advance)
-                flash_at = tone_at - advance
-                self._run_calibration_flash_sequence(
-                    lambda: adapter.send_frame(flash), tone_at, flash_at,
-                    advance, stop_event, tone_device_id,
-                )
+                tone_stream, tone = self._open_calibration_tone(tone_device_id)
+                try:
+                    report_status("Tone output ready. Playing tone and light flash…")
+                    tone_at = time.monotonic() + 0.25 + max(0.0, advance)
+                    flash_at = tone_at - advance
+                    self._run_calibration_flash_sequence(
+                        lambda: adapter.send_frame(flash), tone_at, flash_at,
+                        stop_event, tone_stream, tone,
+                    )
+                finally:
+                    tone_stream.close()
                 stop_event.wait(0.18)
             finally:
                 adapter.send_frame(off)
                 adapter.turn_off()
             return
         if entry.source == "ble":
+            report_status("Connecting to the light over Bluetooth…")
             protocol = BleProtocol(spec.protocol)
             adapter = self._ble_adapter_factory(GoveeBleConfig(
                 address=entry.address, name=entry.name, protocol=protocol,
@@ -486,18 +495,23 @@ class DeviceDiscoveryService:
             adapter.start()
             try:
                 self._wait_for_ble_connection(adapter, entry.address)
-                tone_at = time.monotonic() + 2.25 + max(0.0, advance)
-                flash_at = tone_at - advance
-                def send_flash():
-                    if protocol == BleProtocol.BULB:
-                        adapter.send_color(*_parse_hex_color(spec.color), brightness)
-                    else:
-                        adapter.send_segment_colors(
-                            [_parse_hex_color(spec.color)] * max(1, spec.segments), brightness,
-                        )
-                self._run_calibration_flash_sequence(
-                    send_flash, tone_at, flash_at, advance, stop_event, tone_device_id,
-                )
+                tone_stream, tone = self._open_calibration_tone(tone_device_id)
+                try:
+                    report_status("Tone output ready. Playing tone and light flash…")
+                    tone_at = time.monotonic() + 0.25 + max(0.0, advance)
+                    flash_at = tone_at - advance
+                    def send_flash():
+                        if protocol == BleProtocol.BULB:
+                            adapter.send_color(*_parse_hex_color(spec.color), brightness)
+                        else:
+                            adapter.send_segment_colors(
+                                [_parse_hex_color(spec.color)] * max(1, spec.segments), brightness,
+                            )
+                    self._run_calibration_flash_sequence(
+                        send_flash, tone_at, flash_at, stop_event, tone_stream, tone,
+                    )
+                finally:
+                    tone_stream.close()
                 stop_event.wait(0.18)
             finally:
                 adapter.send_color(0, 0, 0, brightness)
@@ -506,21 +520,34 @@ class DeviceDiscoveryService:
         raise ValueError(f"Unsupported calibration device: {entry.source}")
 
     @staticmethod
-    def _run_calibration_flash_sequence(send_flash, tone_at, flash_at, advance, stop_event, tone_device_id):
+    def _run_calibration_flash_sequence(send_flash, tone_at, flash_at, stop_event, tone_stream, tone):
         wait_until = DeviceDiscoveryService._wait_until_calibration_time
-        play_tone = lambda: DeviceDiscoveryService._play_calibration_tone_at(
-            tone_at, stop_event, tone_device_id,
+
+        errors: list[Exception] = []
+
+        def schedule(target_time, action):
+            wait_until(target_time, stop_event)
+            if stop_event.is_set():
+                return
+            try:
+                action()
+            except Exception as exc:
+                errors.append(exc)
+
+        flash_thread = threading.Thread(target=schedule, args=(flash_at, send_flash), daemon=True)
+        tone_thread = threading.Thread(
+            target=schedule,
+            args=(tone_at, lambda: DeviceDiscoveryService._play_calibration_tone_at(
+                tone_at, stop_event, tone_stream, tone,
+            )),
+            daemon=True,
         )
-        if advance >= 0:
-            wait_until(flash_at, stop_event)
-            if not stop_event.is_set():
-                send_flash()
-                play_tone()
-        else:
-            play_tone()
-            wait_until(flash_at, stop_event)
-            if not stop_event.is_set():
-                send_flash()
+        flash_thread.start()
+        tone_thread.start()
+        flash_thread.join()
+        tone_thread.join()
+        if errors:
+            raise RuntimeError(f"Calibration tone or light flash failed: {errors[0]}") from errors[0]
 
     @staticmethod
     def _wait_until_calibration_time(target_time: float, stop_event: threading.Event) -> None:
@@ -528,18 +555,43 @@ class DeviceDiscoveryService:
             stop_event.wait(min(0.02, target_time - time.monotonic()))
 
     @staticmethod
-    def _play_calibration_tone_at(target_time: float, stop_event: threading.Event, device_id: int | None = None) -> None:
+    def _open_calibration_tone(device_id: int | None = None):
         import numpy as np
         import sounddevice as sd
 
-        sample_rate = 44100
+        stream = None
+        try:
+            device_info = sd.query_devices(device_id, "output")
+            sample_rate = int(round(float(device_info["default_samplerate"])))
+            if sample_rate < 8000:
+                raise ValueError("The audio device reported an invalid sample rate.")
+            sd.check_output_settings(
+                device=device_id, channels=1, dtype="float32", samplerate=sample_rate,
+            )
+            stream = sd.OutputStream(
+                device=device_id, samplerate=sample_rate, channels=1,
+                dtype="float32", latency="low",
+            )
+            stream.start()
+        except Exception as exc:
+            if stream is not None:
+                stream.close()
+            raise RuntimeError(
+                f"Could not open DreamSync's configured audio output for the calibration tone: {exc}"
+            ) from exc
         count = int(sample_rate * 0.12)
         phase = 2.0 * np.pi * 880.0 * np.arange(count) / sample_rate
         envelope = np.minimum(1.0, np.minimum(np.arange(count) / 220.0, (count - np.arange(count)) / 220.0))
         tone = (0.15 * np.sin(phase) * envelope).astype(np.float32)
+        return stream, tone
+
+    @staticmethod
+    def _play_calibration_tone_at(
+        target_time: float, stop_event: threading.Event, stream: object, tone: object,
+    ) -> None:
         DeviceDiscoveryService._wait_until_calibration_time(target_time, stop_event)
         if not stop_event.is_set():
-            sd.play(tone, sample_rate, device=device_id, blocking=True)
+            stream.write(tone)
 
     def identify(
         self,
