@@ -6,7 +6,7 @@ from dreamsync.gui.services.device_discovery_service import DeviceTestSpec
 
 
 def show_device_test_dialog(
-    QtCore, QtWidgets, parent, service, entry, *, segments, transport, protocol, save_segments=None
+    QtCore, QtWidgets, parent, service, entry, *, segments, transport, protocol, save_segments=None, lighting_advance_ms=0.0, save_lighting_advance=None, tone_device_id=None
 ):
     state = {"running": False, "pending": None, "thread": None, "error": "", "closing": None}
     stop_event = threading.Event()
@@ -42,6 +42,26 @@ def show_device_test_dialog(
     layout.addRow("Color", color)
     layout.addRow("Pattern", pattern)
     layout.addRow("Brightness", brightness)
+    advance = QtWidgets.QDoubleSpinBox()
+    advance.setObjectName("deviceLightingAdvanceSpin")
+    advance.setRange(-2000.0, 2000.0)
+    advance.setSingleStep(10.0)
+    advance.setDecimals(0)
+    advance.setSuffix(" ms")
+    advance.setValue(float(lighting_advance_ms))
+    layout.addRow("Light advance", advance)
+    sync_button = QtWidgets.QPushButton("Play Tone + Flash")
+    sync_button.setObjectName("deviceCalibrationButton")
+    sync_button.setToolTip("Hear a short tone and compare it with this device's flash")
+    layout.addRow(sync_button)
+    save_sync_button = QtWidgets.QPushButton("Save Calibration")
+    save_sync_button.setObjectName("saveDeviceCalibrationButton")
+    save_sync_button.setEnabled(save_lighting_advance is not None)
+    layout.addRow(save_sync_button)
+    calibration_status = QtWidgets.QLabel("If the flash follows the tone, increase advance. If it leads, decrease it, then repeat.")
+    calibration_status.setObjectName("deviceCalibrationStatusLabel")
+    calibration_status.setWordWrap(True)
+    layout.addRow(calibration_status)
     warning = QtWidgets.QLabel(
         f"Only {entry.name} ({entry.address}) will be tested. "
         "The device will be turned off when the test ends."
@@ -78,6 +98,42 @@ def show_device_test_dialog(
             save_status.setText(f"Saved {segment_count.value()} segments to config.")
 
     save.clicked.connect(update_config)
+
+    def save_calibration():
+        try:
+            save_lighting_advance(advance.value())
+        except Exception as exc:
+            calibration_status.setText(f"Could not save calibration: {exc}")
+        else:
+            calibration_status.setText(f"Saved {advance.value():.0f} ms light advance for {entry.name}.")
+
+    save_sync_button.clicked.connect(save_calibration)
+
+    def run_calibration():
+        if state["thread"] is not None:
+            return
+        state["error"] = ""
+        stop_event.clear()
+        spec = DeviceTestSpec(
+            color=color.text().strip(), pattern="solid", brightness=brightness.value(),
+            segments=segment_count.value(), transport=transport, protocol=protocol,
+        )
+        advance_ms = advance.value()
+        state["thread"] = threading.Thread(
+            target=lambda: _run_calibration(spec, advance_ms), daemon=True,
+        )
+        state["thread"].start()
+        calibration_status.setText("Preparing synchronized tone and flash...")
+
+    def _run_calibration(spec, advance_ms):
+        try:
+            service.calibrate_device(
+                entry, spec, advance_ms=advance_ms, stop_event=stop_event, tone_device_id=tone_device_id,
+            )
+        except Exception as exc:
+            state["error"] = str(exc).strip() or type(exc).__name__
+
+    sync_button.clicked.connect(run_calibration)
 
     def stop_test():
         state["running"] = False
@@ -131,6 +187,10 @@ def show_device_test_dialog(
                 status.setText(f"Test failed: {state['error']}")
             elif not state["running"]:
                 status.setText("Test stopped.")
+            calibration_status.setText(
+                "Calibration test failed: " + state["error"] if state["error"]
+                else "Flash and tone test finished. Nudge the advance and repeat until they align."
+            )
         if state["closing"] is not None:
             QtWidgets.QDialog.done(dialog, state["closing"])
             return

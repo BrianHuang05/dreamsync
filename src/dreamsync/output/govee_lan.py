@@ -502,6 +502,7 @@ class MultiGoveeLanAdapter:
         self._frame_trace_counter = 0
         self._frame_trace: deque[dict[str, Any]] = deque(maxlen=120)
         self._dreamview_preflight_complete = False
+        self._last_device_render_t: dict[str, float] = {}
 
     def configure_frame_trace(
         self,
@@ -745,10 +746,23 @@ class MultiGoveeLanAdapter:
                 render_params,
                 address,
             )
+            device_t = t + float(getattr(adapter, "lighting_advance_ms", 0.0)) / 1000.0
+            device_beat = beat
+            if device_t != t and params:
+                from bisect import bisect_right
+                grid = params.get("_timeline_beat_times", ())
+                if grid:
+                    previous_device_t = self._last_device_render_t.get(address)
+                    device_beat = (
+                        bisect_right(grid, device_t) > bisect_right(grid, previous_device_t)
+                        if previous_device_t is not None else
+                        any(abs(device_t - beat_t) <= 0.04 for beat_t in grid)
+                    )
+            self._last_device_render_t[address] = device_t
             colors = renderer.render(
-                t,
+                device_t,
                 device_intent,
-                beat=beat,
+                beat=device_beat,
                 params=device_render_params,
             )
             colors, _ = self._segment_output(colors, address, _placement, params)
@@ -1165,6 +1179,7 @@ class MultiGoveeLanAdapter:
         *,
         fallback_color: str = "#000000",
         params: dict | None = None,
+        device_node_colors: dict[str, dict[str, str]] | None = None,
     ) -> bool:
         """Send precomputed logical node colors to devices.
 
@@ -1177,10 +1192,11 @@ class MultiGoveeLanAdapter:
         group_state = self._group_runtime_state(params)
         for adapter, renderer, _role, _bs, placement in self.devices:
             address = str(adapter.config.device_ip)
+            selected_node_colors = (device_node_colors or {}).get(address, node_colors)
             colors = self._baked_device_colors(
                 address,
                 max(1, int(getattr(renderer, "segments", 1))),
-                node_colors,
+                selected_node_colors,
                 fallback_color=fallback_color,
             )
             colors = self._gate_baked_colors(colors, placement, group_state)
@@ -1206,6 +1222,7 @@ class MultiGoveeLanAdapter:
                 follower_renderer,
             ) = self._normalize_ble_follower(follower)
             address = self._ble_address(follower_adapter)
+            selected_node_colors = (device_node_colors or {}).get(address, node_colors)
             segments = (
                 max(1, int(getattr(follower_renderer, "segments", 1)))
                 if follower_renderer is not None
@@ -1214,7 +1231,7 @@ class MultiGoveeLanAdapter:
             follower_colors = self._baked_device_colors(
                 address,
                 segments,
-                node_colors,
+                selected_node_colors,
                 fallback_color=fallback_color,
             )
             follower_colors = self._gate_baked_colors(

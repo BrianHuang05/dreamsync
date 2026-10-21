@@ -81,15 +81,27 @@ class BakedFramePlaybackRuntime:
             node.key: color
             for node, color in zip(self._artifact.nodes, frame.colors)
         }
+        device_node_colors = {}
+        for adapter, *_rest in getattr(self._multi_adapter, "devices", ()):
+            address = str(getattr(getattr(adapter, "config", None), "device_ip", ""))
+            advance = float(getattr(adapter, "lighting_advance_ms", 0.0))
+            if address and advance:
+                device_frame = self.frame_at(t + advance / 1000.0)
+                if device_frame is not None:
+                    device_node_colors[address] = {
+                        node.key: color
+                        for node, color in zip(self._artifact.nodes, device_frame.colors)
+                    }
         params = {"show_background_color": self._background_color} if self._background_color else None
         if self._control_state_getter is not None:
             state = self._control_state_getter()
             if state is not None:
                 params = {**(params or {}), "runtime_control": runtime_control_to_dict(state)}
+        timing_kwargs = {"device_node_colors": device_node_colors} if device_node_colors else {}
         sent = bool(
-            send_baked_frame(t, node_colors, params=params)
+            send_baked_frame(t, node_colors, params=params, **timing_kwargs)
             if params is not None
-            else send_baked_frame(t, node_colors)
+            else send_baked_frame(t, node_colors, **timing_kwargs)
         )
         if sent:
             self._frames_sent += 1

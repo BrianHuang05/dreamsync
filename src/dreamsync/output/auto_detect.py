@@ -85,6 +85,7 @@ class DeviceConfig:
     ble_validated_fps: float | None = None
     spacing_warnings_disabled: bool = False
     background_color: str = "#ffffff"
+    lighting_advance_ms: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -414,6 +415,7 @@ def load_device_config(path: Path) -> list[DeviceConfig]:
             spacing_warnings_disabled=entry.get("spacing_warnings_disabled") is True,
             lan_validated_fps=float(entry["lan_validated_fps"]) if entry.get("lan_validated_fps") is not None else None,
             ble_validated_fps=float(entry["ble_validated_fps"]) if entry.get("ble_validated_fps") is not None else None,
+            lighting_advance_ms=float(entry.get("lighting_advance_ms", 0.0)),
         ))
 
     from dreamsync.output.transport_selection import validate_transport_configs
@@ -466,6 +468,8 @@ def device_config_to_mapping(config: DeviceConfig) -> dict[str, object]:
         value = getattr(config, name)
         if value is not None:
             data[name] = value
+    if config.lighting_advance_ms:
+        data["lighting_advance_ms"] = config.lighting_advance_ms
     if config.spacing_warnings_disabled:
         data["spacing_warnings_disabled"] = True
     if config.transport_policy != "fixed":
@@ -807,6 +811,7 @@ def build_multi_adapter(
                 transport=transport,
             )
             adapter = GoveeLanAdapter(lan_config)
+            adapter.lighting_advance_ms = cfg.lighting_advance_ms
             renderer = SegmentRenderer(
                 segments=cfg.segments,
                 mode=render_mode,
@@ -837,7 +842,9 @@ def build_multi_adapter(
                     mirror=mirror,
                     device_type=device_type.value,
                 )
-            ble_followers.append((GoveeBleAdapter(ble_config), device_role, device_bs, cfg.placement, renderer))
+            ble_adapter = GoveeBleAdapter(ble_config)
+            ble_adapter.lighting_advance_ms = cfg.lighting_advance_ms
+            ble_followers.append((ble_adapter, device_role, device_bs, cfg.placement, renderer))
 
     spatial_mapper = SpatialMapper(enabled=spatial_enabled) if spatial_enabled else None
     return MultiGoveeLanAdapter(

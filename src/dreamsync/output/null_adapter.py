@@ -111,6 +111,7 @@ class NullMultiAdapter:
         *,
         fallback_color: str = "#000000",
         params: dict | None = None,
+        device_node_colors: dict[str, dict[str, str]] | None = None,
     ) -> bool:
         self._frames_sent += 1
         return True
@@ -217,12 +218,14 @@ class PreviewMirrorAdapter:
         *,
         fallback_color: str = "#000000",
         params: dict | None = None,
+        device_node_colors: dict[str, dict[str, str]] | None = None,
     ) -> bool:
         output_sent = self._output_adapter.send_baked_frame(
             t,
             node_colors,
             fallback_color=fallback_color,
             params=params,
+            device_node_colors=device_node_colors,
         )
         preview_sent = self._mirror_final_output(
             fallback=lambda: self._preview_adapter.send_baked_frame(
@@ -230,6 +233,7 @@ class PreviewMirrorAdapter:
                 node_colors,
                 fallback_color=fallback_color,
                 params=params,
+                device_node_colors=device_node_colors,
             ),
             t=t,
         )
@@ -440,12 +444,14 @@ class SimulationMultiAdapter(MultiGoveeLanAdapter):
         *,
         fallback_color: str = "#000000",
         params: dict | None = None,
+        device_node_colors: dict[str, dict[str, str]] | None = None,
     ) -> bool:
         sent = super().send_baked_frame(
             t,
             node_colors,
             fallback_color=fallback_color,
             params=params,
+            device_node_colors=device_node_colors,
         )
         if sent:
             self._frames_sent += 1

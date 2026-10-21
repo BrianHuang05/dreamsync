@@ -17,6 +17,14 @@ _SECTIONS: tuple[tuple[str, str], ...] = (
         """,
     ),
     (
+        "Light timing calibration",
+        """
+        <h1>Calibrate each light to the audio</h1>
+        <p>Open <b>Devices</b>, select a configured device, then open <b>Advanced Test</b>. Click <b>Play Tone + Flash</b> and compare the flash with the tone. If the flash appears after the tone, increase <b>Light advance</b>; if it appears first, decrease it. Repeat until they align, then click <b>Save Calibration</b>. Calibrate each device separately.</p>
+        <p>The tone uses the selected playback device. Saved advances are stored with the device and applied during show playback. The room-wide lighting latency setting still provides a base correction.</p>
+        """,
+    ),
+    (
         "VB-Cable loopback",
         """
         <h1>Windows system-audio loopback with VB-Cable</h1>

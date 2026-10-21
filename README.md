@@ -1364,3 +1364,13 @@ phrase-level pulse changes cut instead of fading. Explicit spatial profile
 choices remain available. Rhythmic colors cut on the downbeat, while breathe
 and gradient cues retain blending; `color_blend_beats` overrides that behavior.
 Old compiler cache entries recompile on use, and old baked frames are invalidated.
+
+
+### Per-device light calibration
+
+Open **Devices**, select a configured light, and choose **Advanced Test**. Click
+**Play Tone + Flash** to compare a short tone on the selected playback output
+with a flash from that light. Increase **Light advance** when the flash follows
+the tone; decrease it when the flash leads. Repeat, then save the calibration.
+Each device stores its own advance in `devices.yaml`; Queue playback applies it
+per device. The room-wide lighting latency remains the base correction.

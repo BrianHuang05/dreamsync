@@ -422,6 +422,125 @@ class DeviceDiscoveryService:
         path.parent.mkdir(parents=True, exist_ok=True)
         save_device_config(path, next_configs)
 
+    def update_device_lighting_advance(self, path: Path, entry: DiscoveredDeviceEntry, advance_ms: float) -> None:
+        """Persist the selected device's calibrated light advance, preserving other YAML fields."""
+        import yaml
+
+        value = float(advance_ms)
+        if not math.isfinite(value) or not -2000.0 <= value <= 2000.0:
+            raise ValueError("Lighting advance must be between -2000 and 2000 ms.")
+        source = path.read_text(encoding="utf-8")
+        payload = yaml.safe_load(source)
+        devices = payload.get("devices", []) if isinstance(payload, dict) else []
+        matches = [item for item in devices if isinstance(item, dict) and item.get("address") == entry.address]
+        if len(matches) != 1:
+            raise ValueError("Save this device to config first; a unique config entry is required.")
+        root = yaml.compose(source)
+        device_nodes = next(node for key, node in root.value if key.value == "devices")
+        node = device_nodes.value[devices.index(matches[0])]
+        advance_node = next((val for key, val in node.value if key.value == "lighting_advance_ms"), None)
+        if advance_node is not None:
+            updated = source[:advance_node.start_mark.index] + str(value) + source[advance_node.end_mark.index:]
+        else:
+            key = node.value[0][0]
+            updated = source[:key.start_mark.index] + f"lighting_advance_ms: {value}\n{' ' * key.start_mark.column}" + source[key.start_mark.index:]
+        yaml.safe_load(updated)
+        path.write_text(updated, encoding="utf-8")
+
+    def calibrate_device(
+        self, entry: DiscoveredDeviceEntry, spec: DeviceTestSpec, *,
+        advance_ms: float, stop_event: threading.Event,
+        tone_device_id: int | None = None,
+    ) -> None:
+        """Play one short test flash against a tone at the selected timing offset."""
+        spec.validate(entry.source)
+        advance = max(-2000.0, min(2000.0, float(advance_ms))) / 1000.0
+        if entry.source == "lan":
+            adapter = self._lan_adapter_factory(GoveeLanConfig(
+                device_ip=entry.address, segments=max(1, spec.segments), fps=20,
+                brightness=float(spec.brightness), transport=TransportMode(spec.transport),
+            ))
+            off = [(0, 0, 0)] * max(1, spec.segments)
+            flash = [_parse_hex_color(spec.color)] * max(1, spec.segments)
+            try:
+                adapter.turn_on()
+                adapter.set_brightness(max(1, round(spec.brightness * 100)))
+                tone_at = time.monotonic() + 2.25 + max(0.0, advance)
+                flash_at = tone_at - advance
+                self._run_calibration_flash_sequence(
+                    lambda: adapter.send_frame(flash), tone_at, flash_at,
+                    advance, stop_event, tone_device_id,
+                )
+                stop_event.wait(0.18)
+            finally:
+                adapter.send_frame(off)
+                adapter.turn_off()
+            return
+        if entry.source == "ble":
+            protocol = BleProtocol(spec.protocol)
+            adapter = self._ble_adapter_factory(GoveeBleConfig(
+                address=entry.address, name=entry.name, protocol=protocol,
+                segments=max(1, spec.segments), max_fps=10.0,
+            ))
+            brightness = max(5, min(100, round(spec.brightness * 100)))
+            adapter.start()
+            try:
+                self._wait_for_ble_connection(adapter, entry.address)
+                tone_at = time.monotonic() + 2.25 + max(0.0, advance)
+                flash_at = tone_at - advance
+                def send_flash():
+                    if protocol == BleProtocol.BULB:
+                        adapter.send_color(*_parse_hex_color(spec.color), brightness)
+                    else:
+                        adapter.send_segment_colors(
+                            [_parse_hex_color(spec.color)] * max(1, spec.segments), brightness,
+                        )
+                self._run_calibration_flash_sequence(
+                    send_flash, tone_at, flash_at, advance, stop_event, tone_device_id,
+                )
+                stop_event.wait(0.18)
+            finally:
+                adapter.send_color(0, 0, 0, brightness)
+                adapter.stop()
+            return
+        raise ValueError(f"Unsupported calibration device: {entry.source}")
+
+    @staticmethod
+    def _run_calibration_flash_sequence(send_flash, tone_at, flash_at, advance, stop_event, tone_device_id):
+        wait_until = DeviceDiscoveryService._wait_until_calibration_time
+        play_tone = lambda: DeviceDiscoveryService._play_calibration_tone_at(
+            tone_at, stop_event, tone_device_id,
+        )
+        if advance >= 0:
+            wait_until(flash_at, stop_event)
+            if not stop_event.is_set():
+                send_flash()
+                play_tone()
+        else:
+            play_tone()
+            wait_until(flash_at, stop_event)
+            if not stop_event.is_set():
+                send_flash()
+
+    @staticmethod
+    def _wait_until_calibration_time(target_time: float, stop_event: threading.Event) -> None:
+        while not stop_event.is_set() and time.monotonic() < target_time:
+            stop_event.wait(min(0.02, target_time - time.monotonic()))
+
+    @staticmethod
+    def _play_calibration_tone_at(target_time: float, stop_event: threading.Event, device_id: int | None = None) -> None:
+        import numpy as np
+        import sounddevice as sd
+
+        sample_rate = 44100
+        count = int(sample_rate * 0.12)
+        phase = 2.0 * np.pi * 880.0 * np.arange(count) / sample_rate
+        envelope = np.minimum(1.0, np.minimum(np.arange(count) / 220.0, (count - np.arange(count)) / 220.0))
+        tone = (0.15 * np.sin(phase) * envelope).astype(np.float32)
+        DeviceDiscoveryService._wait_until_calibration_time(target_time, stop_event)
+        if not stop_event.is_set():
+            sd.play(tone, sample_rate, device=device_id, blocking=True)
+
     def identify(
         self,
         entry: DiscoveredDeviceEntry,

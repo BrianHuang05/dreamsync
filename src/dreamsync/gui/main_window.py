@@ -1969,9 +1969,20 @@ def create_main_window(
             device_discovery_panel.segments_spin.setValue(count)
             _reload_spatial_scene(status=f"Updated segment count for {entry.name}.")
 
+        def save_lighting_advance(value):
+            device_discovery_service.update_device_lighting_advance(config_path, entry, value)
+            _reload_spatial_scene(status=f"Saved {value:.0f} ms light advance for {entry.name}.")
+
+        device_config = _discovery_config_for_entry(entry)
         show_device_test_dialog(
             QtCore, QtWidgets, window, device_discovery_service, entry,
             save_segments=save_test_segments if config_path is not None else None,
+            save_lighting_advance=(
+                save_lighting_advance
+                if config_path is not None and device_config is not None else None
+            ),
+            lighting_advance_ms=float(getattr(device_config, "lighting_advance_ms", 0.0)),
+            tone_device_id=queue_panel.output_device_combo.currentData(),
             segments=int(device_discovery_panel.segments_spin.value()),
             transport=str(device_discovery_panel.transport_combo.currentData()),
             protocol=str(device_discovery_panel.protocol_combo.currentData()),

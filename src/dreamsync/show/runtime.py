@@ -1,4 +1,4 @@
-"""Show Playback Runtime — synchronise lighting cues with audio playback."""
+"""Show Playback Runtime â€” synchronise lighting cues with audio playback."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from dreamsync.show.runtime_control import RuntimeControlState, apply_runtime_co
 from dreamsync.show.models import ShowCue, ShowTimeline
 from dreamsync.show.timing import lighting_position
 
-# Mapping from ShowCue.render_mode → (EffectMode, RenderMode)
+# Mapping from ShowCue.render_mode â†’ (EffectMode, RenderMode)
 _MODE_MAP: dict[str, tuple[EffectMode, RenderMode]] = {
     "solid": (EffectMode.AMBIENT, RenderMode.SOLID),
     "breathe": (EffectMode.AMBIENT, RenderMode.BREATHE),
@@ -28,7 +28,7 @@ _MODE_MAP: dict[str, tuple[EffectMode, RenderMode]] = {
 
 
 class ShowPlaybackRuntime:
-    """Advance a show timeline tick-by-tick, mapping cues → lighting output."""
+    """Advance a show timeline tick-by-tick, mapping cues â†’ lighting output."""
 
     def __init__(
         self,
@@ -117,6 +117,9 @@ class ShowPlaybackRuntime:
         runtime_params["_render_mode"] = effective_cue.render_mode
         runtime_params["_spatial_palette"] = effective_cue.color_palette
         runtime_params["_spatial_t"] = max(0.0, t - effective_cue.t)
+        runtime_params["_timeline_beat_times"] = self._timeline.beat_times
+        runtime_params["_timeline_downbeat_times"] = self._timeline.downbeat_times
+        runtime_params["_color_cycle_mode"] = self._color_cycle_mode
         prepared_key = None if getattr(control_state, "active", False) else self._prepared_spatial_keys.get(id(cue))
         if prepared_key is not None:
             runtime_params["_prepared_spatial_key"] = prepared_key
@@ -229,7 +232,7 @@ class ShowPlaybackRuntime:
                 intensity = _lerp(self._fade_from_cue.intensity, cue.intensity, progress)
                 speed = _lerp(self._fade_from_cue.speed, cue.speed, progress)
         elif t >= self._fade_end_t:
-            # Fade finished — clear state
+            # Fade finished â€” clear state
             self._fade_from_cue = None
 
         effect_mode, _ = _MODE_MAP.get(cue.render_mode, (EffectMode.AMBIENT, RenderMode.SOLID))
@@ -262,7 +265,7 @@ class ShowPlaybackRuntime:
 
 
 def _lerp(a: float, b: float, t: float) -> float:
-    """Linear interpolation from *a* to *b* at fraction *t* ∈ [0, 1]."""
+    """Linear interpolation from *a* to *b* at fraction *t* âˆˆ [0, 1]."""
     return a + (b - a) * t
 
 
@@ -296,7 +299,7 @@ def run_show_playback(
     stop_event: threading.Event | None = None,
     debug: bool = False,
 ) -> dict[str, Any]:
-    """Play a show: mp3 audio + lighting timeline → speakers + Govee devices.
+    """Play a show: mp3 audio + lighting timeline â†’ speakers + Govee devices.
 
     Returns a summary dict when playback finishes or is interrupted.
     """
